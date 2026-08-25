@@ -2,9 +2,9 @@
 id: ISSUE-0014
 title: "Bootstrap a safe Ghostty application"
 kind: "implementation"
-status: open
+status: resolved
 created: 2026-08-25
-assignee: 
+assignee: "agent"
 parent: "ISSUE-0013-implement-fiew-v0-1.md"
 blocked_by:
 labels: []
@@ -39,5 +39,18 @@ Managed by native issue relationships.
 Repository browsing and feature integrations.
 
 ## Comments
-
 ## Resolution
+
+**Outcome: Achieved.**
+
+Delivered a Zig 0.16.0 executable using low-level libvaxis pinned to `c060d314930c5552b99a89278a6a695baf0352da`. The application enters the alternate screen, renders a centered welcome view, redraws after resize events, accepts `q` and `Ctrl-C`, and restores terminal state through ordered cleanup on normal and error returns.
+
+Verification passed:
+
+- `zig build`
+- `zig build test --system zig-pkg`
+- `zig fmt --check src build.zig`
+- ReleaseSafe and explicit `aarch64-macos` builds
+- Manual Ghostty checks for welcome rendering, resize behavior, `q`, `Ctrl-C`, and terminal restoration
+
+Tests use no optional executables. The network-disabled system package build passed after dependencies were fetched. Repository browsing remains out of scope for this issue.

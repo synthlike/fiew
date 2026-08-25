@@ -11,7 +11,25 @@ The planned v0.1 targets Apple Silicon macOS and Ghostty. It focuses on:
 - optional Zig definition navigation through ZLS; and
 - terminal-text previews of supported Mermaid diagrams.
 
-`fiew` does not modify source files or Git state. v0.1 planning is complete; implementation has not started.
+`fiew` does not modify source files or Git state. v0.1 is under development.
+
+## Development
+
+Install Zig 0.16.0, then fetch dependencies and build:
+
+```sh
+zig build --fetch
+zig build
+```
+
+Run the current Ghostty application with `zig build run`. Press `q` or `Ctrl-C` to exit.
+
+Run deterministic tests and formatting checks with:
+
+```sh
+zig build test
+zig fmt --check src build.zig
+```
 
 ## Project documentation
 

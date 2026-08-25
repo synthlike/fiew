@@ -1,6 +1,7 @@
-# Zig build artifacts
+# Zig build artifacts and fetched package cache
 .zig-cache/
 zig-out/
+zig-pkg/
 
 # Python adapter caches
 __pycache__/

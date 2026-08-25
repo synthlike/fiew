@@ -1,0 +1,50 @@
+const std = @import("std");
+
+pub fn build(b: *std.Build) void {
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
+
+    const fiew = b.addModule("fiew", .{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const vaxis_dependency = b.dependency("vaxis", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const executable_module = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "fiew", .module = fiew },
+            .{ .name = "vaxis", .module = vaxis_dependency.module("vaxis") },
+        },
+    });
+
+    const executable = b.addExecutable(.{
+        .name = "fiew",
+        .root_module = executable_module,
+    });
+    b.installArtifact(executable);
+
+    const run_command = b.addRunArtifact(executable);
+    run_command.step.dependOn(b.getInstallStep());
+    if (b.args) |arguments| run_command.addArgs(arguments);
+
+    const run_step = b.step("run", "Run fiew");
+    run_step.dependOn(&run_command.step);
+
+    const core_tests = b.addTest(.{ .root_module = fiew });
+    const run_core_tests = b.addRunArtifact(core_tests);
+
+    const executable_tests = b.addTest(.{ .root_module = executable_module });
+    const run_executable_tests = b.addRunArtifact(executable_tests);
+
+    const test_step = b.step("test", "Run unit tests");
+    test_step.dependOn(&run_core_tests.step);
+    test_step.dependOn(&run_executable_tests.step);
+}
