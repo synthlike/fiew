@@ -1,0 +1,10 @@
+# Zig build artifacts
+.zig-cache/
+zig-out/
+
+# Python adapter caches
+__pycache__/
+*.py[cod]
+
+# macOS
+.DS_Store

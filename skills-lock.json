@@ -1,0 +1,125 @@
+{
+  "version": 1,
+  "skills": {
+    "author-specification": {
+      "source": "synthlike/agent-workflows",
+      "sourceType": "github",
+      "skillPath": "skills/author-specification/SKILL.md",
+      "computedHash": "b147a13db52cfb7b9b28c566b28c3cb62850f3d519d63dd1db8a4b7c75bad86f"
+    },
+    "capture-meeting": {
+      "source": "synthlike/agent-workflows",
+      "sourceType": "github",
+      "skillPath": "skills/capture-meeting/SKILL.md",
+      "computedHash": "581a01f56b636cfc6306aafe98148ca988afdfc550ee7102a9733480d4464425"
+    },
+    "capture-regression": {
+      "source": "synthlike/agent-workflows",
+      "sourceType": "github",
+      "skillPath": "skills/capture-regression/SKILL.md",
+      "computedHash": "c17b58cd048356c9f889f2d702da6e5f44931c0aad4bf85c20170cd78607a4ba"
+    },
+    "clarify-intent": {
+      "source": "synthlike/agent-workflows",
+      "sourceType": "github",
+      "skillPath": "skills/clarify-intent/SKILL.md",
+      "computedHash": "8f2bb28bb1ea42fa1ef5326342ae974e4b7b0fc6ee3d091a9b21b9d568a25d23"
+    },
+    "close-initiative": {
+      "source": "synthlike/agent-workflows",
+      "sourceType": "github",
+      "skillPath": "skills/close-initiative/SKILL.md",
+      "computedHash": "5999ddc154801dc803f6d64a5c2f672c50da9706a559cf9ec7a35822731a47fa"
+    },
+    "configure-workflows": {
+      "source": "synthlike/agent-workflows",
+      "sourceType": "github",
+      "skillPath": "skills/configure-workflows/SKILL.md",
+      "computedHash": "7bce48b42366b08645ec398e4c925ea0f3b6df50ffdf3bc7f7bea3507cbb927b"
+    },
+    "develop-rfc": {
+      "source": "synthlike/agent-workflows",
+      "sourceType": "github",
+      "skillPath": "skills/develop-rfc/SKILL.md",
+      "computedHash": "e5259ea29a4315433c753822c5bf967bc981ac6fd24a97db3a1a3b7e542d006b"
+    },
+    "establish-technical-baseline": {
+      "source": "synthlike/agent-workflows",
+      "sourceType": "github",
+      "skillPath": "skills/establish-technical-baseline/SKILL.md",
+      "computedHash": "4cb92a85ba718063035e3af9bd3a26570df05c78c92483c30bf3c067a732def6"
+    },
+    "frame-product-problem": {
+      "source": "synthlike/agent-workflows",
+      "sourceType": "github",
+      "skillPath": "skills/frame-product-problem/SKILL.md",
+      "computedHash": "85d1df53cc4b2454630d0c6255bfe3e758c19275406f3cf6924f113e426f221a"
+    },
+    "investigate-failure": {
+      "source": "synthlike/agent-workflows",
+      "sourceType": "github",
+      "skillPath": "skills/investigate-failure/SKILL.md",
+      "computedHash": "e9326b18ccfbfff29123390a898dcd533e831282a1e0f7129090c4cb60f171a9"
+    },
+    "model-domain": {
+      "source": "synthlike/agent-workflows",
+      "sourceType": "github",
+      "skillPath": "skills/model-domain/SKILL.md",
+      "computedHash": "3812f9fb6594abec4d50c211ecab1caa01b5edb90f5f0362ddf1a523850d0945"
+    },
+    "plan-implementation": {
+      "source": "synthlike/agent-workflows",
+      "sourceType": "github",
+      "skillPath": "skills/plan-implementation/SKILL.md",
+      "computedHash": "b4cea2b80029050021dc43710c19e066ddc82a2a74358254eb4aa24e84f7df31"
+    },
+    "plan-initiative": {
+      "source": "synthlike/agent-workflows",
+      "sourceType": "github",
+      "skillPath": "skills/plan-initiative/SKILL.md",
+      "computedHash": "074efb2c0906bbe34e812f83ecd68ad31a610f833d657a163252fe8979d816e5"
+    },
+    "prepare-handoff": {
+      "source": "synthlike/agent-workflows",
+      "sourceType": "github",
+      "skillPath": "skills/prepare-handoff/SKILL.md",
+      "computedHash": "748369f43257fa2e5459200fd141a9b90a6c679d73c42ece7bf4ccab6b4123d6"
+    },
+    "prepare-questionnaire": {
+      "source": "synthlike/agent-workflows",
+      "sourceType": "github",
+      "skillPath": "skills/prepare-questionnaire/SKILL.md",
+      "computedHash": "963f1e602f323e8848108039196adfdd5d10e7ff86fc482cf6f47b4b791c37a2"
+    },
+    "prototype-design": {
+      "source": "synthlike/agent-workflows",
+      "sourceType": "github",
+      "skillPath": "skills/prototype-design/SKILL.md",
+      "computedHash": "09608e28ab7a9d7f87853a7607e81f263abd1fb31cff3b0687839987cb588ec1"
+    },
+    "record-arp": {
+      "source": "synthlike/agent-workflows",
+      "sourceType": "github",
+      "skillPath": "skills/record-arp/SKILL.md",
+      "computedHash": "fe30f5056b162a7249f5bea7f9ef6d6550756372bc9bf2feee3e5c639407c9fe"
+    },
+    "research-question": {
+      "source": "synthlike/agent-workflows",
+      "sourceType": "github",
+      "skillPath": "skills/research-question/SKILL.md",
+      "computedHash": "398aa234db310f18aa53deac0649a0ec7aa267af3916b9fcf25def7344a5968b"
+    },
+    "review-implementation": {
+      "source": "synthlike/agent-workflows",
+      "sourceType": "github",
+      "skillPath": "skills/review-implementation/SKILL.md",
+      "computedHash": "122110124dc46d145a1dd1630ebe0aaa7b088b9ebe56b501772d05dc9252671a"
+    },
+    "triage-issue": {
+      "source": "synthlike/agent-workflows",
+      "sourceType": "github",
+      "skillPath": "skills/triage-issue/SKILL.md",
+      "computedHash": "c496a0edad91d80197150bf50965b39bc5e5f4ce88785e7ca34422241ba44819"
+    }
+  }
+}

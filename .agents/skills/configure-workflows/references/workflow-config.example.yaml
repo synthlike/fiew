@@ -1,0 +1,67 @@
+# Incomplete template: configure-workflows must replace every REQUIRED value.
+schema_version: 3
+
+distribution:
+  source: REQUIRED_DISTRIBUTION_SOURCE
+  version: REQUIRED_EXACT_VERSION_OR_COMMIT_SHA
+
+installation:
+  selected:
+    - REQUIRED_SELECTED_SKILL
+  skills:
+    configure-workflows: REQUIRED_CONFIGURE_WORKFLOWS_PATH
+    REQUIRED_SELECTED_SKILL: REQUIRED_SELECTED_SKILL_PATH
+
+backends:
+  local:
+    type: local-markdown
+
+records:
+  issues:
+    enabled: true
+    backend: local
+    destination: {root: .project}
+  domain:
+    enabled: true
+    backend: local
+    destination: {path: docs/domain}
+  arps:
+    enabled: true
+    backend: local
+    destination: {path: docs/decisions, prefix: ARP}
+  rfcs:
+    enabled: true
+    backend: local
+    destination: {path: docs/rfcs, prefix: RFC}
+  specs:
+    enabled: true
+    backend: local
+    destination: {path: docs/specs}
+  meetings:
+    enabled: false
+    backend: local
+    destination: {path: docs/meetings}
+  research:
+    enabled: true
+    backend: local
+    destination: {path: docs/research}
+  questionnaires:
+    enabled: true
+    backend: local
+    destination: {path: docs/questionnaires}
+  technical_baselines:
+    enabled: true
+    backend: local
+    destination: {path: docs/engineering}
+  problem_framing:
+    enabled: true
+    backend: local
+    destination: {path: docs/product}
+  prototypes:
+    enabled: false
+    backend: local
+    destination: {path: docs/prototypes}
+  handoffs:
+    enabled: false
+    backend: local
+    destination: {path: .agents/handoffs}

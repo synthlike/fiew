@@ -1,0 +1,25 @@
+{
+  "backend_type": "bear",
+  "issue_operations": [],
+  "record_operations": [
+    "archive",
+    "create",
+    "list",
+    "read",
+    "update"
+  ],
+  "record_types": [
+    "arps",
+    "domain",
+    "handoffs",
+    "meetings",
+    "problem_framing",
+    "prototypes",
+    "questionnaires",
+    "research",
+    "rfcs",
+    "specs",
+    "technical_baselines"
+  ],
+  "schema_version": 1
+}

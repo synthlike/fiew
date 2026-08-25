@@ -1,0 +1,102 @@
+schema_version: 3
+
+distribution:
+  source: github.com/synthlike/agent-workflows
+  version: v0.5.0
+
+installation:
+  selected:
+    - author-specification
+    - capture-meeting
+    - capture-regression
+    - clarify-intent
+    - close-initiative
+    - develop-rfc
+    - establish-technical-baseline
+    - frame-product-problem
+    - investigate-failure
+    - model-domain
+    - plan-implementation
+    - plan-initiative
+    - prepare-handoff
+    - prepare-questionnaire
+    - prototype-design
+    - record-arp
+    - research-question
+    - review-implementation
+    - triage-issue
+  skills:
+    author-specification: .agents/skills/author-specification
+    capture-meeting: .agents/skills/capture-meeting
+    capture-regression: .agents/skills/capture-regression
+    clarify-intent: .agents/skills/clarify-intent
+    close-initiative: .agents/skills/close-initiative
+    configure-workflows: .agents/skills/configure-workflows
+    develop-rfc: .agents/skills/develop-rfc
+    establish-technical-baseline: .agents/skills/establish-technical-baseline
+    frame-product-problem: .agents/skills/frame-product-problem
+    investigate-failure: .agents/skills/investigate-failure
+    model-domain: .agents/skills/model-domain
+    plan-implementation: .agents/skills/plan-implementation
+    plan-initiative: .agents/skills/plan-initiative
+    prepare-handoff: .agents/skills/prepare-handoff
+    prepare-questionnaire: .agents/skills/prepare-questionnaire
+    prototype-design: .agents/skills/prototype-design
+    record-arp: .agents/skills/record-arp
+    research-question: .agents/skills/research-question
+    review-implementation: .agents/skills/review-implementation
+    triage-issue: .agents/skills/triage-issue
+
+backends:
+  local:
+    type: local-markdown
+
+records:
+  issues:
+    enabled: true
+    backend: local
+    destination: {root: .project}
+  domain:
+    enabled: true
+    backend: local
+    destination: {path: docs/domain}
+  arps:
+    enabled: true
+    backend: local
+    destination: {path: docs/decisions, prefix: ARP}
+  rfcs:
+    enabled: true
+    backend: local
+    destination: {path: docs/rfcs, prefix: RFC}
+  specs:
+    enabled: true
+    backend: local
+    destination: {path: docs/specs}
+  meetings:
+    enabled: false
+    backend: local
+    destination: {path: docs/meetings}
+  research:
+    enabled: true
+    backend: local
+    destination: {path: docs/research}
+  questionnaires:
+    enabled: false
+    backend: local
+    destination: {path: docs/questionnaires}
+  technical_baselines:
+    enabled: true
+    backend: local
+    destination: {path: docs/engineering}
+  problem_framing:
+    enabled: true
+    backend: local
+    destination: {path: docs/product}
+  prototypes:
+    enabled: false
+    backend: local
+    destination: {path: docs/prototypes}
+  handoffs:
+    enabled: false
+    backend: local
+    destination: {path: .agents/handoffs}

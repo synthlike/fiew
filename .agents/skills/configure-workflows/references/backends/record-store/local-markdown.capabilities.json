@@ -1,0 +1,38 @@
+{
+  "backend_type": "local-markdown",
+  "issue_operations": [
+    "block",
+    "cancel",
+    "claim",
+    "comment",
+    "create",
+    "frontier",
+    "list",
+    "parent",
+    "read",
+    "resolve",
+    "update"
+  ],
+  "record_operations": [
+    "archive",
+    "create",
+    "list",
+    "read",
+    "update"
+  ],
+  "record_types": [
+    "arps",
+    "domain",
+    "handoffs",
+    "issues",
+    "meetings",
+    "problem_framing",
+    "prototypes",
+    "questionnaires",
+    "research",
+    "rfcs",
+    "specs",
+    "technical_baselines"
+  ],
+  "schema_version": 1
+}
