@@ -22,7 +22,13 @@ zig build --fetch
 zig build
 ```
 
-Run the current Ghostty application with `zig build run`. Press `q` or `Ctrl-C` to exit.
+Browse the current directory in Ghostty with `zig build run`, or pass another directory after `--`:
+
+```sh
+zig build run -- /path/to/repository
+```
+
+Use `j`/`k` to move through Project, `h`/`l` to collapse or expand directories, and `Enter` to pin a file preview. `Tab` changes focus, `b` toggles the sidebar, and `q` or `Ctrl-C` exits.
 
 Run deterministic tests and formatting checks with:
 
