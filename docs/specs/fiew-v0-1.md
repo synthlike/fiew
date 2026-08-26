@@ -1,5 +1,5 @@
 <!-- agent-workflows-record
-{"archived":false,"created":"2026-08-25T21:48:04Z","id":"fiew-v0-1","modified":"2026-08-25T21:48:04Z","record_type":"specs","title":"fiew v0.1"}
+{"archived":false,"created":"2026-08-25T21:48:04Z","id":"fiew-v0-1","modified":"2026-08-26T14:38:11Z","record_type":"specs","title":"fiew v0.1"}
 -->
 # fiew v0.1
 
@@ -50,7 +50,7 @@ On Apple Silicon macOS in Ghostty, a user can open a repository, browse and insp
 5. Required movement bindings are `h j k l`, `w b e`, `g g`, `g e`, `Ctrl-u`, `Ctrl-d`, PageUp, and PageDown.
 6. Required selection bindings are `v` for Extend, `x` for line selection, `;` to collapse to the active end, and `Alt-;` to reverse ends.
 7. `Space` opens the leader menu; `:` opens named-command search. Both use one command registry and show disabled reasons.
-8. The status line shows mode, focus, pending keys, and concise feedback. `Esc` safely cancels transient interaction.
+8. The status line shows mode, pending keys, the active line and visual column, and concise feedback. Focus remains visually explicit through the active region header. `Esc` safely cancels transient interaction.
 9. `Space ?` shows generated key help. Quitting requires an explicit named or leader command.
 
 ### 5. Documents

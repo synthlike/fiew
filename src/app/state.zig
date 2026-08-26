@@ -8,58 +8,151 @@ pub const Focus = enum {
     main,
 };
 
+pub const Mode = enum {
+    normal,
+    extend,
+    command,
+};
+
+pub const View = struct {
+    snapshot: document.Snapshot,
+    anchor_grapheme: usize = 0,
+    active_grapheme: usize = 0,
+    preferred_column: u32 = 0,
+    scroll_line: usize = 0,
+    scroll_column: u32 = 0,
+
+    pub fn deinit(self: *View) void {
+        self.snapshot.deinit();
+        self.* = undefined;
+    }
+
+    pub fn selection(self: View) document.ByteRange {
+        if (self.snapshot.graphemes.len == 0) return .{ .start = 0, .end = 0 };
+        const anchor = self.snapshot.sourceRangeForGrapheme(self.anchor_grapheme);
+        const active = self.snapshot.sourceRangeForGrapheme(self.active_grapheme);
+        return .{
+            .start = @min(anchor.start, active.start),
+            .end = @max(anchor.end, active.end),
+        };
+    }
+};
+
+pub const Location = struct {
+    path: []const u8,
+    source_start: usize,
+    scroll_line: usize,
+    scroll_column: u32,
+};
+
 pub const App = struct {
+    allocator: std.mem.Allocator,
     browser: project_browser.Browser,
     sidebar_visible: bool = true,
     focus: Focus = .sidebar,
-    pinned: ?document.Snapshot = null,
-    preview: ?document.Snapshot = null,
-    cursor_grapheme: usize = 0,
-    preferred_column: u32 = 0,
-    document_scroll_line: usize = 0,
-    document_scroll_column: u32 = 0,
+    mode: Mode = .normal,
+    pinned: ?View = null,
+    preview: ?View = null,
     feedback: ?[]const u8 = null,
+    history: std.ArrayListUnmanaged(Location) = .empty,
+    history_index: ?usize = null,
 
     pub fn init(allocator: std.mem.Allocator, tree: *const project.Tree) !App {
-        return .{ .browser = try .init(allocator, tree) };
+        return .{
+            .allocator = allocator,
+            .browser = try .init(allocator, tree),
+        };
     }
 
     pub fn deinit(self: *App) void {
-        if (self.preview) |*snapshot| snapshot.deinit();
-        if (self.pinned) |*snapshot| snapshot.deinit();
+        if (self.preview) |*view| view.deinit();
+        if (self.pinned) |*view| view.deinit();
+        for (self.history.items) |location| self.allocator.free(location.path);
+        self.history.deinit(self.allocator);
         self.browser.deinit();
         self.* = undefined;
     }
 
-    pub fn activeDocument(self: *const App) ?*const document.Snapshot {
-        if (self.preview) |*snapshot| return snapshot;
-        if (self.pinned) |*snapshot| return snapshot;
+    pub fn activeView(self: *const App) ?*const View {
+        if (self.preview) |*view| return view;
+        if (self.pinned) |*view| return view;
         return null;
+    }
+
+    pub fn activeViewMut(self: *App) ?*View {
+        if (self.preview) |*view| return view;
+        if (self.pinned) |*view| return view;
+        return null;
+    }
+
+    pub fn activeDocument(self: *const App) ?*const document.Snapshot {
+        const view = self.activeView() orelse return null;
+        return &view.snapshot;
     }
 
     pub fn showPreview(self: *App, snapshot: document.Snapshot) void {
         if (self.preview) |*previous| previous.deinit();
-        self.preview = snapshot;
+        self.preview = .{ .snapshot = snapshot };
         self.feedback = null;
-        self.resetDocumentPosition();
     }
 
     pub fn clearPreview(self: *App) void {
-        if (self.preview) |*snapshot| snapshot.deinit();
+        if (self.preview) |*view| view.deinit();
         self.preview = null;
         self.feedback = null;
-        self.resetDocumentPosition();
     }
 
-    pub fn pinPreview(self: *App) bool {
+    pub fn pinPreview(self: *App) !bool {
         if (self.preview == null) return false;
-        if (self.pinned) |*snapshot| snapshot.deinit();
+        try self.syncCurrentHistory();
+        if (self.pinned) |*view| view.deinit();
         const pinned = self.preview.?;
         self.preview = null;
         self.pinned = pinned;
         self.focus = .main;
-        self.resetDocumentPosition();
+        self.mode = .normal;
+        try self.appendPinnedLocation();
         return true;
+    }
+
+    pub fn installHistorySnapshot(self: *App, snapshot: document.Snapshot, location: Location) void {
+        self.clearPreview();
+        if (self.pinned) |*view| view.deinit();
+        self.pinned = .{ .snapshot = snapshot };
+        const view = &self.pinned.?;
+        view.active_grapheme = graphemeAtSource(view.snapshot, location.source_start);
+        view.anchor_grapheme = view.active_grapheme;
+        if (view.snapshot.graphemes.len != 0) {
+            view.preferred_column = view.snapshot.graphemes[view.active_grapheme].visual_column;
+        }
+        view.scroll_line = location.scroll_line;
+        view.scroll_column = location.scroll_column;
+        self.focus = .main;
+        self.mode = .normal;
+    }
+
+    pub fn historyBack(self: *App) !?Location {
+        const current = self.history_index orelse return null;
+        if (current == 0) {
+            self.feedback = "start of location history";
+            return null;
+        }
+        try self.syncCurrentHistory();
+        self.history_index = current - 1;
+        self.feedback = null;
+        return self.history.items[current - 1];
+    }
+
+    pub fn historyForward(self: *App) !?Location {
+        const current = self.history_index orelse return null;
+        if (current + 1 >= self.history.items.len) {
+            self.feedback = "end of location history";
+            return null;
+        }
+        try self.syncCurrentHistory();
+        self.history_index = current + 1;
+        self.feedback = null;
+        return self.history.items[current + 1];
     }
 
     pub fn collapseSidebar(self: *App) void {
@@ -84,14 +177,53 @@ pub const App = struct {
         };
     }
 
+    pub fn toggleExtend(self: *App) void {
+        self.mode = switch (self.mode) {
+            .normal => .extend,
+            .extend => .normal,
+            .command => .command,
+        };
+        if (self.mode == .normal) self.collapseSelection();
+    }
+
+    pub fn leaveExtend(self: *App) void {
+        if (self.mode != .extend) return;
+        self.mode = .normal;
+        self.collapseSelection();
+    }
+
+    pub fn collapseSelection(self: *App) void {
+        const view = self.activeViewMut() orelse return;
+        view.anchor_grapheme = view.active_grapheme;
+    }
+
+    pub fn reverseSelection(self: *App) void {
+        const view = self.activeViewMut() orelse return;
+        std.mem.swap(usize, &view.anchor_grapheme, &view.active_grapheme);
+        if (view.snapshot.graphemes.len != 0) {
+            view.preferred_column = view.snapshot.graphemes[view.active_grapheme].visual_column;
+        }
+    }
+
+    pub fn selectLine(self: *App) void {
+        const view = self.activeViewMut() orelse return;
+        if (view.snapshot.graphemes.len == 0) return;
+        const active = @min(view.active_grapheme, view.snapshot.graphemes.len - 1);
+        const line = view.snapshot.graphemes[active].line;
+        const range = view.snapshot.graphemeRangeForLine(line);
+        if (range.start == range.end) return;
+        view.anchor_grapheme = range.start;
+        view.active_grapheme = range.end - 1;
+        view.preferred_column = view.snapshot.graphemes[view.active_grapheme].visual_column;
+    }
+
     pub fn moveHorizontal(self: *App, delta: isize, viewport_width: usize) void {
-        const snapshot = self.activeDocument() orelse return;
-        if (snapshot.graphemes.len == 0) return;
-        const current: isize = @intCast(self.cursor_grapheme);
-        const last: isize = @intCast(snapshot.graphemes.len - 1);
-        self.cursor_grapheme = @intCast(std.math.clamp(current + delta, 0, last));
-        self.preferred_column = snapshot.graphemes[self.cursor_grapheme].visual_column;
-        self.ensureDocumentHorizontallyVisible(viewport_width);
+        const view = self.activeViewMut() orelse return;
+        if (view.snapshot.graphemes.len == 0) return;
+        const current: isize = @intCast(view.active_grapheme);
+        const last: isize = @intCast(view.snapshot.graphemes.len - 1);
+        const target: usize = @intCast(std.math.clamp(current + delta, 0, last));
+        self.applyMovement(target, viewport_width);
     }
 
     pub fn moveVertical(
@@ -100,29 +232,29 @@ pub const App = struct {
         viewport_height: usize,
         viewport_width: usize,
     ) void {
-        const snapshot = self.activeDocument() orelse return;
-        if (snapshot.graphemes.len == 0) return;
-        const current = snapshot.graphemes[@min(self.cursor_grapheme, snapshot.graphemes.len - 1)];
-        const line_count: isize = @intCast(snapshot.lineCount());
+        const view = self.activeView() orelse return;
+        if (view.snapshot.graphemes.len == 0) return;
+        const current = view.snapshot.graphemes[@min(view.active_grapheme, view.snapshot.graphemes.len - 1)];
+        const line_count: isize = @intCast(view.snapshot.lineCount());
         const target_line: usize = @intCast(std.math.clamp(
             @as(isize, @intCast(current.line)) + delta,
             0,
             line_count - 1,
         ));
 
-        var best_index = self.cursor_grapheme;
+        var best_index = view.active_grapheme;
         var fallback_index: ?usize = null;
         var best_distance: u32 = std.math.maxInt(u32);
-        for (snapshot.graphemes, 0..) |grapheme, index| {
-            if (grapheme.line != target_line) continue;
+        const range = view.snapshot.graphemeRangeForLine(target_line);
+        for (view.snapshot.graphemes[range.start..range.end], range.start..) |grapheme, index| {
             if (grapheme.width == 0) {
                 fallback_index = index;
                 continue;
             }
-            const distance = if (grapheme.visual_column > self.preferred_column)
-                grapheme.visual_column - self.preferred_column
+            const distance = if (grapheme.visual_column > view.preferred_column)
+                grapheme.visual_column - view.preferred_column
             else
-                self.preferred_column - grapheme.visual_column;
+                view.preferred_column - grapheme.visual_column;
             if (distance < best_distance) {
                 best_distance = distance;
                 best_index = index;
@@ -131,134 +263,242 @@ pub const App = struct {
         if (best_distance == std.math.maxInt(u32)) {
             if (fallback_index) |index| best_index = index;
         }
-        self.cursor_grapheme = best_index;
-        self.ensureDocumentVisible(target_line, viewport_height);
-        self.ensureDocumentHorizontallyVisible(viewport_width);
+        self.applyMovementPreservingColumn(best_index, viewport_height, viewport_width);
+    }
+
+    pub fn moveWordForward(self: *App, to_end: bool, viewport_width: usize) void {
+        const view = self.activeView() orelse return;
+        if (view.snapshot.graphemes.len == 0) return;
+        var index = view.active_grapheme;
+        if (to_end) {
+            while (index < view.snapshot.graphemes.len and wordClass(view.snapshot, index) != .word) : (index += 1) {}
+            if (index >= view.snapshot.graphemes.len) index = view.snapshot.graphemes.len - 1;
+            while (index + 1 < view.snapshot.graphemes.len and
+                wordClass(view.snapshot, index + 1) == .word) : (index += 1)
+            {}
+        } else {
+            while (index < view.snapshot.graphemes.len and wordClass(view.snapshot, index) == .word) : (index += 1) {}
+            while (index < view.snapshot.graphemes.len and wordClass(view.snapshot, index) != .word) : (index += 1) {}
+            if (index >= view.snapshot.graphemes.len) index = view.snapshot.graphemes.len - 1;
+        }
+        self.applyMovement(index, viewport_width);
+    }
+
+    pub fn moveWordBackward(self: *App, viewport_width: usize) void {
+        const view = self.activeView() orelse return;
+        if (view.snapshot.graphemes.len == 0) return;
+        var index = view.active_grapheme;
+        if (index > 0) index -= 1;
+        while (index > 0 and wordClass(view.snapshot, index) != .word) : (index -= 1) {}
+        while (index > 0 and wordClass(view.snapshot, index - 1) == .word) : (index -= 1) {}
+        self.applyMovement(index, viewport_width);
+    }
+
+    pub fn moveDocumentBoundary(self: *App, end: bool, viewport_height: usize, viewport_width: usize) void {
+        const view = self.activeView() orelse return;
+        if (view.snapshot.graphemes.len == 0) return;
+        const preferred_column = view.preferred_column;
+        var line = if (end) view.snapshot.lineCount() - 1 else 0;
+        var target: ?usize = null;
+        while (true) {
+            target = nearestGraphemeOnLine(view.snapshot, line, preferred_column);
+            if (target != null) break;
+            if (end) {
+                if (line == 0) break;
+                line -= 1;
+            } else {
+                if (line + 1 >= view.snapshot.lineCount()) break;
+                line += 1;
+            }
+        }
+        self.applyMovementPreservingColumn(
+            target orelse return,
+            viewport_height,
+            viewport_width,
+        );
+        const active_view = self.activeViewMut().?;
+        active_view.scroll_line = if (end)
+            active_view.snapshot.lineCount() -| viewport_height
+        else
+            0;
     }
 
     pub fn selection(self: *const App) document.ByteRange {
-        const snapshot = self.activeDocument() orelse return .{ .start = 0, .end = 0 };
-        return snapshot.sourceRangeForGrapheme(self.cursor_grapheme);
+        const view = self.activeView() orelse return .{ .start = 0, .end = 0 };
+        return view.selection();
     }
 
-    pub fn ensureCurrentDocumentVisible(
+    pub fn selectAtVisualPosition(
         self: *App,
+        line: usize,
+        visual_column: u32,
+        extend: bool,
         viewport_height: usize,
         viewport_width: usize,
     ) void {
-        const snapshot = self.activeDocument() orelse return;
-        if (snapshot.graphemes.len == 0) return;
-        const line = snapshot.graphemes[@min(self.cursor_grapheme, snapshot.graphemes.len - 1)].line;
+        const view = self.activeView() orelse return;
+        if (view.snapshot.graphemes.len == 0) return;
+        const range = view.snapshot.graphemeRangeForLine(line);
+        if (range.start == range.end) return;
+        var target = range.start;
+        var best_distance: u32 = std.math.maxInt(u32);
+        for (view.snapshot.graphemes[range.start..range.end], range.start..) |grapheme, index| {
+            const distance = if (grapheme.visual_column > visual_column)
+                grapheme.visual_column - visual_column
+            else
+                visual_column - grapheme.visual_column;
+            if (distance < best_distance) {
+                best_distance = distance;
+                target = index;
+            }
+        }
+        const active_view = self.activeViewMut().?;
+        active_view.active_grapheme = target;
+        if (!extend) active_view.anchor_grapheme = target;
+        active_view.preferred_column = active_view.snapshot.graphemes[target].visual_column;
+        self.mode = if (extend) .extend else .normal;
         self.ensureDocumentVisible(line, viewport_height);
         self.ensureDocumentHorizontallyVisible(viewport_width);
     }
 
-    fn resetDocumentPosition(self: *App) void {
-        self.cursor_grapheme = 0;
-        self.preferred_column = 0;
-        self.document_scroll_line = 0;
-        self.document_scroll_column = 0;
+    pub fn ensureCurrentDocumentVisible(self: *App, viewport_height: usize, viewport_width: usize) void {
+        const view = self.activeView() orelse return;
+        if (view.snapshot.graphemes.len == 0) return;
+        const line = view.snapshot.graphemes[@min(view.active_grapheme, view.snapshot.graphemes.len - 1)].line;
+        self.ensureDocumentVisible(line, viewport_height);
+        self.ensureDocumentHorizontallyVisible(viewport_width);
+    }
+
+    fn applyMovement(self: *App, target: usize, viewport_width: usize) void {
+        const mode = self.mode;
+        const view = self.activeViewMut() orelse return;
+        view.active_grapheme = target;
+        if (mode != .extend) view.anchor_grapheme = target;
+        view.preferred_column = view.snapshot.graphemes[target].visual_column;
+        self.ensureDocumentHorizontallyVisible(viewport_width);
+    }
+
+    fn applyMovementPreservingColumn(
+        self: *App,
+        target: usize,
+        viewport_height: usize,
+        viewport_width: usize,
+    ) void {
+        const mode = self.mode;
+        const view = self.activeViewMut() orelse return;
+        view.active_grapheme = target;
+        if (mode != .extend) view.anchor_grapheme = target;
+        const line = view.snapshot.graphemes[target].line;
+        self.ensureDocumentVisible(line, viewport_height);
+        self.ensureDocumentHorizontallyVisible(viewport_width);
     }
 
     fn ensureDocumentHorizontallyVisible(self: *App, viewport_width: usize) void {
-        const snapshot = self.activeDocument() orelse return;
-        if (snapshot.graphemes.len == 0 or viewport_width == 0) return;
-        const selected = snapshot.graphemes[@min(self.cursor_grapheme, snapshot.graphemes.len - 1)];
-        if (selected.visual_column < self.document_scroll_column) {
-            self.document_scroll_column = selected.visual_column;
+        const view = self.activeViewMut() orelse return;
+        if (view.snapshot.graphemes.len == 0 or viewport_width == 0) return;
+        const selected = view.snapshot.graphemes[@min(view.active_grapheme, view.snapshot.graphemes.len - 1)];
+        if (selected.visual_column < view.scroll_column) {
+            view.scroll_column = selected.visual_column;
             return;
         }
         const end = selected.visual_column + @max(selected.width, 1);
         const width: u32 = @intCast(viewport_width);
-        if (end > self.document_scroll_column + width) {
-            self.document_scroll_column = end - width;
-        }
+        if (end > view.scroll_column + width) view.scroll_column = end - width;
     }
 
     fn ensureDocumentVisible(self: *App, line: usize, viewport_height: usize) void {
+        const view = self.activeViewMut() orelse return;
         if (viewport_height == 0) return;
-        if (line < self.document_scroll_line) self.document_scroll_line = line;
-        if (line >= self.document_scroll_line + viewport_height) {
-            self.document_scroll_line = line - viewport_height + 1;
+        if (line < view.scroll_line) view.scroll_line = line;
+        if (line >= view.scroll_line + viewport_height) view.scroll_line = line - viewport_height + 1;
+    }
+
+    fn syncCurrentHistory(self: *App) !void {
+        const index = self.history_index orelse return;
+        const view = self.pinned orelse return;
+        if (index >= self.history.items.len) return;
+        const selected_range = view.selection();
+        self.history.items[index].source_start = selected_range.start;
+        self.history.items[index].scroll_line = view.scroll_line;
+        self.history.items[index].scroll_column = view.scroll_column;
+    }
+
+    fn appendPinnedLocation(self: *App) !void {
+        const view = self.pinned orelse return;
+        if (self.history_index) |index| {
+            var remove_index = index + 1;
+            while (remove_index < self.history.items.len) {
+                self.allocator.free(self.history.items[remove_index].path);
+                remove_index += 1;
+            }
+            self.history.shrinkRetainingCapacity(index + 1);
         }
+        const selected_range = view.selection();
+        const owned_path = try self.allocator.dupe(u8, view.snapshot.path);
+        self.history.append(self.allocator, .{
+            .path = owned_path,
+            .source_start = selected_range.start,
+            .scroll_line = view.scroll_line,
+            .scroll_column = view.scroll_column,
+        }) catch |err| {
+            self.allocator.free(owned_path);
+            return err;
+        };
+        self.history_index = self.history.items.len - 1;
+    }
+
+    fn nearestGraphemeOnLine(
+        snapshot: document.Snapshot,
+        line: usize,
+        preferred_column: u32,
+    ) ?usize {
+        const range = snapshot.graphemeRangeForLine(line);
+        if (range.start == range.end) return null;
+        var target: ?usize = null;
+        var fallback: ?usize = null;
+        var best_distance: u32 = std.math.maxInt(u32);
+        for (snapshot.graphemes[range.start..range.end], range.start..) |grapheme, index| {
+            if (grapheme.width == 0) {
+                fallback = index;
+                continue;
+            }
+            const distance = if (grapheme.visual_column > preferred_column)
+                grapheme.visual_column - preferred_column
+            else
+                preferred_column - grapheme.visual_column;
+            if (distance < best_distance) {
+                best_distance = distance;
+                target = index;
+            }
+        }
+        return target orelse fallback;
+    }
+
+    fn graphemeAtSource(snapshot: document.Snapshot, source_start: usize) usize {
+        for (snapshot.graphemes, 0..) |grapheme, index| {
+            if (grapheme.source.start >= source_start or
+                (source_start >= grapheme.source.start and source_start < grapheme.source.end)) return index;
+        }
+        return snapshot.graphemes.len -| 1;
+    }
+
+    const WordClass = enum { whitespace, word, punctuation };
+
+    fn wordClass(snapshot: document.Snapshot, index: usize) WordClass {
+        const grapheme = snapshot.graphemes[@min(index, snapshot.graphemes.len - 1)];
+        const bytes = snapshot.display_bytes[grapheme.display.start..grapheme.display.end];
+        if (bytes.len == 0) return .whitespace;
+        const sequence_length = std.unicode.utf8ByteSequenceLength(bytes[0]) catch return .punctuation;
+        const codepoint = std.unicode.utf8Decode(bytes[0..sequence_length]) catch return .punctuation;
+        if (std.ascii.isWhitespace(@intCast(@min(codepoint, 0x7f)))) return .whitespace;
+        if (codepoint == '_' or (codepoint < 128 and std.ascii.isAlphanumeric(@intCast(codepoint))) or
+            codepoint >= 128) return .word;
+        return .punctuation;
     }
 };
 
-const noop_snapshot = @import("../model/document.zig");
-
-test "preview cancellation and sidebar collapse restore the pinned document" {
-    const nodes = [_]project.Node{.{ .path = "a.txt", .depth = 1, .kind = .file }};
-    const tree: project.Tree = .{
-        .allocator = std.testing.allocator,
-        .nodes = @constCast(&nodes),
-        .file_count = 1,
-    };
-    var app = try App.init(std.testing.allocator, &tree);
-    defer app.deinit();
-
-    app.pinned = try testSnapshot("pinned.txt", "pinned");
-    app.showPreview(try testSnapshot("preview.txt", "preview"));
-    try std.testing.expectEqualStrings("preview.txt", app.activeDocument().?.path);
-    app.collapseSidebar();
-    try std.testing.expectEqualStrings("pinned.txt", app.activeDocument().?.path);
-    try std.testing.expect(!app.sidebar_visible);
-}
-
-test "focus and collapsed state survive responsive layout changes" {
-    const nodes = [_]project.Node{.{ .path = "a.txt", .depth = 1, .kind = .file }};
-    const tree: project.Tree = .{
-        .allocator = std.testing.allocator,
-        .nodes = @constCast(&nodes),
-        .file_count = 1,
-    };
-    var app = try App.init(std.testing.allocator, &tree);
-    defer app.deinit();
-
-    app.browser.scroll = 0;
-    app.toggleFocus();
-    try std.testing.expectEqual(Focus.main, app.focus);
-    app.collapseSidebar();
-    try std.testing.expect(!app.sidebar_visible);
-    app.showSidebar();
-    try std.testing.expectEqual(Focus.sidebar, app.focus);
-    try std.testing.expectEqual(@as(usize, 0), app.browser.scroll);
-}
-
-test "horizontal navigation selects complete byte ranges and scrolls" {
-    const nodes = [_]project.Node{.{ .path = "a.txt", .depth = 1, .kind = .file }};
-    const tree: project.Tree = .{
-        .allocator = std.testing.allocator,
-        .nodes = @constCast(&nodes),
-        .file_count = 1,
-    };
-    var app = try App.init(std.testing.allocator, &tree);
-    defer app.deinit();
-    app.showPreview(try testSnapshot("a.txt", "abcdef"));
-
-    app.moveHorizontal(5, 3);
-    try std.testing.expectEqual(document.ByteRange{ .start = 5, .end = 6 }, app.selection());
-    try std.testing.expectEqual(@as(u32, 3), app.document_scroll_column);
-}
-
-test "pinning a preview focuses main without duplicate ownership" {
-    const nodes = [_]project.Node{.{ .path = "a.txt", .depth = 1, .kind = .file }};
-    const tree: project.Tree = .{
-        .allocator = std.testing.allocator,
-        .nodes = @constCast(&nodes),
-        .file_count = 1,
-    };
-    var app = try App.init(std.testing.allocator, &tree);
-    defer app.deinit();
-    app.showPreview(try testSnapshot("a.txt", "a"));
-
-    try std.testing.expect(app.pinPreview());
-    try std.testing.expectEqual(Focus.main, app.focus);
-    try std.testing.expect(app.preview == null);
-    try std.testing.expectEqualStrings("a.txt", app.pinned.?.path);
-}
-
-fn testSnapshot(path: []const u8, bytes: []const u8) !noop_snapshot.Snapshot {
-    return noop_snapshot.Snapshot.init(
+fn testSnapshot(path: []const u8, bytes: []const u8) !document.Snapshot {
+    return document.Snapshot.init(
         std.testing.allocator,
         path,
         bytes,
@@ -274,4 +514,76 @@ fn scalarNext(_: ?*const anyopaque, text: []const u8, start: usize) usize {
 
 fn scalarWidth(_: ?*const anyopaque, text: []const u8) u16 {
     return if (std.mem.eql(u8, text, "\n")) 0 else 1;
+}
+
+fn testApp() !App {
+    const Static = struct {
+        var nodes = [_]project.Node{.{ .path = "a.txt", .depth = 1, .kind = .file }};
+        var tree: project.Tree = .{
+            .allocator = std.testing.allocator,
+            .nodes = &nodes,
+            .file_count = 1,
+        };
+    };
+    return App.init(std.testing.allocator, &Static.tree);
+}
+
+test "preview cancellation restores the pinned selection and scroll" {
+    var app = try testApp();
+    defer app.deinit();
+    app.pinned = .{ .snapshot = try testSnapshot("pinned.txt", "abcdef"), .active_grapheme = 3, .anchor_grapheme = 3, .scroll_column = 2 };
+    app.showPreview(try testSnapshot("preview.txt", "preview"));
+    app.moveHorizontal(2, 20);
+    app.clearPreview();
+
+    try std.testing.expectEqualStrings("pinned.txt", app.activeDocument().?.path);
+    try std.testing.expectEqual(@as(usize, 3), app.activeView().?.active_grapheme);
+    try std.testing.expectEqual(@as(u32, 2), app.activeView().?.scroll_column);
+}
+
+test "extend movement preserves anchor and escape collapses to active" {
+    var app = try testApp();
+    defer app.deinit();
+    app.pinned = .{ .snapshot = try testSnapshot("a.txt", "abcdef") };
+    app.toggleExtend();
+    app.moveHorizontal(3, 20);
+
+    try std.testing.expectEqual(Mode.extend, app.mode);
+    try std.testing.expectEqual(document.ByteRange{ .start = 0, .end = 4 }, app.selection());
+    app.leaveExtend();
+    try std.testing.expectEqual(Mode.normal, app.mode);
+    try std.testing.expectEqual(document.ByteRange{ .start = 3, .end = 4 }, app.selection());
+}
+
+test "pinning and history preserve source locations" {
+    var app = try testApp();
+    defer app.deinit();
+    app.showPreview(try testSnapshot("first.txt", "first"));
+    try std.testing.expect(try app.pinPreview());
+    app.moveHorizontal(2, 20);
+    app.showPreview(try testSnapshot("second.txt", "second"));
+    try std.testing.expect(try app.pinPreview());
+
+    const previous = (try app.historyBack()).?;
+    try std.testing.expectEqualStrings("first.txt", previous.path);
+    try std.testing.expectEqual(@as(usize, 2), previous.source_start);
+    app.installHistorySnapshot(try testSnapshot("first.txt", "first"), previous);
+    try std.testing.expectEqual(@as(usize, 2), app.activeView().?.active_grapheme);
+
+    const next = (try app.historyForward()).?;
+    try std.testing.expectEqualStrings("second.txt", next.path);
+    app.installHistorySnapshot(try testSnapshot("second.txt", "second"), next);
+    try std.testing.expectEqualStrings("second.txt", app.activeDocument().?.path);
+}
+
+test "word and page movement remain on grapheme boundaries" {
+    var app = try testApp();
+    defer app.deinit();
+    app.pinned = .{ .snapshot = try testSnapshot("words.txt", "one  two\nthree") };
+    app.moveWordForward(false, 20);
+    try std.testing.expectEqual(@as(usize, 5), app.activeView().?.active_grapheme);
+    app.moveWordBackward(20);
+    try std.testing.expectEqual(@as(usize, 0), app.activeView().?.active_grapheme);
+    app.moveVertical(1, 10, 20);
+    try std.testing.expectEqual(@as(usize, 9), app.activeView().?.active_grapheme);
 }

@@ -28,7 +28,9 @@ Browse the current directory in Ghostty with `zig build run`, or pass another di
 zig build run -- /path/to/repository
 ```
 
-Use `j`/`k` to move through Project, `h`/`l` to collapse or expand directories, and `Enter` to pin a file preview. `Tab` changes focus, `b` toggles the sidebar, and `q` or `Ctrl-C` exits.
+Use `j`/`k` to move through Project, `h`/`l` to collapse or expand directories, and `Enter` to pin a file preview. `Tab` changes focus. In the main view, movement and selection use the documented Helix/Kakoune-inspired modal bindings.
+
+`Space` opens the leader menu, `:` searches named commands, and `Space ?` opens generated key help. Quit explicitly with `Space q` or `:quit`; `Ctrl-C` remains an interruption shortcut.
 
 Run deterministic tests and formatting checks with:
 

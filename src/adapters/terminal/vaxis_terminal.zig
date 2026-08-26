@@ -6,6 +6,7 @@ const Event = union(enum) {
     key_press: vaxis.Key,
     mouse: vaxis.Mouse,
     winsize: vaxis.Winsize,
+    tick,
 };
 
 pub fn run(init: std.process.Init) !void {
@@ -18,6 +19,8 @@ pub fn run(init: std.process.Init) !void {
     defer repository.deinit();
     var app = try fiew.app.App.init(allocator, &repository.tree);
     defer app.deinit();
+    var command_session = fiew.commands.Session.init(allocator);
+    defer command_session.deinit();
 
     const segmenter: fiew.text_segmentation.Segmenter = .{
         .next_fn = nextGrapheme,
@@ -39,6 +42,13 @@ pub fn run(init: std.process.Init) !void {
     try loop.start();
     defer loop.stop();
 
+    var timer_stop: std.atomic.Value(bool) = .init(false);
+    var timer_task = try init.io.concurrent(timerRun, .{ init.io, &loop, &timer_stop });
+    defer {
+        timer_stop.store(true, .release);
+        timer_task.await(init.io);
+    }
+
     try vx.enterAltScreen(tty.writer());
     try tty.writer().flush();
     try vx.queryTerminal(tty.writer(), .fromSeconds(1));
@@ -51,8 +61,20 @@ pub fn run(init: std.process.Init) !void {
         const event = try loop.nextEvent();
         switch (event) {
             .key_press => |key| {
-                if (key.matches('q', .{}) or key.matches('c', .{ .ctrl = true })) return;
-                try handleKey(&app, repository, segmenter, &generation, key, vx.window());
+                const effect = try command_session.handle(
+                    &app,
+                    translateKey(key),
+                    commandDimensions(vx.window(), &app),
+                );
+                if (try applyEffect(
+                    &command_session,
+                    &app,
+                    repository,
+                    segmenter,
+                    &generation,
+                    commandDimensions(vx.window(), &app),
+                    effect,
+                )) return;
             },
             .mouse => |mouse| try handleMouse(
                 &app,
@@ -69,78 +91,92 @@ pub fn run(init: std.process.Init) !void {
                 app.browser.ensureVisible(viewport_height);
                 app.ensureCurrentDocumentVisible(viewport_height, dimensions.main_width -| 6);
             },
+            .tick => command_session.tick(&app),
         }
 
         _ = frame_arena.reset(.retain_capacity);
-        try draw(frame_arena.allocator(), vx.window(), &app, repository.root_path);
+        try draw(frame_arena.allocator(), vx.window(), &app, &command_session, repository.root_path);
         try vx.render(tty.writer());
         try tty.writer().flush();
     }
 }
 
-fn handleKey(
+fn timerRun(
+    io: std.Io,
+    loop: *vaxis.Loop(Event),
+    stop: *std.atomic.Value(bool),
+) void {
+    while (!stop.load(.acquire)) {
+        io.sleep(.fromMilliseconds(250), .real) catch return;
+        if (stop.load(.acquire)) return;
+        loop.postEvent(.tick) catch return;
+    }
+}
+
+fn commandDimensions(window: vaxis.Window, app: *const fiew.app.App) fiew.commands.Dimensions {
+    const dimensions = fiew.workspace.layout(window.width, window.height, app.sidebar_visible);
+    return .{
+        .sidebar_rows = dimensions.content_height -| 2,
+        .document_rows = dimensions.content_height -| 2,
+        .document_columns = dimensions.main_width -| 6,
+    };
+}
+
+fn translateKey(key: vaxis.Key) fiew.commands.Key {
+    const code: fiew.commands.Code = switch (key.codepoint) {
+        vaxis.Key.escape => .escape,
+        vaxis.Key.enter => .enter,
+        vaxis.Key.tab => .tab,
+        vaxis.Key.backspace => .backspace,
+        vaxis.Key.page_up => .page_up,
+        vaxis.Key.page_down => .page_down,
+        vaxis.Key.up => .up,
+        vaxis.Key.down => .down,
+        vaxis.Key.left => .left,
+        vaxis.Key.right => .right,
+        else => .character,
+    };
+    return .{
+        .code = code,
+        .character = if (code == .character) key.codepoint else 0,
+        .shift = key.mods.shift,
+        .alt = key.mods.alt,
+        .ctrl = key.mods.ctrl,
+    };
+}
+
+fn applyEffect(
+    session: *fiew.commands.Session,
     app: *fiew.app.App,
     repository: fiew.filesystem.Repository,
     segmenter: fiew.text_segmentation.Segmenter,
     generation: *u64,
-    key: vaxis.Key,
-    window: vaxis.Window,
-) !void {
-    const dimensions = fiew.workspace.layout(window.width, window.height, app.sidebar_visible);
-    const sidebar_rows = dimensions.content_height -| 2;
-    const document_rows = dimensions.content_height -| 2;
-    const document_columns = dimensions.main_width -| 6;
-
-    if (key.matches(vaxis.Key.tab, .{}) or key.matches(vaxis.Key.tab, .{ .shift = true })) {
-        app.toggleFocus();
-        return;
-    }
-    if (key.matches('b', .{})) {
-        if (app.sidebar_visible) app.collapseSidebar() else app.showSidebar();
-        return;
-    }
-
-    switch (app.focus) {
-        .sidebar => {
-            if (key.matches('j', .{}) or key.matches(vaxis.Key.down, .{})) {
-                app.browser.move(1, sidebar_rows);
-                try previewSelection(app, repository, segmenter, generation);
-            } else if (key.matches('k', .{}) or key.matches(vaxis.Key.up, .{})) {
-                app.browser.move(-1, sidebar_rows);
-                try previewSelection(app, repository, segmenter, generation);
-            } else if (key.matches('h', .{}) or key.matches(vaxis.Key.left, .{})) {
-                try app.browser.collapseOrParent(sidebar_rows);
-                try previewSelection(app, repository, segmenter, generation);
-            } else if (key.matches('l', .{}) or key.matches(vaxis.Key.right, .{})) {
-                try app.browser.expandOrChild(sidebar_rows);
-                try previewSelection(app, repository, segmenter, generation);
-            } else if (key.matches(vaxis.Key.enter, .{})) {
-                const node = app.browser.selectedNode() orelse return;
-                if (node.kind == .directory) {
-                    _ = try app.browser.toggleSelected(sidebar_rows);
-                    app.clearPreview();
-                } else if (node.kind == .file) {
-                    if (app.preview == null) try previewSelection(app, repository, segmenter, generation);
-                    _ = app.pinPreview();
-                }
-            } else if (key.matches(vaxis.Key.escape, .{})) {
-                app.clearPreview();
+    dimensions: fiew.commands.Dimensions,
+    effect: fiew.commands.Effect,
+) !bool {
+    switch (effect) {
+        .none => {},
+        .preview_selection => try previewSelection(app, repository, segmenter, generation),
+        .activate_selection => {
+            const node = app.browser.selectedNode() orelse return false;
+            if (node.kind == .directory) {
+                _ = try session.execute(app, .project_toggle, dimensions);
+            } else if (node.kind == .file) {
+                if (app.preview == null) try previewSelection(app, repository, segmenter, generation);
+                _ = try app.pinPreview();
             }
         },
-        .main => {
-            if (key.matches('h', .{}) or key.matches(vaxis.Key.left, .{})) {
-                app.moveHorizontal(-1, document_columns);
-            } else if (key.matches('l', .{}) or key.matches(vaxis.Key.right, .{})) {
-                app.moveHorizontal(1, document_columns);
-            } else if (key.matches('j', .{}) or key.matches(vaxis.Key.down, .{})) {
-                app.moveVertical(1, document_rows, document_columns);
-            } else if (key.matches('k', .{}) or key.matches(vaxis.Key.up, .{})) {
-                app.moveVertical(-1, document_rows, document_columns);
-            } else if (key.matches(vaxis.Key.escape, .{})) {
-                app.showSidebar();
-            }
+        .open_history => |location| {
+            generation.* +%= 1;
+            const snapshot = repository.loadDocument(location.path, generation.*, segmenter) catch |err| {
+                app.feedback = @errorName(err);
+                return false;
+            };
+            app.installHistorySnapshot(snapshot, location);
         },
+        .quit => return true,
     }
+    return false;
 }
 
 fn handleMouse(
@@ -151,12 +187,14 @@ fn handleMouse(
     mouse: vaxis.Mouse,
     window: vaxis.Window,
 ) !void {
-    if (mouse.type != .press or mouse.button != .left or mouse.col < 0 or mouse.row < 0) return;
+    if ((mouse.type != .press and mouse.type != .drag) or
+        mouse.button != .left or mouse.col < 0 or mouse.row < 0) return;
     const dimensions = fiew.workspace.layout(window.width, window.height, app.sidebar_visible);
     if (!dimensions.supported or @as(u16, @intCast(mouse.row)) >= dimensions.content_height) return;
     const column: u16 = @intCast(mouse.col);
     const row: u16 = @intCast(mouse.row);
     if (dimensions.sidebar_mode != .hidden and column < dimensions.sidebar_width) {
+        if (mouse.type != .press) return;
         app.focus = .sidebar;
         if (row >= 2) {
             const visible_index = app.browser.scroll + row - 2;
@@ -165,6 +203,17 @@ fn handleMouse(
         }
     } else {
         app.focus = .main;
+        if (row == 0) return;
+        const view = app.activeView() orelse return;
+        const line = view.scroll_line + row - 1;
+        const content_column = column -| dimensions.main_column -| 6;
+        app.selectAtVisualPosition(
+            line,
+            view.scroll_column + content_column,
+            mouse.type == .drag,
+            dimensions.content_height -| 2,
+            dimensions.main_width -| 6,
+        );
     }
 }
 
@@ -195,12 +244,13 @@ fn draw(
     allocator: std.mem.Allocator,
     window: vaxis.Window,
     app: *const fiew.app.App,
+    command_session: *const fiew.commands.Session,
     root_path: []const u8,
 ) !void {
     window.clear();
     window.hideCursor();
-    const dimensions = fiew.workspace.layout(window.width, window.height, app.sidebar_visible);
-    if (!dimensions.supported) {
+    const plan = fiew.render_plan.build(window.width, window.height, app, command_session);
+    if (plan.kind == .unsupported) {
         _ = window.printSegment(.{
             .text = "Terminal too small; fiew requires at least 60x20",
             .style = .{ .bold = true },
@@ -208,15 +258,15 @@ fn draw(
         return;
     }
 
-    const content = window.child(.{ .height = dimensions.content_height });
+    const content = window.child(.{ .height = plan.main.height });
     const main = content.child(.{
-        .x_off = dimensions.main_column,
-        .width = dimensions.main_width,
+        .x_off = plan.main.column,
+        .width = plan.main.width,
     });
     try drawDocument(allocator, main, app);
-    if (dimensions.sidebar_mode != .hidden) {
+    if (plan.sidebar_mode != .hidden) {
         const sidebar = content.child(.{
-            .width = dimensions.sidebar_width,
+            .width = plan.sidebar.width,
             .border = .{
                 .where = .right,
                 .style = if (app.focus == .sidebar) .{ .bold = true } else .{},
@@ -225,8 +275,10 @@ fn draw(
         try drawSidebar(allocator, sidebar, app, root_path);
     }
 
-    const status = window.child(.{ .y_off = dimensions.content_height, .height = 1 });
-    try drawStatus(allocator, status, app);
+    try drawCommandSurface(allocator, content, app, command_session);
+
+    const status = window.child(.{ .y_off = plan.status.row, .height = plan.status.height });
+    try drawStatus(allocator, status, app, command_session);
 }
 
 fn drawSidebar(
@@ -278,7 +330,7 @@ fn drawSidebar(
 }
 
 fn drawDocument(allocator: std.mem.Allocator, window: vaxis.Window, app: *const fiew.app.App) !void {
-    const snapshot = app.activeDocument() orelse {
+    const view = app.activeView() orelse {
         if (app.feedback) |name| {
             const message = try std.fmt.allocPrint(allocator, "Unable to open selected file: {s}", .{name});
             _ = window.printSegment(.{ .text = message, .style = .{ .dim = true } }, .{
@@ -304,12 +356,14 @@ fn drawDocument(allocator: std.mem.Allocator, window: vaxis.Window, app: *const 
         }
         return;
     };
+    const snapshot = &view.snapshot;
     const safe_path = try sanitizeLine(allocator, snapshot.path, window.width -| 9);
     _ = window.print(&.{
         .{
-            .text = if (app.preview != null) " Preview " else " File ",
+            .text = if (app.preview != null) " Preview" else " File",
             .style = .{ .bold = true, .reverse = app.focus == .main },
         },
+        .{ .text = " " },
         .{ .text = safe_path },
     }, .{ .wrap = .none });
 
@@ -329,15 +383,15 @@ fn drawDocument(allocator: std.mem.Allocator, window: vaxis.Window, app: *const 
 
     const body_rows = window.height -| 2;
     var row: usize = 0;
-    while (row < body_rows and app.document_scroll_line + row < snapshot.lineCount()) : (row += 1) {
-        const line = app.document_scroll_line + row;
+    while (row < body_rows and view.scroll_line + row < snapshot.lineCount()) : (row += 1) {
+        const line = view.scroll_line + row;
         var range = snapshot.lineDisplayRange(line);
-        if (app.document_scroll_column > 0) {
+        if (view.scroll_column > 0) {
             const grapheme_range = snapshot.graphemeRangeForLine(line);
             range.start = range.end;
             for (snapshot.graphemes[grapheme_range.start..grapheme_range.end]) |grapheme| {
                 if (grapheme.display.start >= range.end) break;
-                if (grapheme.visual_column + @max(grapheme.width, 1) > app.document_scroll_column) {
+                if (grapheme.visual_column + @max(grapheme.width, 1) > view.scroll_column) {
                     range.start = grapheme.display.start;
                     break;
                 }
@@ -345,57 +399,55 @@ fn drawDocument(allocator: std.mem.Allocator, window: vaxis.Window, app: *const 
         }
         const number = try std.fmt.allocPrint(allocator, "{d: >5} ", .{line + 1});
         const current_line = snapshot.graphemes.len != 0 and
-            snapshot.graphemes[@min(app.cursor_grapheme, snapshot.graphemes.len - 1)].line == line;
+            snapshot.graphemes[@min(view.active_grapheme, snapshot.graphemes.len - 1)].line == line;
         _ = window.printSegment(.{
             .text = number,
             .style = .{ .dim = !current_line, .bold = current_line },
         }, .{ .row_offset = @intCast(row + 1), .wrap = .none });
 
-        var segments: [3]vaxis.Segment = undefined;
-        var segment_count: usize = 0;
-        if (current_line) {
-            const selected = snapshot.graphemes[@min(app.cursor_grapheme, snapshot.graphemes.len - 1)].display;
-            if (selected.start >= range.start and selected.end <= range.end) {
-                if (selected.start > range.start) {
-                    segments[segment_count] = .{ .text = try sanitizeLine(
-                        allocator,
-                        snapshot.display_bytes[range.start..selected.start],
-                        window.width -| 6,
-                    ) };
-                    segment_count += 1;
+        var segments: std.ArrayList(vaxis.Segment) = .empty;
+        defer segments.deinit(allocator);
+        const selected_range = view.selection();
+        const grapheme_range = snapshot.graphemeRangeForLine(line);
+        for (snapshot.graphemes[grapheme_range.start..grapheme_range.end]) |grapheme| {
+            const selected = grapheme.source.end > selected_range.start and
+                grapheme.source.start < selected_range.end;
+            const grapheme_bytes = snapshot.display_bytes[grapheme.display.start..grapheme.display.end];
+            const is_line_break = grapheme_bytes.len != 0 and grapheme_bytes[grapheme_bytes.len - 1] == '\n';
+            if (is_line_break) {
+                if (selectedLineBreakVisible(
+                    grapheme,
+                    selected_range,
+                    view.scroll_column,
+                    window.width -| 6,
+                )) {
+                    try segments.append(allocator, .{
+                        .text = " ",
+                        .style = .{ .reverse = true },
+                    });
                 }
-                segments[segment_count] = .{
-                    .text = try sanitizeLine(
-                        allocator,
-                        snapshot.display_bytes[selected.start..selected.end],
-                        window.width -| 6,
-                    ),
-                    .style = .{ .reverse = true },
-                };
-                segment_count += 1;
-                if (selected.end < range.end) {
-                    segments[segment_count] = .{ .text = try sanitizeLine(
-                        allocator,
-                        snapshot.display_bytes[selected.end..range.end],
-                        window.width -| 6,
-                    ) };
-                    segment_count += 1;
-                }
+                continue;
             }
+            if (grapheme.display.end <= range.start or grapheme.display.start >= range.end) continue;
+            if (grapheme.visual_column >= view.scroll_column + window.width -| 6) break;
+            const display_start = @max(grapheme.display.start, range.start);
+            const display_end = @min(grapheme.display.end, range.end);
+            try segments.append(allocator, .{
+                .text = try sanitizeLine(
+                    allocator,
+                    snapshot.display_bytes[display_start..display_end],
+                    window.width -| 6,
+                ),
+                .style = .{ .reverse = selected },
+            });
         }
-        if (segment_count == 0) {
-            segments[0] = .{ .text = try sanitizeLine(
-                allocator,
-                snapshot.display_bytes[range.start..range.end],
-                window.width -| 6,
-            ) };
-            segment_count = 1;
+        if (segments.items.len != 0) {
+            _ = window.print(segments.items, .{
+                .row_offset = @intCast(row + 1),
+                .col_offset = 6,
+                .wrap = .none,
+            });
         }
-        _ = window.print(segments[0..segment_count], .{
-            .row_offset = @intCast(row + 1),
-            .col_offset = 6,
-            .wrap = .none,
-        });
     }
 
     if (snapshot.encoding == .invalid_utf8 and window.height > 1) {
@@ -407,14 +459,124 @@ fn drawDocument(allocator: std.mem.Allocator, window: vaxis.Window, app: *const 
     }
 }
 
-fn drawStatus(allocator: std.mem.Allocator, window: vaxis.Window, app: *const fiew.app.App) !void {
-    const selection = app.selection();
+fn drawCommandSurface(
+    allocator: std.mem.Allocator,
+    window: vaxis.Window,
+    app: *const fiew.app.App,
+    session: *const fiew.commands.Session,
+) !void {
+    switch (session.surface) {
+        .none => {},
+        .leader => {
+            const menu = window.child(.{ .y_off = window.height -| 2, .height = 2 });
+            menu.clear();
+            _ = menu.printSegment(.{ .text = " Leader ", .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
+            _ = menu.printSegment(.{
+                .text = "f files  b Project  g Git [not implemented]  r Review [not implemented]  ? help  q quit",
+            }, .{ .row_offset = 1, .col_offset = 1, .wrap = .none });
+        },
+        .file => {
+            const menu = window.child(.{ .y_off = window.height -| 2, .height = 2 });
+            menu.clear();
+            _ = menu.printSegment(.{ .text = " File commands ", .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
+            _ = menu.printSegment(.{ .text = "Enter  open or pin selected Project file" }, .{
+                .row_offset = 1,
+                .col_offset = 1,
+                .wrap = .none,
+            });
+        },
+        .command => {
+            const height: u16 = @min(window.height, 10);
+            const prompt = window.child(.{ .y_off = window.height - height, .height = height });
+            prompt.clear();
+            const query = try std.fmt.allocPrint(allocator, ":{s}", .{session.query.items});
+            _ = prompt.printSegment(.{ .text = query, .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
+            const visible_count = @min(session.filteredCount(), height -| 1);
+            const start = if (session.selected_command >= visible_count and visible_count != 0)
+                session.selected_command - visible_count + 1
+            else
+                0;
+            for (0..visible_count) |row| {
+                const index = start + row;
+                const id = session.filteredCommand(index) orelse break;
+                const command = fiew.commands.definition(id);
+                const selected = index == session.selected_command;
+                const reason = fiew.commands.unavailableReason(app, id) orelse "";
+                const line = try std.fmt.allocPrint(
+                    allocator,
+                    "{s:<24} {s:<18} {s}",
+                    .{ command.stable_id, command.binding, reason },
+                );
+                _ = prompt.printSegment(.{
+                    .text = line,
+                    .style = .{ .reverse = selected, .dim = reason.len != 0 },
+                }, .{ .row_offset = @intCast(row + 1), .col_offset = 1, .wrap = .none });
+            }
+        },
+        .help => {
+            window.clear();
+            _ = window.printSegment(.{ .text = " fiew key help — generated from command registry ", .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
+            const available_rows: usize = window.height -| 2;
+            const end = @min(session.help_scroll + available_rows, fiew.commands.definitions.len);
+            for (fiew.commands.definitions[session.help_scroll..end], 0..) |command, index| {
+                const reason = fiew.commands.unavailableReason(app, command.id) orelse "";
+                const line = try std.fmt.allocPrint(
+                    allocator,
+                    "{s:<14} {s:<26} {s}",
+                    .{ command.binding, command.title, reason },
+                );
+                _ = window.printSegment(.{
+                    .text = line,
+                    .style = .{ .dim = reason.len != 0 },
+                }, .{ .row_offset = @intCast(index + 1), .col_offset = 1, .wrap = .none });
+            }
+            _ = window.printSegment(.{ .text = "j/k scroll · q or Esc closes help", .style = .{ .bold = true } }, .{
+                .row_offset = window.height -| 1,
+                .col_offset = 1,
+                .wrap = .none,
+            });
+        },
+    }
+}
+
+fn drawStatus(
+    allocator: std.mem.Allocator,
+    window: vaxis.Window,
+    app: *const fiew.app.App,
+    session: *const fiew.commands.Session,
+) !void {
+    const location = if (app.activeView()) |view| location: {
+        if (view.snapshot.graphemes.len == 0) break :location "";
+        const active = view.snapshot.graphemes[
+            @min(
+                view.active_grapheme,
+                view.snapshot.graphemes.len - 1,
+            )
+        ];
+        break :location try std.fmt.allocPrint(
+            allocator,
+            "line {d} col {d}",
+            .{ active.line + 1, active.visual_column + 1 },
+        );
+    } else "";
+    const feedback = app.feedback orelse "";
     const text = try std.fmt.allocPrint(
         allocator,
-        " NORMAL  {s}  bytes {d}..{d} col {d}   Tab focus · b sidebar · Enter pin · q quit",
-        .{ @tagName(app.focus), selection.start, selection.end, app.document_scroll_column },
+        " {s}  pending:{s}  {s}  {s}",
+        .{ @tagName(app.mode), session.pendingLabel(), location, feedback },
     );
     _ = window.printSegment(.{ .text = text, .style = .{ .reverse = true } }, .{ .wrap = .none });
+}
+
+fn selectedLineBreakVisible(
+    grapheme: fiew.document.Grapheme,
+    selection: fiew.document.ByteRange,
+    scroll_column: u32,
+    viewport_width: u16,
+) bool {
+    const selected = grapheme.source.end > selection.start and grapheme.source.start < selection.end;
+    return selected and grapheme.visual_column >= scroll_column and
+        grapheme.visual_column < scroll_column + viewport_width;
 }
 
 fn sanitizeLine(allocator: std.mem.Allocator, text: []const u8, max_columns: u16) ![]u8 {
@@ -451,6 +613,28 @@ fn nextGrapheme(_: ?*const anyopaque, text: []const u8, start: usize) usize {
 
 fn graphemeWidth(_: ?*const anyopaque, grapheme: []const u8) u16 {
     return vaxis.gwidth.gwidth(grapheme, .unicode);
+}
+
+test "selected end-of-document newline receives a visible marker" {
+    const newline: fiew.document.Grapheme = .{
+        .source = .{ .start = 5, .end = 6 },
+        .display = .{ .start = 5, .end = 6 },
+        .line = 0,
+        .visual_column = 5,
+        .width = 0,
+    };
+    try std.testing.expect(selectedLineBreakVisible(
+        newline,
+        .{ .start = 5, .end = 6 },
+        0,
+        80,
+    ));
+    try std.testing.expect(!selectedLineBreakVisible(
+        newline,
+        .{ .start = 0, .end = 1 },
+        0,
+        80,
+    ));
 }
 
 test "terminal text sanitization cannot emit control sequences" {
