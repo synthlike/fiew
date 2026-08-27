@@ -847,8 +847,37 @@ fn drawDiff(allocator: std.mem.Allocator, window: vaxis.Window, app: *const fiew
                 .style = .{ .fg = color, .reverse = cursor },
             },
         }, .{ .row_offset = @intCast(row + 1), .wrap = .none });
-        line_index += 1;
         row += 1;
+
+        // Inline review comments anchored ending on this line.
+        if (app.notes) |*state_notes| {
+            for (change_notes) |ref| {
+                const note = state_notes.noteAt(ref);
+                const side = note.side orelse continue;
+                const anchor_end = note.end_line orelse continue;
+                const line_number = (if (side == .new) line.new_line else line.old_line) orelse continue;
+                if (line_number != anchor_end) continue;
+
+                if (row >= body_rows) break;
+                const resolved = note.status == .resolved;
+                _ = window.printSegment(.{
+                    .text = try std.fmt.allocPrint(allocator, "▏ note · {s}", .{@tagName(note.status)}),
+                    .style = .{ .fg = .{ .index = 6 }, .bold = true, .dim = resolved },
+                }, .{ .row_offset = @intCast(row + 1), .col_offset = 7, .wrap = .none });
+                row += 1;
+
+                var body_lines = std.mem.splitScalar(u8, note.body, '\n');
+                while (body_lines.next()) |body_line| {
+                    if (row >= body_rows) break;
+                    _ = window.printSegment(.{
+                        .text = try sanitizeLine(allocator, try std.fmt.allocPrint(allocator, "▏ {s}", .{body_line}), window.width -| 7),
+                        .style = .{ .fg = .{ .index = 6 }, .dim = resolved },
+                    }, .{ .row_offset = @intCast(row + 1), .col_offset = 7, .wrap = .none });
+                    row += 1;
+                }
+            }
+        }
+        line_index += 1;
     }
 }
 
