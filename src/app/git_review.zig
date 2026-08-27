@@ -272,7 +272,11 @@ pub const Review = struct {
             if (line.kind == .addition) has_addition = true;
             if (line.kind == .deletion) has_deletion = true;
         }
-        const side: review_model.Side = if (has_deletion and !has_addition) .old else .new;
+        // A thread anchor belongs to exactly one diff side. Context may join
+        // changed lines on that side, but a mixed deletion/addition range is
+        // ambiguous and must be narrowed by the reviewer.
+        if (has_deletion and has_addition) return null;
+        const side: review_model.Side = if (has_deletion) .old else .new;
 
         var start_line: ?usize = null;
         var end_line: usize = 0;
@@ -407,19 +411,19 @@ test "captureAnchor derives side, line range, and excerpt from the selection" {
     defer review_state.deinit();
     review_state.moveSelection(1, 20); // select b.zig, which has a diff
 
-    // Select the whole hunk: anchor at line 0, extend the cursor to line 2.
+    // A mixed deletion/addition selection is refused because it spans sides.
     review_state.toggleDiffSelection();
     review_state.diff_line = 2;
-    const selection = review_state.diffSelection();
-    try testing.expectEqual(@as(usize, 0), selection.start);
-    try testing.expectEqual(@as(usize, 2), selection.end);
+    try testing.expect((try review_state.captureAnchor(testing.allocator)) == null);
 
+    // Narrow to the addition on the new side.
+    review_state.diff_anchor = null;
     const anchor = (try review_state.captureAnchor(testing.allocator)).?;
     defer testing.allocator.free(anchor.excerpt);
     try testing.expectEqualStrings("b.zig", anchor.path);
     // The selection contains an addition, so it anchors to the new side.
     try testing.expectEqual(review_model.Side.new, anchor.side);
-    try testing.expectEqual(@as(usize, 1), anchor.start_line); // context new line 1
-    try testing.expectEqual(@as(usize, 2), anchor.end_line); // addition new line 2
+    try testing.expectEqual(@as(usize, 2), anchor.start_line);
+    try testing.expectEqual(@as(usize, 2), anchor.end_line);
     try testing.expect(anchor.excerpt.len != 0);
 }

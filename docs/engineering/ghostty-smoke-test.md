@@ -22,9 +22,11 @@ Use this checklist for terminal behavior that deterministic tests cannot verify.
 9. Open `Space`, `Space ?`, and `:`. Confirm menus and help list disabled commands with reasons, invalid sequences report feedback, `q` closes help without quitting, and `:quit` is available.
 10. Resize across 100 columns. Confirm Project changes between beside and overlay layouts without losing selection or scroll position. Below 60×20, confirm the unsupported-size message appears.
 11. Press `Space v` and confirm the VCS context identifies Git and shows loading without freezing input. Change a file externally, confirm the prior snapshot remains visible until refresh completes, then use `Space v r` and confirm its pending state is visible.
-12. Open a binary file and confirm only metadata appears. If available, open a file containing invalid UTF-8 and confirm replacement characters appear without changing the file.
-13. Use `Space q`. Confirm fiew exits, the previous terminal contents return, the cursor is visible, and normal line input and echo work.
-14. Run fiew again and press `Ctrl-C`. Confirm the same restoration behavior.
+12. In a repository where `.reviews/` is ignored, focus a textual diff, press `v`, extend over multiple lines on one side, then use `Space r n` and save a reviewer comment. Use `Space r f` on another change and confirm both line- and file-anchored threads appear.
+13. Open the Review sidebar with `Space r Enter`. Confirm keyboard and mouse selection, preview, focus, and scrolling are independent. Append with `Space r a`, resolve/reopen with `Space r x`, and confirm `Space r d` requires `y` before deleting the complete thread.
+14. Open a binary file and confirm only metadata appears. If available, open a file containing invalid UTF-8 and confirm replacement characters appear without changing the file.
+15. Use `Space q`. Confirm fiew exits, the previous terminal contents return, the cursor is visible, and normal line input and echo work.
+16. Run fiew again and press `Ctrl-C`. Confirm the same restoration behavior.
 
 ## Result
 

@@ -51,7 +51,8 @@ pub const Id = enum {
     diff_line_previous,
     review_show,
     note_create,
-    note_edit,
+    note_file,
+    note_reply,
     note_resolve,
     note_delete,
     note_next,
@@ -112,14 +113,15 @@ pub const definitions = [_]Definition{
     .{ .id = .diff_hunk_previous, .stable_id = "diff-hunk-previous", .title = "Previous hunk", .binding = "[ h" },
     .{ .id = .diff_line_next, .stable_id = "diff-line-next", .title = "Next changed line", .binding = "] c" },
     .{ .id = .diff_line_previous, .stable_id = "diff-line-previous", .title = "Previous changed line", .binding = "[ c" },
-    .{ .id = .review_open, .stable_id = "review-open", .title = "Review notes menu", .binding = "Space r" },
+    .{ .id = .review_open, .stable_id = "review-open", .title = "Review threads menu", .binding = "Space r" },
     .{ .id = .review_show, .stable_id = "review-show", .title = "Show the Review sidebar", .binding = "Space r Enter" },
-    .{ .id = .note_create, .stable_id = "note-create", .title = "Create a review note", .binding = "Space r n" },
-    .{ .id = .note_edit, .stable_id = "note-edit", .title = "Edit the selected note", .binding = "Space r e" },
-    .{ .id = .note_resolve, .stable_id = "note-resolve", .title = "Resolve or reopen the selected note", .binding = "Space r x" },
-    .{ .id = .note_delete, .stable_id = "note-delete", .title = "Delete the selected note", .binding = "Space r d" },
-    .{ .id = .note_next, .stable_id = "note-next", .title = "Next note", .binding = "] n" },
-    .{ .id = .note_previous, .stable_id = "note-previous", .title = "Previous note", .binding = "[ n" },
+    .{ .id = .note_create, .stable_id = "thread-create-line", .title = "Create thread from diff selection", .binding = "Space r n" },
+    .{ .id = .note_file, .stable_id = "thread-create-file", .title = "Create file thread", .binding = "Space r f" },
+    .{ .id = .note_reply, .stable_id = "thread-reply", .title = "Append reviewer comment", .binding = "Space r a" },
+    .{ .id = .note_resolve, .stable_id = "thread-resolve", .title = "Resolve or reopen selected thread", .binding = "Space r x" },
+    .{ .id = .note_delete, .stable_id = "thread-delete", .title = "Delete selected thread", .binding = "Space r d" },
+    .{ .id = .note_next, .stable_id = "thread-next", .title = "Next thread", .binding = "] n" },
+    .{ .id = .note_previous, .stable_id = "thread-previous", .title = "Previous thread", .binding = "[ n" },
     .{ .id = .definition, .stable_id = "definition", .title = "Go to definition", .binding = "g d", .disabled_reason = "trusted ZLS is not available" },
     .{ .id = .fold_close, .stable_id = "fold-close", .title = "Close fold", .binding = "z c" },
     .{ .id = .fold_open, .stable_id = "fold-open", .title = "Open fold", .binding = "z o" },
@@ -161,6 +163,8 @@ pub fn unavailableReason(app: *const state.App, id: Id) ?[]const u8 {
             "focus main view to navigate"
         else if (app.sidebar_context == .git and !app.viewing_source)
             (if (app.review != null and !app.review.?.isEmpty()) null else "no changes to review")
+        else if (app.sidebar_context == .review)
+            (if (app.hasNotes()) null else "no threads yet")
         else if (app.activeView() == null)
             "no document is open"
         else if (app.activeDocument().?.graphemes.len == 0)
@@ -238,7 +242,11 @@ pub fn unavailableReason(app: *const state.App, id: Id) ?[]const u8 {
             "open a Git diff to annotate"
         else
             null,
-        .note_edit,
+        .note_file => if (app.review == null or app.review.?.selectedChange() == null)
+            "select a changed file"
+        else
+            null,
+        .note_reply,
         .note_resolve,
         .note_delete,
         .note_next,
@@ -302,6 +310,7 @@ pub const Surface = enum {
     review,
     vcs,
     note_composer,
+    confirm_delete,
 };
 
 const Pending = enum {
@@ -339,7 +348,8 @@ pub const Session = struct {
                 .help => "help",
                 .review => "Space r",
                 .vcs => "Space v",
-                .note_composer => "note",
+                .note_composer => "comment",
+                .confirm_delete => "confirm delete",
                 .none => "",
             },
             .goto => "g",
@@ -362,6 +372,7 @@ pub const Session = struct {
 
     pub fn handle(self: *Session, app: *state.App, key: Key, dimensions: Dimensions) !Effect {
         if (self.surface == .note_composer) return self.handleComposer(app, key, dimensions);
+        if (self.surface == .confirm_delete) return self.handleDeleteConfirmation(app, key, dimensions);
         if (key.code == .escape) return self.execute(app, .cancel, dimensions);
         if (self.surface == .review) return self.handleReview(app, key, dimensions);
         if (self.surface == .vcs) return self.handleVcs(app, key, dimensions);
@@ -451,7 +462,12 @@ pub const Session = struct {
             .half_page_down => app.mainVerticalMove(@intCast(@max(dimensions.document_rows / 2, 1)), dimensions.document_rows, dimensions.document_columns),
             .page_up => app.mainVerticalMove(-@as(isize, @intCast(@max(dimensions.document_rows, 1))), dimensions.document_rows, dimensions.document_columns),
             .page_down => app.mainVerticalMove(@intCast(@max(dimensions.document_rows, 1)), dimensions.document_rows, dimensions.document_columns),
-            .toggle_extend => app.toggleExtend(),
+            .toggle_extend => {
+                if (app.sidebar_context == .git and !app.viewing_source)
+                    app.toggleDiffExtend()
+                else
+                    app.toggleExtend();
+            },
             .select_line => app.selectLine(),
             .collapse_selection => app.collapseSelection(),
             .reverse_selection => app.reverseSelection(),
@@ -468,6 +484,10 @@ pub const Session = struct {
             .history_forward => if (try app.historyForward()) |location| return .{ .open_history = location },
             .focus_next, .focus_previous => app.toggleFocus(),
             .project_up => {
+                if (app.sidebar_context == .review) {
+                    app.moveNoteSelection(-1, dimensions.sidebar_rows);
+                    return .none;
+                }
                 if (app.sidebar_context == .git) {
                     if (app.review) |*review| review.moveSelection(-1, dimensions.sidebar_rows);
                     app.viewing_source = false;
@@ -477,6 +497,10 @@ pub const Session = struct {
                 return .preview_selection;
             },
             .project_down => {
+                if (app.sidebar_context == .review) {
+                    app.moveNoteSelection(1, dimensions.sidebar_rows);
+                    return .none;
+                }
                 if (app.sidebar_context == .git) {
                     if (app.review) |*review| review.moveSelection(1, dimensions.sidebar_rows);
                     app.viewing_source = false;
@@ -486,12 +510,12 @@ pub const Session = struct {
                 return .preview_selection;
             },
             .project_collapse => {
-                if (app.sidebar_context == .git) return .none;
+                if (app.sidebar_context == .git or app.sidebar_context == .review) return .none;
                 try app.browser.collapseOrParent(dimensions.sidebar_rows);
                 return .preview_selection;
             },
             .project_expand => {
-                if (app.sidebar_context == .git) return .none;
+                if (app.sidebar_context == .git or app.sidebar_context == .review) return .none;
                 try app.browser.expandOrChild(dimensions.sidebar_rows);
                 return .preview_selection;
             },
@@ -500,7 +524,7 @@ pub const Session = struct {
                 app.clearPreview();
             },
             .project_open => {
-                if (app.sidebar_context == .git) {
+                if (app.sidebar_context != .project) {
                     app.showProjectSidebar();
                 } else if (app.sidebar_visible and app.focus == .sidebar) {
                     app.collapseSidebar();
@@ -572,8 +596,14 @@ pub const Session = struct {
                     app.feedback = "select a diff line to annotate";
                 }
             },
-            .note_edit => {
-                if (app.beginNoteEdit() catch false) {
+            .note_file => {
+                if (app.beginThreadFromFile() catch false) {
+                    self.surface = .note_composer;
+                    app.mode = .command;
+                }
+            },
+            .note_reply => {
+                if (app.beginThreadReply()) {
                     self.surface = .note_composer;
                     app.mode = .command;
                 }
@@ -583,11 +613,11 @@ pub const Session = struct {
                 return .save_note;
             },
             .note_delete => {
-                try app.deleteSelectedNote();
-                return .save_note;
+                self.surface = .confirm_delete;
+                app.mode = .command;
             },
-            .note_next => app.moveNoteSelection(1),
-            .note_previous => app.moveNoteSelection(-1),
+            .note_next => app.moveNoteSelection(1, dimensions.sidebar_rows),
+            .note_previous => app.moveNoteSelection(-1, dimensions.sidebar_rows),
             .definition, .note_save, .note_discard => unreachable,
         }
         // Fold and structural commands can move the cursor far from the current
@@ -695,7 +725,8 @@ pub const Session = struct {
     fn handleReview(self: *Session, app: *state.App, key: Key, dimensions: Dimensions) !Effect {
         return switch (normalizedCharacter(key)) {
             'n' => self.executeAndClose(app, .note_create, dimensions),
-            'e' => self.executeAndClose(app, .note_edit, dimensions),
+            'f' => self.executeAndClose(app, .note_file, dimensions),
+            'a' => self.executeAndClose(app, .note_reply, dimensions),
             'x' => self.executeAndClose(app, .note_resolve, dimensions),
             'd' => self.executeAndClose(app, .note_delete, dimensions),
             else => blk: {
@@ -705,6 +736,22 @@ pub const Session = struct {
                 break :blk .none;
             },
         };
+    }
+
+    fn handleDeleteConfirmation(self: *Session, app: *state.App, key: Key, dimensions: Dimensions) !Effect {
+        _ = dimensions;
+        if (normalizedCharacter(key) == 'y') {
+            try app.deleteSelectedNote();
+            self.resetTransient(app);
+            return .save_note;
+        }
+        if (normalizedCharacter(key) == 'n' or key.code == .escape) {
+            self.resetTransient(app);
+            app.feedback = "thread deletion cancelled";
+            return .none;
+        }
+        app.feedback = "press y to delete the complete thread or n to cancel";
+        return .none;
     }
 
     fn handleComposer(self: *Session, app: *state.App, key: Key, dimensions: Dimensions) !Effect {
@@ -834,6 +881,10 @@ pub const Session = struct {
 
 fn activate(app: *state.App) Effect {
     if (app.focus == .sidebar) {
+        if (app.sidebar_context == .review) {
+            if (app.hasNotes()) app.focus = .main;
+            return .none;
+        }
         if (app.sidebar_context == .git) {
             // Focus the diff of the selected change.
             if (app.review != null and app.review.?.selectedChange() != null) {
@@ -1211,9 +1262,10 @@ test "review note composer opens from a diff and cancels with confirmation" {
     const diffs = try std.testing.allocator.alloc(git.FileDiff, 1);
     const lines = try std.testing.allocator.dupe(git.DiffLine, &.{
         .{ .kind = .addition, .old_line = null, .new_line = 2, .text = .{ .start = 0, .end = 0 } },
+        .{ .kind = .addition, .old_line = null, .new_line = 3, .text = .{ .start = 0, .end = 0 } },
     });
     const hunks = try std.testing.allocator.dupe(git.Hunk, &.{
-        .{ .old_start = 1, .old_count = 1, .new_start = 1, .new_count = 2, .header = .{ .start = 0, .end = 0 }, .first_line = 0, .line_count = 1 },
+        .{ .old_start = 1, .old_count = 1, .new_start = 1, .new_count = 3, .header = .{ .start = 0, .end = 0 }, .first_line = 0, .line_count = 2 },
     });
     diffs[0] = .{ .allocator = std.testing.allocator, .text = "", .hunks = hunks, .lines = lines };
     const review = try review_mod.Review.init(std.testing.allocator, .{ .allocator = std.testing.allocator, .changes = changes, .diffs = diffs });
@@ -1223,13 +1275,21 @@ test "review note composer opens from a diff and cancels with confirmation" {
     defer session.deinit();
     const dimensions: Dimensions = .{ .sidebar_rows = 20, .document_rows = 20, .document_columns = 80 };
 
-    // Space r n opens the composer with a captured anchor.
+    // Enter focuses the diff; v then j creates a contiguous multiline
+    // one-side selection through production commands.
+    _ = try session.handle(&app, .{ .code = .enter }, dimensions);
+    _ = try session.handle(&app, charKey('v'), dimensions);
+    _ = try session.handle(&app, charKey('j'), dimensions);
+
+    // Space r n opens the composer with the captured multiline anchor.
     _ = try session.handle(&app, charKey(' '), dimensions);
     _ = try session.handle(&app, charKey('r'), dimensions);
     _ = try session.handle(&app, charKey('n'), dimensions);
     try std.testing.expect(app.composer != null);
     try std.testing.expect(app.composer.?.anchor != null);
-    try std.testing.expectEqual(@import("../model/review.zig").Side.new, app.composer.?.anchor.?.side);
+    try std.testing.expectEqual(@import("../model/review.zig").Side.new, app.composer.?.anchor.?.side.?);
+    try std.testing.expectEqual(@as(usize, 2), app.composer.?.anchor.?.start_line.?);
+    try std.testing.expectEqual(@as(usize, 3), app.composer.?.anchor.?.end_line.?);
 
     // Typing accumulates in the buffer.
     _ = try session.handle(&app, charKey('h'), dimensions);
@@ -1241,6 +1301,58 @@ test "review note composer opens from a diff and cancels with confirmation" {
     try std.testing.expect(app.composer != null);
     _ = try session.handle(&app, .{ .code = .escape }, dimensions);
     try std.testing.expect(app.composer == null);
+
+    // Space r f creates a whole-file thread with no line-side metadata.
+    _ = try session.handle(&app, charKey(' '), dimensions);
+    _ = try session.handle(&app, charKey('r'), dimensions);
+    _ = try session.handle(&app, charKey('f'), dimensions);
+    try std.testing.expect(app.composer != null);
+    try std.testing.expect(app.composer.?.anchor.?.side == null);
+    try std.testing.expectEqualStrings("m.zig", app.composer.?.anchor.?.path);
+}
+
+test "complete thread deletion requires reviewer confirmation" {
+    const review_model = @import("../model/review.zig");
+    var app = try testApp();
+    defer app.deinit();
+    app.notes = .{ .allocator = std.testing.allocator };
+    const comments = try std.testing.allocator.alloc(review_model.Comment, 1);
+    comments[0] = .{ .author = .reviewer, .body = try std.testing.allocator.dupe(u8, "body") };
+    try app.notes.?.addThread(.reviewer, .{ .filename = "review.md", .base_ref = "HEAD", .base_sha = "abc", .created = "now" }, .{
+        .id = try std.testing.allocator.dupe(u8, "t1"),
+        .path = try std.testing.allocator.dupe(u8, "a.zig"),
+        .group = .unstaged,
+        .status = .open,
+        .comments = comments,
+    });
+    const comments2 = try std.testing.allocator.alloc(review_model.Comment, 1);
+    comments2[0] = .{ .author = .reviewer, .body = try std.testing.allocator.dupe(u8, "second") };
+    try app.notes.?.addThread(.reviewer, .{ .filename = "review.md", .base_ref = "HEAD", .base_sha = "abc", .created = "now" }, .{
+        .id = try std.testing.allocator.dupe(u8, "t2"),
+        .path = try std.testing.allocator.dupe(u8, "b.zig"),
+        .group = .unstaged,
+        .status = .open,
+        .comments = comments2,
+    });
+    var session = Session.init(std.testing.allocator);
+    defer session.deinit();
+    const dimensions: Dimensions = .{ .sidebar_rows = 20, .document_rows = 20, .document_columns = 80 };
+
+    app.showReviewSidebar();
+    app.notes.?.selected = 0;
+    _ = try session.execute(&app, .project_down, dimensions);
+    try std.testing.expectEqual(@as(usize, 1), app.notes.?.selected);
+
+    _ = try session.execute(&app, .note_delete, dimensions);
+    try std.testing.expectEqual(Surface.confirm_delete, session.surface);
+    try std.testing.expectEqual(@as(usize, 2), app.notes.?.total());
+    _ = try session.handle(&app, charKey('n'), dimensions);
+    try std.testing.expectEqual(@as(usize, 2), app.notes.?.total());
+
+    _ = try session.execute(&app, .note_delete, dimensions);
+    const effect = try session.handle(&app, charKey('y'), dimensions);
+    try std.testing.expectEqual(std.meta.Tag(Effect).save_note, std.meta.activeTag(effect));
+    try std.testing.expectEqual(@as(usize, 1), app.notes.?.total());
 }
 
 test "diff cursor moves with j/k even when no document view is open" {

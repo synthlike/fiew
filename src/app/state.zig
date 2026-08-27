@@ -20,16 +20,16 @@ pub const GitStatus = enum { disabled, idle, pending, stale };
 pub const OwnedAnchor = struct {
     path: []u8,
     group: git.Group,
-    side: review.Side,
-    start_line: usize,
-    end_line: usize,
-    blob: ?[]u8,
-    excerpt: []u8,
+    side: ?review.Side = null,
+    start_line: ?usize = null,
+    end_line: ?usize = null,
+    blob: ?[]u8 = null,
+    excerpt: ?[]u8 = null,
 
     pub fn deinit(self: *OwnedAnchor, allocator: std.mem.Allocator) void {
         allocator.free(self.path);
         if (self.blob) |blob| allocator.free(blob);
-        allocator.free(self.excerpt);
+        if (self.excerpt) |excerpt| allocator.free(excerpt);
     }
 };
 
@@ -39,7 +39,7 @@ pub const Composer = struct {
     modified: bool = false,
     /// Set after one Esc when modified, requiring a second Esc to discard.
     discard_armed: bool = false,
-    /// Present when composing a new note; null when editing the selected note.
+    /// Present when composing a new thread; null when appending a reviewer comment.
     anchor: ?OwnedAnchor = null,
 
     pub fn deinit(self: *Composer, allocator: std.mem.Allocator) void {
@@ -269,13 +269,23 @@ pub const App = struct {
         return true;
     }
 
-    /// Begin editing the selected note's body.
-    pub fn beginNoteEdit(self: *App) !bool {
+    /// Begin a file-anchored thread for the selected Git change.
+    pub fn beginThreadFromFile(self: *App) !bool {
+        const review_state = if (self.review) |*value| value else return false;
+        const index = review_state.selectedChange() orelse return false;
+        const change = review_state.changeset.changes[index];
+        self.setComposer(.{ .anchor = .{
+            .path = try self.allocator.dupe(u8, change.path),
+            .group = change.group,
+        } });
+        return true;
+    }
+
+    /// Begin appending a reviewer comment to the selected thread.
+    pub fn beginThreadReply(self: *App) bool {
         const state_notes = if (self.notes) |*value| value else return false;
-        const ref = state_notes.selectedRef() orelse return false;
-        var composer: Composer = .{};
-        try composer.buffer.appendSlice(self.allocator, state_notes.noteAt(ref).body);
-        self.setComposer(composer);
+        if (state_notes.selectedRef() == null) return false;
+        self.setComposer(.{});
         return true;
     }
 
@@ -315,11 +325,11 @@ pub const App = struct {
     }
 
     pub fn deleteSelectedNote(self: *App) !void {
-        if (self.notes) |*state_notes| try state_notes.deleteSelected();
+        if (self.notes) |*state_notes| try state_notes.deleteSelected(.reviewer);
     }
 
-    pub fn moveNoteSelection(self: *App, delta: isize) void {
-        if (self.notes) |*state_notes| state_notes.moveSelection(delta);
+    pub fn moveNoteSelection(self: *App, delta: isize, viewport_rows: usize) void {
+        if (self.notes) |*state_notes| state_notes.moveSelection(delta, viewport_rows);
     }
 
     fn setComposer(self: *App, composer: Composer) void {
@@ -431,6 +441,12 @@ pub const App = struct {
         };
     }
 
+    pub fn toggleDiffExtend(self: *App) void {
+        const review_state = if (self.review) |*value| value else return;
+        review_state.toggleDiffSelection();
+        self.mode = if (review_state.diff_anchor == null) .normal else .extend;
+    }
+
     pub fn toggleExtend(self: *App) void {
         self.mode = switch (self.mode) {
             .normal => .extend,
@@ -447,6 +463,10 @@ pub const App = struct {
     }
 
     pub fn collapseSelection(self: *App) void {
+        if (self.sidebar_context == .git and !self.viewing_source) {
+            if (self.review) |*review_state| review_state.diff_anchor = null;
+            return;
+        }
         const view = self.activeViewMut() orelse return;
         view.anchor_grapheme = view.active_grapheme;
     }
@@ -546,6 +566,10 @@ pub const App = struct {
     pub fn mainVerticalMove(self: *App, delta: isize, viewport_height: usize, viewport_width: usize) void {
         if (self.sidebar_context == .git and !self.viewing_source) {
             if (self.review) |*review_state| review_state.moveDiffLine(delta, viewport_height);
+            return;
+        }
+        if (self.sidebar_context == .review) {
+            if (self.notes) |*threads| threads.scrollDetail(delta);
             return;
         }
         self.moveVertical(delta, viewport_height, viewport_width);

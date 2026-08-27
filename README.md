@@ -6,7 +6,7 @@ It focuses on:
 
 - fast repository and file browsing;
 - Helix/Kakoune-inspired modal navigation;
-- unified Git diff review with local review notes;
+- unified Git diff review with reviewer-owned local threads;
 - Zig and Markdown highlighting, structure, and folding;
 - optional Zig definition navigation through ZLS; and
 - terminal-text previews of supported Mermaid diagrams.
@@ -118,25 +118,29 @@ changes with unified diffs. It never modifies the repository.
 | `] h` / `[ h` | Next / previous hunk |
 | `] c` / `[ c` | Next / previous changed line |
 
-### Review notes
+### Review threads
 
-Private, local review comments anchored to a diff selection, stored as Markdown
-in a gitignored `.reviews/` directory so a coding agent can read them (see
-[ARP-0006](docs/decisions/ARP-0006.md)). fiew writes only inside `.reviews/`.
+Reviewer-owned file or diff threads contain ordered, append-only reviewer and
+agent comments. They are stored as versioned Markdown in the repository's
+expected-gitignored `.reviews/` directory. Only the reviewer creates, resolves,
+reopens, or deletes a complete thread; deletion requires confirmation. Open and
+Outdated threads block approval.
 
-For an agent-driven "review before commit" loop, run `fiew --review <name> <repo>`:
-the session's notes go to `.reviews/<name>`, and fiew exits `1` when that file
-has open notes (changes requested) or `0` when it has none (approved). The agent
-picks the name, branches on the exit code, and reads `<repo>/.reviews/<name>`.
+Review files use the breaking `fiew.review/v1` thread format. Earlier local
+note files are intentionally unsupported; unknown future schemas are refused
+rather than overwritten. A malformed primary recovers from one validated backup.
+The legacy `fiew --review <name> <repo>` handoff remains until the
+`fiew review` command family replaces it in ISSUE-0034.
 
 | Key | Action |
 | --- | --- |
-| `Space r n` | Create a note on the current diff selection |
-| `Space r e` | Edit the selected note |
-| `Space r x` | Resolve or reopen the selected note |
-| `Space r d` | Delete the selected note |
+| `Space r n` | Create a thread from the current one-side diff selection |
+| `Space r f` | Create a thread for the selected changed file |
+| `Space r a` | Append a reviewer comment to the selected thread |
+| `Space r x` | Resolve or reopen the selected thread |
+| `Space r d` | Request deletion of the selected complete thread |
 | `Space r` `Enter` | Show the Review sidebar |
-| `] n` / `[ n` | Next / previous note |
+| `] n` / `[ n` | Next / previous thread |
 | `Ctrl-Enter` / `Esc` | In the composer: save / cancel (Esc confirms if modified) |
 
 ### Planned
