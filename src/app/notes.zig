@@ -11,7 +11,6 @@ const store = @import("../adapters/storage/review_store.zig");
 /// Addresses a note by its file and position.
 pub const NoteRef = struct { file: usize, note: usize };
 
-/// Metadata needed to open the session's review file on the first note.
 pub const SessionInit = struct {
     filename: []const u8,
     base_ref: []const u8,
@@ -42,10 +41,8 @@ pub const Notes = struct {
     allocator: std.mem.Allocator,
     files: std.ArrayListUnmanaged(ReviewFile) = .empty,
     session: ?usize = null,
-    /// Flat index across all notes (Review sidebar selection / `[ n` `] n`).
     selected: usize = 0,
     next_id: usize = 1,
-    /// Filenames whose review became empty and should be deleted on flush.
     removed: std.ArrayListUnmanaged([]u8) = .empty,
 
     /// Build notes state by deep-copying everything the store loaded. The caller

@@ -147,25 +147,39 @@ pub fn definition(id: Id) *const Definition {
 pub fn unavailableReason(app: *const state.App, id: Id) ?[]const u8 {
     if (definition(id).disabled_reason) |reason| return reason;
     return switch (id) {
-        .move_left,
+        // Vertical movement also drives the Git diff cursor, so it is available
+        // whenever a diff is shown even though no document view is open.
         .move_down,
         .move_up,
+        .half_page_up,
+        .half_page_down,
+        .page_up,
+        .page_down,
+        => if (app.focus != .main)
+            "focus main view to navigate"
+        else if (app.sidebar_context == .git and !app.viewing_source)
+            (if (app.review != null and !app.review.?.isEmpty()) null else "no changes to review")
+        else if (app.activeView() == null)
+            "no document is open"
+        else if (app.activeDocument().?.graphemes.len == 0)
+            "document has no navigable text"
+        else
+            null,
+        .move_left,
         .move_right,
         .word_forward,
         .word_backward,
         .word_end,
         .document_start,
         .document_end,
-        .half_page_up,
-        .half_page_down,
-        .page_up,
-        .page_down,
         .toggle_extend,
         .select_line,
         .collapse_selection,
         .reverse_selection,
         => if (app.focus != .main)
             "focus main view to navigate the document"
+        else if (app.sidebar_context == .git and !app.viewing_source)
+            null
         else if (app.activeView() == null)
             "no document is open"
         else if (app.activeDocument().?.graphemes.len == 0)
@@ -1173,4 +1187,44 @@ test "review note composer opens from a diff and cancels with confirmation" {
     try std.testing.expect(app.composer != null);
     _ = try session.handle(&app, .{ .code = .escape }, dimensions);
     try std.testing.expect(app.composer == null);
+}
+
+test "diff cursor moves with j/k even when no document view is open" {
+    const git = @import("../model/git.zig");
+    const review_mod = @import("git_review.zig");
+    var app = try testApp();
+    defer app.deinit();
+    app.git_enabled = true;
+    // No document is open (the regression: a directory selected first previews nothing).
+    if (app.pinned) |*view| view.deinit();
+    app.pinned = null;
+
+    const changes = try std.testing.allocator.alloc(git.Change, 1);
+    changes[0] = .{ .group = .unstaged, .kind = .modified, .content = .text, .path = try std.testing.allocator.dupe(u8, "f.txt") };
+    const diffs = try std.testing.allocator.alloc(git.FileDiff, 1);
+    const lines = try std.testing.allocator.dupe(git.DiffLine, &.{
+        .{ .kind = .context, .old_line = 1, .new_line = 1, .text = .{ .start = 0, .end = 0 } },
+        .{ .kind = .context, .old_line = 2, .new_line = 2, .text = .{ .start = 0, .end = 0 } },
+        .{ .kind = .addition, .old_line = null, .new_line = 3, .text = .{ .start = 0, .end = 0 } },
+    });
+    const hunks = try std.testing.allocator.dupe(git.Hunk, &.{
+        .{ .old_start = 1, .old_count = 2, .new_start = 1, .new_count = 3, .header = .{ .start = 0, .end = 0 }, .first_line = 0, .line_count = 3 },
+    });
+    diffs[0] = .{ .allocator = std.testing.allocator, .text = "", .hunks = hunks, .lines = lines };
+    const review = try review_mod.Review.init(std.testing.allocator, .{ .allocator = std.testing.allocator, .changes = changes, .diffs = diffs });
+    app.openReview(review);
+
+    var session = Session.init(std.testing.allocator);
+    defer session.deinit();
+    const dimensions: Dimensions = .{ .sidebar_rows = 20, .document_rows = 20, .document_columns = 80 };
+
+    // Enter focuses the diff; there is no document open.
+    _ = try session.handle(&app, .{ .code = .enter }, dimensions);
+    try std.testing.expect(app.activeView() == null);
+
+    // j moves the diff cursor over context lines rather than reporting "no document".
+    _ = try session.handle(&app, charKey('j'), dimensions);
+    try std.testing.expectEqual(@as(usize, 1), app.review.?.diff_line);
+    _ = try session.handle(&app, charKey('j'), dimensions);
+    try std.testing.expectEqual(@as(usize, 2), app.review.?.diff_line);
 }
