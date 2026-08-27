@@ -2,9 +2,9 @@
 id: ISSUE-0022
 title: "Create and manage local review notes"
 kind: "implementation"
-status: open
+status: claimed
 created: 2026-08-25
-assignee: 
+assignee: "agent"
 parent: "ISSUE-0013-implement-fiew-v0-1.md"
 blocked_by:
   - "ISSUE-0017-establish-recoverable-fiew-owned-state.md"
