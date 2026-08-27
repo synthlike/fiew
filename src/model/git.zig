@@ -160,3 +160,37 @@ pub const FileDiff = struct {
         return total;
     }
 };
+
+/// A complete snapshot of the working-tree review: every change across the
+/// three groups and, for text changes, its parsed diff. `changes.items[i]`
+/// corresponds to `diffs[i]`; metadata-only entries carry an empty diff.
+pub const ChangeSet = struct {
+    allocator: std.mem.Allocator,
+    changes: []Change,
+    diffs: []FileDiff,
+
+    pub const empty: ChangeSet = .{ .allocator = undefined, .changes = &.{}, .diffs = &.{} };
+
+    pub fn deinit(self: *ChangeSet) void {
+        for (self.changes) |change| {
+            self.allocator.free(change.path);
+            if (change.old_path) |old| self.allocator.free(old);
+        }
+        self.allocator.free(self.changes);
+        for (self.diffs) |*diff| diff.deinit();
+        self.allocator.free(self.diffs);
+        self.* = undefined;
+    }
+
+    pub fn isEmpty(self: ChangeSet) bool {
+        return self.changes.len == 0;
+    }
+
+    pub fn groupCount(self: ChangeSet, group: Group) usize {
+        var total: usize = 0;
+        for (self.changes) |change| {
+            if (change.group == group) total += 1;
+        }
+        return total;
+    }
+};
