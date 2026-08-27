@@ -430,12 +430,29 @@ pub const App = struct {
     pub fn selectLine(self: *App) void {
         const view = self.activeViewMut() orelse return;
         if (view.snapshot.graphemes.len == 0) return;
-        const active = @min(view.active_grapheme, view.snapshot.graphemes.len - 1);
-        const line = view.snapshot.graphemes[active].line;
-        const range = view.snapshot.graphemeRangeForLine(line);
-        if (range.start == range.end) return;
-        view.anchor_grapheme = range.start;
-        view.active_grapheme = range.end - 1;
+        const last = view.snapshot.graphemes.len - 1;
+        const anchor = @min(view.anchor_grapheme, last);
+        const active = @min(view.active_grapheme, last);
+        const top_line = @min(view.snapshot.graphemes[anchor].line, view.snapshot.graphemes[active].line);
+        const bottom_line = @max(view.snapshot.graphemes[anchor].line, view.snapshot.graphemes[active].line);
+
+        const top_range = view.snapshot.graphemeRangeForLine(top_line);
+        const bottom_range = view.snapshot.graphemeRangeForLine(bottom_line);
+        if (top_range.start == top_range.end or bottom_range.start == bottom_range.end) return;
+
+        // When the selection already spans whole lines, another `x` reaches down
+        // to swallow the next line; otherwise it snaps to the current line(s).
+        const lo = @min(anchor, active);
+        const hi = @max(anchor, active);
+        const spans_full_lines = lo == top_range.start and hi == bottom_range.end - 1;
+        var end_range = bottom_range;
+        if (spans_full_lines and bottom_line + 1 < view.snapshot.lineCount()) {
+            const next = view.snapshot.graphemeRangeForLine(bottom_line + 1);
+            if (next.start != next.end) end_range = next;
+        }
+
+        view.anchor_grapheme = top_range.start;
+        view.active_grapheme = end_range.end - 1;
         view.preferred_column = view.snapshot.graphemes[view.active_grapheme].visual_column;
     }
 
@@ -1004,6 +1021,30 @@ test "word and page movement remain on grapheme boundaries" {
     try std.testing.expectEqual(@as(usize, 0), app.activeView().?.active_grapheme);
     app.moveVertical(1, 10, 20);
     try std.testing.expectEqual(@as(usize, 9), app.activeView().?.active_grapheme);
+}
+
+test "repeated select-line extends the selection one line at a time" {
+    var app = try testApp();
+    defer app.deinit();
+    app.pinned = .{ .snapshot = try testSnapshot("lines.txt", "aaa\nbbb\nccc\nddd\n") };
+
+    // First x snaps to the whole current line (line 0, graphemes 0..3 incl newline).
+    app.selectLine();
+    const first = app.activeView().?;
+    try std.testing.expectEqual(@as(usize, 0), first.snapshot.graphemes[first.anchor_grapheme].line);
+    try std.testing.expectEqual(@as(usize, 0), first.snapshot.graphemes[first.active_grapheme].line);
+
+    // Second x reaches down to swallow the next line.
+    app.selectLine();
+    const second = app.activeView().?;
+    try std.testing.expectEqual(@as(usize, 0), second.snapshot.graphemes[second.anchor_grapheme].line);
+    try std.testing.expectEqual(@as(usize, 1), second.snapshot.graphemes[second.active_grapheme].line);
+
+    // Third x extends by one more line.
+    app.selectLine();
+    const third = app.activeView().?;
+    try std.testing.expectEqual(@as(usize, 0), third.snapshot.graphemes[third.anchor_grapheme].line);
+    try std.testing.expectEqual(@as(usize, 2), third.snapshot.graphemes[third.active_grapheme].line);
 }
 
 const fold_sample = "fn main() void {\n    const a = 1;\n    const b = 2;\n}\nafter();\n";

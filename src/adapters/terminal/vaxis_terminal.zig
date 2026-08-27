@@ -342,11 +342,27 @@ fn translateKey(key: vaxis.Key) fiew.commands.Key {
     };
     return .{
         .code = code,
-        .character = if (code == .character) key.codepoint else 0,
+        .character = if (code == .character) producedCharacter(key) else 0,
         .shift = key.mods.shift,
         .alt = key.mods.alt,
         .ctrl = key.mods.ctrl,
     };
+}
+
+/// The glyph a key event actually produces. Under the Kitty keyboard protocol
+/// `codepoint` is the unshifted base key (Shift-1 reports `1`, not `!`), so the
+/// produced text lives in `text`/`shifted_codepoint`. Prefer those for insertion
+/// while still falling back to the base codepoint for plain keys and shortcuts.
+fn producedCharacter(key: vaxis.Key) u21 {
+    if (key.text) |text| {
+        var it = (std.unicode.Utf8View.init(text) catch return key.codepoint).iterator();
+        if (it.nextCodepoint()) |first| {
+            // Only trust single-codepoint text; anything longer is not a
+            // literal character insert.
+            if (it.nextCodepoint() == null) return first;
+        }
+    }
+    return key.shifted_codepoint orelse key.codepoint;
 }
 
 fn applyEffect(

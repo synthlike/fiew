@@ -89,7 +89,7 @@ pub const definitions = [_]Definition{
     .{ .id = .page_up, .stable_id = "page-up", .title = "Page up", .binding = "PageUp" },
     .{ .id = .page_down, .stable_id = "page-down", .title = "Page down", .binding = "PageDown" },
     .{ .id = .toggle_extend, .stable_id = "toggle-extend", .title = "Toggle Extend mode", .binding = "v" },
-    .{ .id = .select_line, .stable_id = "select-line", .title = "Select line", .binding = "x" },
+    .{ .id = .select_line, .stable_id = "select-line", .title = "Select line / extend down", .binding = "x" },
     .{ .id = .collapse_selection, .stable_id = "collapse-selection", .title = "Collapse to active end", .binding = ";" },
     .{ .id = .reverse_selection, .stable_id = "reverse-selection", .title = "Reverse selection", .binding = "Alt-;" },
     .{ .id = .activate, .stable_id = "activate", .title = "Open or activate selection", .binding = "Enter" },
