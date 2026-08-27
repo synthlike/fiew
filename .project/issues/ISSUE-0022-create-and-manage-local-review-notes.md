@@ -48,6 +48,28 @@ Cross-refresh anchor relocation, remote/shared review behavior, and reviewing ar
 
 Storage and format changed per [ARP-0006](<docs/decisions/ARP-0006.md>): review notes are now agent-retrievable Markdown in a gitignored `.reviews/` directory rather than JSON under the macOS user-data directory. The read-only boundary is amended to permit writes within `.reviews/` only. The `fiew.review/v1` format, the file-note vs line-note distinction, and the diff-excerpt/blob anchoring for agent reconciliation are captured in the ARP and reflected in the updated scope and acceptance criteria above.
 
+### 2026-08-27T17:14:07Z — codex
+
+## Implementation review — unpushed range `eb3ef24..4dc0626`
+
+**Verdict: Does not conform.** This verdict is limited to review-note creation, interaction, storage, and rendering in the 13 commits ahead of `origin/main`, reviewed against this issue, the v0.1 specification, ARP-0005, and ARP-0006.
+
+### Blocking findings
+
+- Multiline diff selection exists in `app/git_review.zig`, but no production command calls `toggleDiffSelection`; `v` still routes to document selection. The user can create only a single-line anchor through the shipped command path.
+- There is no file-note creation path. `note_create` only calls `App.beginNoteFromDiff`, while file-note scope appears only in the model and its unit test.
+- `Space r d` deletes immediately (`src/app/commands.zig:569-571`) without the confirmation required by specification section 8.4.
+- Review-sidebar keyboard and mouse handling still route through the Project browser (`src/app/commands.zig:459-475`, `src/adapters/terminal/vaxis_terminal.zig:545-552`), and the rendered note list has no scroll state. Note preview and navigation therefore do not satisfy the documented sidebar behavior.
+- The public `fiew.review/v1` parser never validates `schema`, splits notes on every `\n## ` (so an H2 in a Markdown body makes the review unreadable), and the store has no validated backup or future-version refusal (`src/model/review.zig:123-169`, `src/adapters/storage/review_store.zig:78-99`).
+
+### Verification
+
+- `zig build test --system zig-pkg -Dgit-integration --summary all`: 94/94 tests passed.
+- Build, formatting, ReleaseSafe, and `aarch64-macos` checks passed.
+- No manual Ghostty session was performed during this review.
+
+Recommended disposition: reopen this issue. Add command-level tests for multiline and file notes, deletion confirmation, Review-sidebar behavior, arbitrary Markdown bodies, schema refusal, and backup recovery before claiming the acceptance criteria.
+
 ## Resolution
 
 **Outcome: Achieved.**

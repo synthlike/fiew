@@ -46,6 +46,26 @@ A machine-readable exit summary file, watching for external edits, and any non-n
 
 ## Comments
 
+### 2026-08-27T17:14:07Z — codex
+
+## Implementation review — unpushed range `eb3ef24..4dc0626`
+
+**Verdict: Does not conform.** This verdict is limited to `--review` routing and exit semantics in the 13 commits ahead of `origin/main`, reviewed against this issue, the v0.1 specification, and ARP-0006.
+
+### Blocking findings
+
+- Missing or separator-containing review names are not rejected. Validation silently clears `review_name` and continues as an ordinary timestamped session (`src/adapters/terminal/vaxis_terminal.zig:162-175`).
+- The CLI accepts any basename, but startup loads only files whose basenames end in `.md` (`src/adapters/storage/review_store.zig:60-70`). A valid invocation such as `--review foo` writes `.reviews/foo`, then ignores the exact file on the next run.
+- Persistence errors are swallowed and all dirty flags are cleared (`src/adapters/terminal/vaxis_terminal.zig:516-528`). Exit status is then computed from in-memory notes. A failed resolve save can consequently return 0 while the on-disk review still contains an Open note, breaking the deterministic agent handoff.
+
+### Verification
+
+- `zig build test --system zig-pkg -Dgit-integration --summary all`: 94/94 tests passed.
+- Build, formatting, ReleaseSafe, and `aarch64-macos` checks passed.
+- No manual Ghostty session was performed during this review.
+
+Recommended disposition: reopen this issue. Reject malformed CLI input explicitly, either require `.md` or load the exact named file, and make successful persistence part of the exit-code contract.
+
 ## Resolution
 
 **Outcome: Achieved.**

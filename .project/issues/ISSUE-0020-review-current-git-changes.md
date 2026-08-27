@@ -42,6 +42,26 @@ Automatic refresh, syntax-layered diffs, and review notes.
 
 ## Comments
 
+### 2026-08-27T17:14:07Z — codex
+
+## Implementation review — unpushed range `eb3ef24..4dc0626`
+
+**Verdict: Does not conform.** This verdict is limited to the Git-review implementation in the 13 commits ahead of `origin/main`, reviewed against this issue, the v0.1 specification, and ARP-0005.
+
+### Blocking findings
+
+- Git loading runs synchronously on the terminal event loop (`src/adapters/terminal/vaxis_terminal.zig:398`), despite ARP-0005 requiring Git effects to use the bounded worker pool.
+- `appendDiffGroup` runs raw, numstat, and patch commands sequentially without checking `Output.succeeded()` or establishing snapshot consistency (`src/adapters/git/repository.zig:135-146`). A failed command can therefore be parsed as an empty result, and concurrent repository changes can produce mismatched change metadata and diffs.
+- Discovery obtains the repository top level, but the terminal composition immediately discards it (`src/adapters/terminal/vaxis_terminal.zig:182-188`). When fiew starts in a nested directory, Git paths, source opening, and repository-root behavior can resolve against different roots.
+
+### Verification
+
+- `zig build test --system zig-pkg -Dgit-integration --summary all`: 94/94 tests passed.
+- `zig build`, `zig fmt --check src build.zig`, ReleaseSafe, and `aarch64-macos` builds passed.
+- No manual Ghostty session was performed during this review.
+
+Passing tests do not cover the failure, concurrent-change, asynchronous-execution, or nested-directory cases above. Recommended disposition: reopen this issue and add durable coverage for those boundaries before claiming the acceptance criteria.
+
 ## Resolution
 
 **Outcome: Achieved.**
