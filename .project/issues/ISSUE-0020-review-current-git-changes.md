@@ -2,9 +2,9 @@
 id: ISSUE-0020
 title: "Review current Git changes"
 kind: "implementation"
-status: open
+status: claimed
 created: 2026-08-25
-assignee: 
+assignee: "agent"
 parent: "ISSUE-0013-implement-fiew-v0-1.md"
 blocked_by:
   - "ISSUE-0016-complete-the-modal-command-and-workspace-language.md"

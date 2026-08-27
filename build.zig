@@ -11,6 +11,17 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
 
+    // Opt-in git integration tests. Off by default so `zig build test` stays
+    // deterministic and does not require the git executable.
+    const git_integration = b.option(
+        bool,
+        "git-integration",
+        "Run git integration tests (requires the git executable)",
+    ) orelse false;
+    const build_options = b.addOptions();
+    build_options.addOption(bool, "git_integration", git_integration);
+    fiew.addOptions("build_options", build_options);
+
     // Tree-sitter core (v0.26.13) and the Zig grammar (ABI 15) are vendored at
     // pinned revisions under vendor/ and statically compiled into the fiew
     // module. They are reached only through the direct C adapter in
