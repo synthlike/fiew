@@ -8,6 +8,26 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
+    });
+
+    // Tree-sitter core (v0.26.13) and the Zig grammar (ABI 15) are vendored at
+    // pinned revisions under vendor/ and statically compiled into the fiew
+    // module. They are reached only through the direct C adapter in
+    // src/adapters/treesitter. See each vendor/*/REVISION for the exact commit.
+    const c_flags = &[_][]const u8{ "-std=c11", "-O2" };
+    fiew.addCSourceFile(.{ .file = b.path("vendor/tree-sitter/lib/src/lib.c"), .flags = c_flags });
+    fiew.addIncludePath(b.path("vendor/tree-sitter/lib/include"));
+    fiew.addIncludePath(b.path("vendor/tree-sitter/lib/src"));
+    fiew.addCSourceFile(.{
+        .file = b.path("vendor/tree-sitter-zig/src/parser.c"),
+        .flags = c_flags,
+    });
+    fiew.addIncludePath(b.path("vendor/tree-sitter-zig/src"));
+    // The grammar's fold query lives outside src/, so expose it as a named
+    // import the adapter can @embedFile.
+    fiew.addAnonymousImport("zig_fold_query", .{
+        .root_source_file = b.path("vendor/tree-sitter-zig/queries/folds.scm"),
     });
 
     const vaxis_dependency = b.dependency("vaxis", .{

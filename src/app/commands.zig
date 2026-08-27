@@ -38,6 +38,10 @@ pub const Id = enum {
     fold_toggle,
     fold_close_all,
     fold_open_all,
+    structural_parent,
+    structural_child,
+    structural_next,
+    structural_previous,
     leader_menu,
     file_commands,
     help,
@@ -89,11 +93,15 @@ pub const definitions = [_]Definition{
     .{ .id = .git_open, .stable_id = "git-open", .title = "Open Git sidebar", .binding = "Space g", .disabled_reason = "Git view is not implemented" },
     .{ .id = .review_open, .stable_id = "review-open", .title = "Open Review sidebar", .binding = "Space r", .disabled_reason = "Review notes are not implemented" },
     .{ .id = .definition, .stable_id = "definition", .title = "Go to definition", .binding = "g d", .disabled_reason = "trusted ZLS is not available" },
-    .{ .id = .fold_close, .stable_id = "fold-close", .title = "Close fold", .binding = "z c", .disabled_reason = "Tree-sitter folds are not available" },
-    .{ .id = .fold_open, .stable_id = "fold-open", .title = "Open fold", .binding = "z o", .disabled_reason = "Tree-sitter folds are not available" },
-    .{ .id = .fold_toggle, .stable_id = "fold-toggle", .title = "Toggle fold", .binding = "z a", .disabled_reason = "Tree-sitter folds are not available" },
-    .{ .id = .fold_close_all, .stable_id = "fold-close-all", .title = "Close all folds", .binding = "z M", .disabled_reason = "Tree-sitter folds are not available" },
-    .{ .id = .fold_open_all, .stable_id = "fold-open-all", .title = "Open all folds", .binding = "z R", .disabled_reason = "Tree-sitter folds are not available" },
+    .{ .id = .fold_close, .stable_id = "fold-close", .title = "Close fold", .binding = "z c" },
+    .{ .id = .fold_open, .stable_id = "fold-open", .title = "Open fold", .binding = "z o" },
+    .{ .id = .fold_toggle, .stable_id = "fold-toggle", .title = "Toggle fold", .binding = "z a" },
+    .{ .id = .fold_close_all, .stable_id = "fold-close-all", .title = "Close all folds", .binding = "z M" },
+    .{ .id = .fold_open_all, .stable_id = "fold-open-all", .title = "Open all folds", .binding = "z R" },
+    .{ .id = .structural_parent, .stable_id = "structural-parent", .title = "Select enclosing node", .binding = "Alt-o" },
+    .{ .id = .structural_child, .stable_id = "structural-child", .title = "Select first child node", .binding = "Alt-i" },
+    .{ .id = .structural_next, .stable_id = "structural-next", .title = "Select next sibling node", .binding = "Alt-n" },
+    .{ .id = .structural_previous, .stable_id = "structural-previous", .title = "Select previous sibling node", .binding = "Alt-p" },
     .{ .id = .leader_menu, .stable_id = "leader-menu", .title = "Open leader menu", .binding = "Space" },
     .{ .id = .file_commands, .stable_id = "file-commands", .title = "Open file commands", .binding = "Space f" },
     .{ .id = .help, .stable_id = "help", .title = "Show key help", .binding = "Space ?" },
@@ -139,6 +147,27 @@ pub fn unavailableReason(app: *const state.App, id: Id) ?[]const u8 {
         else
             null,
         .activate => if (app.focus != .sidebar) "focus Project to activate an item" else null,
+        .fold_close,
+        .fold_open,
+        .fold_toggle,
+        .fold_close_all,
+        .fold_open_all,
+        => if (app.focus != .main)
+            "focus main view to fold"
+        else if (!app.foldsAvailable())
+            "Tree-sitter folds are not available"
+        else
+            null,
+        .structural_parent,
+        .structural_child,
+        .structural_next,
+        .structural_previous,
+        => if (app.focus != .main)
+            "focus main view to navigate structure"
+        else if (!app.outlineAvailable())
+            "Tree-sitter structure is not available"
+        else
+            null,
         else => null,
     };
 }
@@ -272,7 +301,13 @@ pub const Session = struct {
             if (isCharacter(key, 'o')) return self.execute(app, .history_back, dimensions);
             if (isCharacter(key, 'i')) return self.execute(app, .history_forward, dimensions);
         }
-        if (key.alt and isCharacter(key, ';')) return self.execute(app, .reverse_selection, dimensions);
+        if (key.alt) {
+            if (isCharacter(key, ';')) return self.execute(app, .reverse_selection, dimensions);
+            if (isCharacter(key, 'o')) return self.execute(app, .structural_parent, dimensions);
+            if (isCharacter(key, 'i')) return self.execute(app, .structural_child, dimensions);
+            if (isCharacter(key, 'n')) return self.execute(app, .structural_next, dimensions);
+            if (isCharacter(key, 'p')) return self.execute(app, .structural_previous, dimensions);
+        }
         if (key.code != .character) return .none;
 
         return switch (normalizedCharacter(key)) {
@@ -377,7 +412,31 @@ pub const Session = struct {
             .close_transient => {
                 if (self.surface != .none) self.resetTransient(app) else app.feedback = "no transient view to close";
             },
-            .git_open, .review_open, .definition, .fold_close, .fold_open, .fold_toggle, .fold_close_all, .fold_open_all, .note_save, .note_discard => unreachable,
+            .fold_close => app.foldClose(),
+            .fold_open => app.foldOpen(),
+            .fold_toggle => app.foldToggle(),
+            .fold_close_all => app.foldCloseAll(),
+            .fold_open_all => app.foldOpenAll(),
+            .structural_parent => app.structuralMove(.parent),
+            .structural_child => app.structuralMove(.child),
+            .structural_next => app.structuralMove(.next_sibling),
+            .structural_previous => app.structuralMove(.previous_sibling),
+            .git_open, .review_open, .definition, .note_save, .note_discard => unreachable,
+        }
+        // Fold and structural commands can move the cursor far from the current
+        // scroll position; keep it on screen.
+        switch (id) {
+            .fold_close,
+            .fold_open,
+            .fold_toggle,
+            .fold_close_all,
+            .fold_open_all,
+            .structural_parent,
+            .structural_child,
+            .structural_next,
+            .structural_previous,
+            => app.ensureCurrentDocumentVisible(dimensions.document_rows, dimensions.document_columns),
+            else => {},
         }
         return .none;
     }
@@ -710,4 +769,73 @@ fn scalarNext(_: ?*const anyopaque, text: []const u8, start: usize) usize {
 
 fn scalarWidth(_: ?*const anyopaque, text: []const u8) u16 {
     return if (std.mem.eql(u8, text, "\n")) 0 else 1;
+}
+
+test "parsed Zig drives fold and structural commands end to end" {
+    const zig_syntax = @import("../adapters/treesitter/zig_syntax.zig");
+    var app = try testApp();
+    defer app.deinit();
+    app.pinned.?.deinit();
+    const source = "pub fn main() void {\n    const a = 1;\n    const b = 2;\n}\n";
+    app.pinned = .{ .snapshot = try testSnapshot("main.zig", source) };
+    app.focus = .main;
+
+    var engine = try zig_syntax.Engine.init(std.testing.allocator);
+    defer engine.deinit();
+    var tree = engine.parse(source, null) orelse return error.ParseFailed;
+    defer tree.deinit();
+    app.installParseData(try engine.analyze(std.testing.allocator, &tree));
+    try std.testing.expect(app.foldsAvailable());
+    try std.testing.expect(app.outlineAvailable());
+
+    var session = Session.init(std.testing.allocator);
+    defer session.deinit();
+    const dimensions: Dimensions = .{ .sidebar_rows = 20, .document_rows = 20, .document_columns = 80 };
+
+    // `z c` collapses the function body, hiding its interior lines.
+    _ = try session.handle(&app, charKey('z'), dimensions);
+    _ = try session.handle(&app, charKey('c'), dimensions);
+    try std.testing.expect(app.activeView().?.isLineHidden(1));
+
+    // `z o` reopens it.
+    _ = try session.handle(&app, charKey('z'), dimensions);
+    _ = try session.handle(&app, charKey('o'), dimensions);
+    try std.testing.expect(!app.activeView().?.isLineHidden(1));
+
+    // Alt-n moves the selection to a sibling without leaving the document.
+    _ = try session.handle(&app, .{ .code = .character, .character = 'n', .alt = true }, dimensions);
+    try std.testing.expect(app.activeView() != null);
+}
+
+test "structural navigation scrolls the view to a distant target" {
+    const syntax = @import("../model/syntax.zig");
+    var app = try testApp();
+    defer app.deinit();
+    app.pinned.?.deinit();
+    app.pinned = .{ .snapshot = try testSnapshot("tall.txt", "a\n" ** 30) };
+    app.focus = .main;
+
+    // Two sibling nodes 20 lines apart, with no folds or highlights.
+    const nodes = try std.testing.allocator.dupe(syntax.OutlineNode, &[_]syntax.OutlineNode{
+        .{ .source = .{ .start = 0, .end = 60 }, .start_line = 0, .end_line = 30, .parent = null },
+        .{ .source = .{ .start = 0, .end = 2 }, .start_line = 0, .end_line = 0, .parent = 0 },
+        .{ .source = .{ .start = 40, .end = 42 }, .start_line = 20, .end_line = 20, .parent = 0 },
+    });
+    app.installParseData(.{
+        .allocator = std.testing.allocator,
+        .highlights = try std.testing.allocator.alloc(syntax.HighlightSpan, 0),
+        .folds = try std.testing.allocator.alloc(syntax.FoldRange, 0),
+        .outline = .{ .allocator = std.testing.allocator, .nodes = nodes },
+    });
+
+    var session = Session.init(std.testing.allocator);
+    defer session.deinit();
+    const dimensions: Dimensions = .{ .sidebar_rows = 5, .document_rows = 5, .document_columns = 80 };
+
+    try std.testing.expectEqual(@as(usize, 0), app.activeView().?.scroll_line);
+    _ = try session.handle(&app, .{ .code = .character, .character = 'n', .alt = true }, dimensions);
+
+    const view = app.activeView().?;
+    try std.testing.expectEqual(@as(usize, 20), view.snapshot.graphemes[view.active_grapheme].line);
+    try std.testing.expect(view.scroll_line > 0);
 }

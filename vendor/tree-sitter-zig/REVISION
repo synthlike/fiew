@@ -1,0 +1,6 @@
+tree-sitter-zig grammar
+repository: https://github.com/tree-sitter-grammars/tree-sitter-zig
+revision: 6479aa13f32f701c383083d8b28360ebd682fb7d
+LANGUAGE_VERSION (ABI): 15
+
+Vendored generated parser and fold/highlight queries only; no external scanner.

@@ -1,0 +1,8 @@
+tree-sitter core
+repository: https://github.com/tree-sitter/tree-sitter
+version: v0.26.13
+revision: d97971e24500218865c05ed1febdee2acf41bae1
+TREE_SITTER_LANGUAGE_VERSION: 15 (min compatible 13)
+
+Vendored lib/src and lib/include only. Built by compiling lib/src/lib.c with
+-Ilib/include -Ilib/src; the WASM feature is left undefined.

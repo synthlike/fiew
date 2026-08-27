@@ -7,7 +7,152 @@ const Event = union(enum) {
     mouse: vaxis.Mouse,
     winsize: vaxis.Winsize,
     tick,
+    /// A completed parse job, delivered from the worker thread. The main thread
+    /// owns and frees the boxed completion.
+    parse_done: *fiew.parse_job.Completion,
 };
+
+const Completion = fiew.parse_job.Completion;
+const ParseFuture = std.Io.Future(void);
+
+/// Drives off-render-loop Zig parsing for the active document: one worker at a
+/// time, results routed by snapshot generation, cancelled past the one-second
+/// deadline. When the grammar is unavailable the whole feature stays dormant
+/// and documents render as plain text.
+const ParseState = struct {
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    loop: *vaxis.Loop(Event),
+    engine: ?fiew.zig_syntax.Engine,
+    coordinator: fiew.parse_job.Coordinator = .{},
+    cancel: std.atomic.Value(bool) = .init(false),
+    future: ?ParseFuture = null,
+    source: ?[]u8 = null,
+    parsing_generation: ?u64 = null,
+    resolved_generation: ?u64 = null,
+    elapsed_ticks: u8 = 0,
+
+    fn init(io: std.Io, allocator: std.mem.Allocator, loop: *vaxis.Loop(Event)) ParseState {
+        const engine: ?fiew.zig_syntax.Engine = fiew.zig_syntax.Engine.init(allocator) catch null;
+        return .{ .io = io, .allocator = allocator, .loop = loop, .engine = engine };
+    }
+
+    fn deinit(self: *ParseState) void {
+        self.cancelInFlight();
+        if (self.engine) |*engine| engine.deinit();
+        self.* = undefined;
+    }
+
+    fn parseable(snapshot: *const fiew.document.Snapshot) bool {
+        return snapshot.encoding == .utf8 and
+            snapshot.bytes.len > 0 and
+            snapshot.bytes.len <= fiew.zig_syntax.max_parse_bytes and
+            std.mem.endsWith(u8, snapshot.path, ".zig");
+    }
+
+    /// Request analysis for the active document if it is an unparsed, parseable
+    /// Zig snapshot we are not already working on.
+    fn drive(self: *ParseState, app: *const fiew.app.App) void {
+        if (self.engine == null) return;
+        const view = app.activeView() orelse return;
+        if (view.syntax != null) return;
+        const snapshot = &view.snapshot;
+        if (!parseable(snapshot)) return;
+        if (self.parsing_generation == snapshot.generation) return;
+        if (self.resolved_generation == snapshot.generation) return;
+        self.submit(snapshot);
+    }
+
+    fn submit(self: *ParseState, snapshot: *const fiew.document.Snapshot) void {
+        self.cancelInFlight();
+        const copy = self.allocator.dupe(u8, snapshot.bytes) catch return;
+        self.cancel.store(false, .release);
+        self.coordinator.begin(snapshot.generation);
+        const future = self.io.concurrent(parseWorker, .{
+            self.io,        self.loop, &self.engine.?,
+            self.allocator, copy,      snapshot.generation,
+            &self.cancel,
+        }) catch {
+            self.allocator.free(copy);
+            return;
+        };
+        self.source = copy;
+        self.future = future;
+        self.parsing_generation = snapshot.generation;
+        self.elapsed_ticks = 0;
+    }
+
+    fn cancelInFlight(self: *ParseState) void {
+        if (self.parsing_generation == null) return;
+        self.cancel.store(true, .release);
+        if (self.future) |*future| {
+            _ = future.await(self.io);
+            self.future = null;
+        }
+        if (self.source) |source| {
+            self.allocator.free(source);
+            self.source = null;
+        }
+        self.parsing_generation = null;
+    }
+
+    fn onCompletion(self: *ParseState, app: *fiew.app.App, box: *Completion) void {
+        if (self.parsing_generation == box.generation) {
+            if (self.future) |*future| {
+                _ = future.await(self.io);
+                self.future = null;
+            }
+            if (self.source) |source| {
+                self.allocator.free(source);
+                self.source = null;
+            }
+            self.parsing_generation = null;
+            self.resolved_generation = box.generation;
+            self.elapsed_ticks = 0;
+        }
+        if (self.coordinator.accept(box)) |data| {
+            app.installParseDataForGeneration(data, box.generation);
+        }
+        box.deinit();
+        self.allocator.destroy(box);
+    }
+
+    fn onTick(self: *ParseState) void {
+        if (self.parsing_generation == null) return;
+        self.elapsed_ticks +|= 1;
+        // Ticks arrive every 250 ms; four of them cross the one-second deadline.
+        if (self.elapsed_ticks >= 4) self.cancel.store(true, .release);
+    }
+};
+
+fn parseWorker(
+    io: std.Io,
+    loop: *vaxis.Loop(Event),
+    engine: *fiew.zig_syntax.Engine,
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    generation: u64,
+    cancel: *std.atomic.Value(bool),
+) void {
+    _ = io;
+    var context: fiew.zig_syntax.CancelContext = .{ .flag = cancel };
+    const completion = fiew.parse_job.run(
+        engine,
+        allocator,
+        .{ .generation = generation, .source = source },
+        &context,
+    );
+    const box = allocator.create(Completion) catch {
+        var owned = completion;
+        owned.deinit();
+        return;
+    };
+    box.* = completion;
+    loop.postEvent(.{ .parse_done = box }) catch {
+        box.deinit();
+        allocator.destroy(box);
+    };
+}
 
 pub fn run(init: std.process.Init) !void {
     const allocator = init.gpa;
@@ -49,6 +194,9 @@ pub fn run(init: std.process.Init) !void {
         timer_task.await(init.io);
     }
 
+    var parse_state = ParseState.init(init.io, allocator, &loop);
+    defer parse_state.deinit();
+
     try vx.enterAltScreen(tty.writer());
     try tty.writer().flush();
     try vx.queryTerminal(tty.writer(), .fromSeconds(1));
@@ -61,20 +209,25 @@ pub fn run(init: std.process.Init) !void {
         const event = try loop.nextEvent();
         switch (event) {
             .key_press => |key| {
-                const effect = try command_session.handle(
-                    &app,
-                    translateKey(key),
-                    commandDimensions(vx.window(), &app),
-                );
-                if (try applyEffect(
-                    &command_session,
-                    &app,
-                    repository,
-                    segmenter,
-                    &generation,
-                    commandDimensions(vx.window(), &app),
-                    effect,
-                )) return;
+                // The Kitty keyboard protocol reports lone modifier presses
+                // (e.g. Shift on its way to `?` or the `M`/`R` in `z M`/`z R`).
+                // Ignore them so a chord in progress is not treated as invalid.
+                if (!key.isModifier()) {
+                    const effect = try command_session.handle(
+                        &app,
+                        translateKey(key),
+                        commandDimensions(vx.window(), &app),
+                    );
+                    if (try applyEffect(
+                        &command_session,
+                        &app,
+                        repository,
+                        segmenter,
+                        &generation,
+                        commandDimensions(vx.window(), &app),
+                        effect,
+                    )) return;
+                }
             },
             .mouse => |mouse| try handleMouse(
                 &app,
@@ -91,9 +244,14 @@ pub fn run(init: std.process.Init) !void {
                 app.browser.ensureVisible(viewport_height);
                 app.ensureCurrentDocumentVisible(viewport_height, dimensions.main_width -| 6);
             },
-            .tick => command_session.tick(&app),
+            .tick => {
+                command_session.tick(&app);
+                parse_state.onTick();
+            },
+            .parse_done => |box| parse_state.onCompletion(&app, box),
         }
 
+        parse_state.drive(&app);
         _ = frame_arena.reset(.retain_capacity);
         try draw(frame_arena.allocator(), vx.window(), &app, &command_session, repository.root_path);
         try vx.render(tty.writer());
@@ -382,9 +540,40 @@ fn drawDocument(allocator: std.mem.Allocator, window: vaxis.Window, app: *const 
     }
 
     const body_rows = window.height -| 2;
-    var row: usize = 0;
-    while (row < body_rows and view.scroll_line + row < snapshot.lineCount()) : (row += 1) {
-        const line = view.scroll_line + row;
+    const line_count = snapshot.lineCount();
+
+    // Collect the visible lines, skipping any hidden by collapsed folds.
+    var visible_lines: std.ArrayList(usize) = .empty;
+    defer visible_lines.deinit(allocator);
+    {
+        var next = view.firstVisibleLine(view.scroll_line, line_count);
+        while (visible_lines.items.len < body_rows) {
+            const current = next orelse break;
+            try visible_lines.append(allocator, current);
+            next = view.firstVisibleLine(current + 1, line_count);
+        }
+    }
+
+    // Pre-filter highlight spans to the drawn source window. This only reads
+    // precomputed spans produced by the parse job — no query runs here.
+    var window_spans: std.ArrayList(fiew.syntax.HighlightSpan) = .empty;
+    defer window_spans.deinit(allocator);
+    if (view.syntax) |data| if (visible_lines.items.len != 0) {
+        const first_src = snapshot.line_starts[visible_lines.items[0]];
+        const last_line = visible_lines.items[visible_lines.items.len - 1];
+        const last_src = if (last_line + 1 < snapshot.line_starts.len)
+            snapshot.line_starts[last_line + 1]
+        else
+            snapshot.bytes.len;
+        for (data.highlights) |span| {
+            if (span.source.end > first_src and span.source.start < last_src) {
+                try window_spans.append(allocator, span);
+            }
+        }
+    };
+    const spans = window_spans.items;
+
+    for (visible_lines.items, 0..) |line, row| {
         var range = snapshot.lineDisplayRange(line);
         if (view.scroll_column > 0) {
             const grapheme_range = snapshot.graphemeRangeForLine(line);
@@ -397,12 +586,29 @@ fn drawDocument(allocator: std.mem.Allocator, window: vaxis.Window, app: *const 
                 }
             }
         }
-        const number = try std.fmt.allocPrint(allocator, "{d: >5} ", .{line + 1});
+        const number = try std.fmt.allocPrint(allocator, "{d: >5}", .{line + 1});
         const current_line = snapshot.graphemes.len != 0 and
             snapshot.graphemes[@min(view.active_grapheme, snapshot.graphemes.len - 1)].line == line;
-        _ = window.printSegment(.{
-            .text = number,
-            .style = .{ .dim = !current_line, .bold = current_line },
+        // Gutter fold marker: a triangle for a collapsed region, a dot for a
+        // line that can be folded, and a blank otherwise.
+        const gutter = foldGutter(view, line);
+        _ = window.print(&.{
+            .{
+                .text = number,
+                .style = .{ .dim = !current_line, .bold = current_line },
+            },
+            .{
+                .text = switch (gutter) {
+                    .closed => "▸",
+                    .open => "·",
+                    .none => " ",
+                },
+                .style = switch (gutter) {
+                    .closed => .{ .fg = .{ .index = 3 }, .bold = true },
+                    .open => .{ .dim = true },
+                    .none => .{},
+                },
+            },
         }, .{ .row_offset = @intCast(row + 1), .wrap = .none });
 
         var segments: std.ArrayList(vaxis.Segment) = .empty;
@@ -432,14 +638,22 @@ fn drawDocument(allocator: std.mem.Allocator, window: vaxis.Window, app: *const 
             if (grapheme.visual_column >= view.scroll_column + window.width -| 6) break;
             const display_start = @max(grapheme.display.start, range.start);
             const display_end = @min(grapheme.display.end, range.end);
+            var style: vaxis.Cell.Style = .{ .reverse = selected };
+            if (!selected) if (highlightKindAt(spans, grapheme.source.start)) |kind| {
+                style.fg = highlightColor(kind);
+                if (kind == .comment) style.dim = true;
+            };
             try segments.append(allocator, .{
                 .text = try sanitizeLine(
                     allocator,
                     snapshot.display_bytes[display_start..display_end],
                     window.width -| 6,
                 ),
-                .style = .{ .reverse = selected },
+                .style = style,
             });
+        }
+        if (isClosedFoldStart(view, line)) {
+            try segments.append(allocator, .{ .text = " ⋯", .style = .{ .dim = true } });
         }
         if (segments.items.len != 0) {
             _ = window.print(segments.items, .{
@@ -566,6 +780,54 @@ fn drawStatus(
         .{ @tagName(app.mode), session.pendingLabel(), location, feedback },
     );
     _ = window.printSegment(.{ .text = text, .style = .{ .reverse = true } }, .{ .wrap = .none });
+}
+
+fn highlightKindAt(spans: []const fiew.syntax.HighlightSpan, position: usize) ?fiew.syntax.HighlightKind {
+    var best: ?fiew.syntax.HighlightKind = null;
+    var best_length: usize = std.math.maxInt(usize);
+    for (spans) |span| {
+        if (span.source.start <= position and span.source.end > position) {
+            const length = span.source.end - span.source.start;
+            if (length < best_length) {
+                best_length = length;
+                best = span.kind;
+            }
+        }
+    }
+    return best;
+}
+
+fn highlightColor(kind: fiew.syntax.HighlightKind) vaxis.Cell.Color {
+    return switch (kind) {
+        .keyword => .{ .index = 5 }, // magenta
+        .type => .{ .index = 3 }, // yellow
+        .function => .{ .index = 4 }, // blue
+        .string => .{ .index = 2 }, // green
+        .number, .constant => .{ .index = 6 }, // cyan
+        .comment => .{ .index = 8 }, // bright black
+        .label => .{ .index = 1 }, // red
+        .operator, .punctuation, .variable => .default,
+    };
+}
+
+fn isClosedFoldStart(view: *const fiew.app.View, line: usize) bool {
+    for (view.closed_folds.items) |start| if (start == line) return true;
+    return false;
+}
+
+const FoldGutter = enum { none, open, closed };
+
+fn foldGutter(view: *const fiew.app.View, line: usize) FoldGutter {
+    const data = view.syntax orelse return .none;
+    var foldable = false;
+    for (data.folds) |fold| {
+        if (fold.start_line == line and fold.isFoldable()) {
+            foldable = true;
+            break;
+        }
+    }
+    if (!foldable) return .none;
+    return if (isClosedFoldStart(view, line)) .closed else .open;
 }
 
 fn selectedLineBreakVisible(

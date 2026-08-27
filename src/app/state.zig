@@ -1,7 +1,11 @@
 const std = @import("std");
 const document = @import("../model/document.zig");
 const project = @import("../model/project.zig");
+const syntax = @import("../model/syntax.zig");
 const project_browser = @import("project_browser.zig");
+
+/// Which structural relation to move the selection toward.
+pub const StructuralMove = enum { parent, child, next_sibling, previous_sibling };
 
 pub const Focus = enum {
     sidebar,
@@ -21,10 +25,69 @@ pub const View = struct {
     preferred_column: u32 = 0,
     scroll_line: usize = 0,
     scroll_column: u32 = 0,
+    /// Syntax analysis for this snapshot, when Tree-sitter produced it.
+    syntax: ?syntax.ParseData = null,
+    /// Start lines of folds the user has collapsed in this view.
+    closed_folds: std.ArrayListUnmanaged(usize) = .empty,
 
     pub fn deinit(self: *View) void {
+        if (self.syntax) |*data| data.deinit();
+        self.closed_folds.deinit(self.snapshot.allocator);
         self.snapshot.deinit();
         self.* = undefined;
+    }
+
+    /// Replace this view's syntax analysis, dropping any collapsed folds that no
+    /// longer correspond to a fold in the new analysis.
+    pub fn setSyntax(self: *View, data: syntax.ParseData) void {
+        if (self.syntax) |*previous| {
+            var kept: usize = 0;
+            for (self.closed_folds.items) |start| {
+                if (foldWithStart(data.folds, start) != null) {
+                    self.closed_folds.items[kept] = start;
+                    kept += 1;
+                }
+            }
+            self.closed_folds.shrinkRetainingCapacity(kept);
+            previous.deinit();
+        }
+        self.syntax = data;
+    }
+
+    /// A line is hidden when it lies inside (but not at the start of) any
+    /// collapsed fold.
+    pub fn isLineHidden(self: *const View, line: usize) bool {
+        const data = self.syntax orelse return false;
+        for (self.closed_folds.items) |start| {
+            const fold = foldWithStart(data.folds, start) orelse continue;
+            if (line > fold.start_line and line <= fold.end_line) return true;
+        }
+        return false;
+    }
+
+    /// The first visible line at or after `line`, or null if none remain.
+    pub fn firstVisibleLine(self: *const View, line: usize, line_count: usize) ?usize {
+        var candidate = line;
+        while (candidate < line_count) : (candidate += 1) {
+            if (!self.isLineHidden(candidate)) return candidate;
+        }
+        return null;
+    }
+
+    /// Step one visible line in `direction` (-1 or +1), skipping hidden lines.
+    /// Returns null at the first/last visible line.
+    fn stepVisibleLine(self: *const View, line: usize, direction: isize, line_count: usize) ?usize {
+        var candidate = line;
+        while (true) {
+            if (direction < 0) {
+                if (candidate == 0) return null;
+                candidate -= 1;
+            } else {
+                if (candidate + 1 >= line_count) return null;
+                candidate += 1;
+            }
+            if (!self.isLineHidden(candidate)) return candidate;
+        }
     }
 
     pub fn selection(self: View) document.ByteRange {
@@ -235,12 +298,16 @@ pub const App = struct {
         const view = self.activeView() orelse return;
         if (view.snapshot.graphemes.len == 0) return;
         const current = view.snapshot.graphemes[@min(view.active_grapheme, view.snapshot.graphemes.len - 1)];
-        const line_count: isize = @intCast(view.snapshot.lineCount());
-        const target_line: usize = @intCast(std.math.clamp(
-            @as(isize, @intCast(current.line)) + delta,
-            0,
-            line_count - 1,
-        ));
+        const line_count = view.snapshot.lineCount();
+
+        // Step `delta` visible lines, skipping lines hidden by collapsed folds.
+        var target_line = current.line;
+        const direction: isize = if (delta < 0) -1 else 1;
+        var remaining = @abs(delta);
+        while (remaining > 0) : (remaining -= 1) {
+            const next = view.stepVisibleLine(target_line, direction, line_count) orelse break;
+            target_line = next;
+        }
 
         var best_index = view.active_grapheme;
         var fallback_index: ?usize = null;
@@ -264,6 +331,164 @@ pub const App = struct {
             if (fallback_index) |index| best_index = index;
         }
         self.applyMovementPreservingColumn(best_index, viewport_height, viewport_width);
+    }
+
+    /// Attach syntax analysis to the active view, taking ownership of `data`.
+    pub fn installParseData(self: *App, data: syntax.ParseData) void {
+        const view = self.activeViewMut() orelse {
+            var owned = data;
+            owned.deinit();
+            return;
+        };
+        view.setSyntax(data);
+    }
+
+    /// Attach analysis to whichever open view still holds the snapshot it was
+    /// computed for. Data for a superseded snapshot is dropped.
+    pub fn installParseDataForGeneration(self: *App, data: syntax.ParseData, generation: u64) void {
+        if (self.preview) |*view| {
+            if (view.snapshot.generation == generation) return view.setSyntax(data);
+        }
+        if (self.pinned) |*view| {
+            if (view.snapshot.generation == generation) return view.setSyntax(data);
+        }
+        var owned = data;
+        owned.deinit();
+    }
+
+    pub fn foldsAvailable(self: *const App) bool {
+        const view = self.activeView() orelse return false;
+        const data = view.syntax orelse return false;
+        return data.folds.len != 0;
+    }
+
+    pub fn outlineAvailable(self: *const App) bool {
+        const view = self.activeView() orelse return false;
+        const data = view.syntax orelse return false;
+        return data.outline.nodes.len != 0;
+    }
+
+    pub fn foldClose(self: *App) void {
+        const view = self.activeViewMut() orelse return;
+        const data = view.syntax orelse return;
+        const line = cursorLine(view);
+        const index = data.foldContaining(line) orelse {
+            self.feedback = "no fold at cursor";
+            return;
+        };
+        const start = data.folds[index].start_line;
+        self.addClosedFold(view, start) catch return;
+        self.moveActiveToLine(start);
+    }
+
+    pub fn foldOpen(self: *App) void {
+        const view = self.activeViewMut() orelse return;
+        const line = cursorLine(view);
+        if (!self.removeClosedFold(view, line)) self.feedback = "no closed fold at cursor";
+    }
+
+    pub fn foldToggle(self: *App) void {
+        const view = self.activeViewMut() orelse return;
+        const line = cursorLine(view);
+        if (self.removeClosedFold(view, line)) return;
+        self.foldClose();
+    }
+
+    pub fn foldCloseAll(self: *App) void {
+        const view = self.activeViewMut() orelse return;
+        const data = view.syntax orelse return;
+        for (data.folds) |fold| {
+            if (fold.isFoldable()) self.addClosedFold(view, fold.start_line) catch return;
+        }
+        const line = cursorLine(view);
+        if (view.isLineHidden(line)) self.moveActiveToVisibleLine(line);
+    }
+
+    pub fn foldOpenAll(self: *App) void {
+        const view = self.activeViewMut() orelse return;
+        view.closed_folds.clearRetainingCapacity();
+    }
+
+    /// Move the selection toward a structural relation of the enclosing node.
+    pub fn structuralMove(self: *App, move: StructuralMove) void {
+        const view = self.activeViewMut() orelse return;
+        const data = view.syntax orelse {
+            self.feedback = "no structure available";
+            return;
+        };
+        const here = data.outline.enclosing(view.selection()) orelse {
+            self.feedback = "no node at cursor";
+            return;
+        };
+        const target = switch (move) {
+            .parent => data.outline.parent(here),
+            .child => data.outline.firstChild(here),
+            .next_sibling => data.outline.nextSibling(here),
+            .previous_sibling => data.outline.prevSibling(here),
+        } orelse {
+            self.feedback = switch (move) {
+                .parent => "no enclosing node",
+                .child => "no child node",
+                .next_sibling => "no next node",
+                .previous_sibling => "no previous node",
+            };
+            return;
+        };
+        self.moveActiveToSource(data.outline.nodes[target].source.start);
+    }
+
+    fn addClosedFold(self: *App, view: *View, start_line: usize) !void {
+        for (view.closed_folds.items) |existing| if (existing == start_line) return;
+        try view.closed_folds.append(self.allocator, start_line);
+    }
+
+    fn removeClosedFold(self: *App, view: *View, start_line: usize) bool {
+        _ = self;
+        for (view.closed_folds.items, 0..) |existing, index| {
+            if (existing == start_line) {
+                _ = view.closed_folds.orderedRemove(index);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fn moveActiveToLine(self: *App, line: usize) void {
+        const view = self.activeViewMut() orelse return;
+        if (view.snapshot.graphemes.len == 0) return;
+        const range = view.snapshot.graphemeRangeForLine(line);
+        const target = @min(range.start, view.snapshot.graphemes.len - 1);
+        view.active_grapheme = target;
+        view.anchor_grapheme = target;
+        view.preferred_column = view.snapshot.graphemes[target].visual_column;
+    }
+
+    fn moveActiveToVisibleLine(self: *App, line: usize) void {
+        const view = self.activeView() orelse return;
+        // Snap to the start of the outermost collapsed fold covering `line`.
+        const data = view.syntax orelse return;
+        var target = line;
+        for (view.closed_folds.items) |start| {
+            const fold = foldWithStart(data.folds, start) orelse continue;
+            if (line > fold.start_line and line <= fold.end_line and fold.start_line < target) {
+                target = fold.start_line;
+            }
+        }
+        self.moveActiveToLine(target);
+    }
+
+    fn moveActiveToSource(self: *App, source_start: usize) void {
+        const view = self.activeViewMut() orelse return;
+        if (view.snapshot.graphemes.len == 0) return;
+        const target = graphemeAtSource(view.snapshot, source_start);
+        view.active_grapheme = target;
+        view.anchor_grapheme = target;
+        view.preferred_column = view.snapshot.graphemes[target].visual_column;
+    }
+
+    fn cursorLine(view: *const View) usize {
+        if (view.snapshot.graphemes.len == 0) return 0;
+        return view.snapshot.graphemes[@min(view.active_grapheme, view.snapshot.graphemes.len - 1)].line;
     }
 
     pub fn moveWordForward(self: *App, to_end: bool, viewport_width: usize) void {
@@ -409,8 +634,27 @@ pub const App = struct {
     fn ensureDocumentVisible(self: *App, line: usize, viewport_height: usize) void {
         const view = self.activeViewMut() orelse return;
         if (viewport_height == 0) return;
-        if (line < view.scroll_line) view.scroll_line = line;
-        if (line >= view.scroll_line + viewport_height) view.scroll_line = line - viewport_height + 1;
+        if (line <= view.scroll_line) {
+            view.scroll_line = line;
+            return;
+        }
+        // Measure the viewport in visible lines, not raw line numbers, so
+        // stepping past a collapsed region does not scroll the whole fold into
+        // view. `line` is already visible.
+        const line_count = view.snapshot.lineCount();
+        var last_visible = view.scroll_line;
+        var forward = viewport_height - 1;
+        while (forward > 0) : (forward -= 1) {
+            last_visible = view.stepVisibleLine(last_visible, 1, line_count) orelse break;
+        }
+        if (line <= last_visible) return;
+        // Scroll down just enough to make `line` the last visible row.
+        var top = line;
+        var backward = viewport_height - 1;
+        while (backward > 0) : (backward -= 1) {
+            top = view.stepVisibleLine(top, -1, line_count) orelse break;
+        }
+        view.scroll_line = top;
     }
 
     fn syncCurrentHistory(self: *App) !void {
@@ -496,6 +740,11 @@ pub const App = struct {
         return .punctuation;
     }
 };
+
+fn foldWithStart(folds: []const syntax.FoldRange, start_line: usize) ?syntax.FoldRange {
+    for (folds) |fold| if (fold.start_line == start_line) return fold;
+    return null;
+}
 
 fn testSnapshot(path: []const u8, bytes: []const u8) !document.Snapshot {
     return document.Snapshot.init(
@@ -586,4 +835,127 @@ test "word and page movement remain on grapheme boundaries" {
     try std.testing.expectEqual(@as(usize, 0), app.activeView().?.active_grapheme);
     app.moveVertical(1, 10, 20);
     try std.testing.expectEqual(@as(usize, 9), app.activeView().?.active_grapheme);
+}
+
+const fold_sample = "fn main() void {\n    const a = 1;\n    const b = 2;\n}\nafter();\n";
+
+fn foldSampleData() !syntax.ParseData {
+    const allocator = std.testing.allocator;
+    const folds = try allocator.dupe(syntax.FoldRange, &[_]syntax.FoldRange{
+        .{ .start_line = 0, .end_line = 3 },
+    });
+    errdefer allocator.free(folds);
+    const highlights = try allocator.alloc(syntax.HighlightSpan, 0);
+    errdefer allocator.free(highlights);
+    const nodes = try allocator.dupe(syntax.OutlineNode, &[_]syntax.OutlineNode{
+        .{ .source = .{ .start = 0, .end = 62 }, .start_line = 0, .end_line = 5, .parent = null },
+        .{ .source = .{ .start = 0, .end = 52 }, .start_line = 0, .end_line = 3, .parent = 0 },
+        .{ .source = .{ .start = 17, .end = 33 }, .start_line = 1, .end_line = 1, .parent = 1 },
+        .{ .source = .{ .start = 34, .end = 50 }, .start_line = 2, .end_line = 2, .parent = 1 },
+    });
+    return .{
+        .allocator = allocator,
+        .highlights = highlights,
+        .folds = folds,
+        .outline = .{ .allocator = allocator, .nodes = nodes },
+    };
+}
+
+fn activeLine(app: *const App) usize {
+    const view = app.activeView().?;
+    return view.snapshot.graphemes[view.active_grapheme].line;
+}
+
+test "closing a fold hides interior lines and vertical movement skips them" {
+    var app = try testApp();
+    defer app.deinit();
+    app.pinned = .{ .snapshot = try testSnapshot("main.zig", fold_sample) };
+    app.installParseData(try foldSampleData());
+    try std.testing.expect(app.foldsAvailable());
+
+    app.foldClose();
+    const view = app.activeView().?;
+    try std.testing.expect(!view.isLineHidden(0));
+    try std.testing.expect(view.isLineHidden(1));
+    try std.testing.expect(view.isLineHidden(3));
+    try std.testing.expect(!view.isLineHidden(4));
+    try std.testing.expectEqual(@as(usize, 0), activeLine(&app));
+
+    // Moving down one visible line skips the collapsed interior to line 4.
+    app.moveVertical(1, 20, 80);
+    try std.testing.expectEqual(@as(usize, 4), activeLine(&app));
+
+    // Reopening at the fold start reveals the interior again.
+    app.moveVertical(-1, 20, 80);
+    app.foldOpen();
+    try std.testing.expect(!app.activeView().?.isLineHidden(1));
+    app.moveVertical(1, 20, 80);
+    try std.testing.expectEqual(@as(usize, 1), activeLine(&app));
+}
+
+test "close all and open all folds toggle every region" {
+    var app = try testApp();
+    defer app.deinit();
+    app.pinned = .{ .snapshot = try testSnapshot("main.zig", fold_sample) };
+    app.installParseData(try foldSampleData());
+
+    app.foldCloseAll();
+    try std.testing.expect(app.activeView().?.isLineHidden(2));
+    app.foldOpenAll();
+    try std.testing.expect(!app.activeView().?.isLineHidden(2));
+}
+
+test "structural navigation moves the selection between named nodes" {
+    var app = try testApp();
+    defer app.deinit();
+    app.pinned = .{ .snapshot = try testSnapshot("main.zig", fold_sample) };
+    app.installParseData(try foldSampleData());
+
+    // Move onto line 1 (`const a = 1;`), whose enclosing node is the decl.
+    app.moveVertical(1, 20, 80);
+    try std.testing.expectEqual(@as(usize, 1), activeLine(&app));
+
+    // Ascend to the enclosing function (line 0).
+    app.structuralMove(.parent);
+    try std.testing.expectEqual(@as(usize, 0), activeLine(&app));
+
+    // Descend to the first child (the first declaration on line 1).
+    app.structuralMove(.child);
+    try std.testing.expectEqual(@as(usize, 1), activeLine(&app));
+
+    // The next sibling is the second declaration on line 2.
+    app.structuralMove(.next_sibling);
+    try std.testing.expectEqual(@as(usize, 2), activeLine(&app));
+
+    // And back to the previous sibling on line 1.
+    app.structuralMove(.previous_sibling);
+    try std.testing.expectEqual(@as(usize, 1), activeLine(&app));
+}
+
+test "moving past a large collapsed fold does not jerk the viewport" {
+    var app = try testApp();
+    defer app.deinit();
+    // 200 short lines; a fold spanning lines 0..150 (like a big top-level decl).
+    app.pinned = .{ .snapshot = try testSnapshot("big.zig", "a\n" ** 200) };
+    const folds = try std.testing.allocator.dupe(syntax.FoldRange, &[_]syntax.FoldRange{
+        .{ .start_line = 0, .end_line = 150 },
+    });
+    app.installParseData(.{
+        .allocator = std.testing.allocator,
+        .highlights = try std.testing.allocator.alloc(syntax.HighlightSpan, 0),
+        .folds = folds,
+        .outline = .{ .allocator = std.testing.allocator, .nodes = try std.testing.allocator.alloc(syntax.OutlineNode, 0) },
+    });
+
+    // Collapse the fold from its start line; the cursor sits on line 0.
+    app.foldClose();
+    try std.testing.expect(app.activeView().?.isLineHidden(75));
+    try std.testing.expectEqual(@as(usize, 0), app.activeView().?.scroll_line);
+
+    // Step down: the next visible line is 151, which sits right below line 0.
+    app.moveVertical(1, 40, 80);
+    const view = app.activeView().?;
+    try std.testing.expectEqual(@as(usize, 151), view.snapshot.graphemes[view.active_grapheme].line);
+    // It is already on screen, so the viewport must not scroll.
+    try std.testing.expectEqual(@as(usize, 0), view.scroll_line);
 }
