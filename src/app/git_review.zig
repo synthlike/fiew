@@ -4,6 +4,7 @@
 
 const std = @import("std");
 const git = @import("../model/git.zig");
+const review_model = @import("../model/review.zig");
 
 /// One visible sidebar row: a group heading or a change within it.
 pub const Row = union(enum) {
@@ -21,6 +22,8 @@ pub const Review = struct {
     /// Cursor within the selected change's diff (index into its `FileDiff.lines`).
     diff_line: usize = 0,
     diff_scroll: usize = 0,
+    /// Selection anchor in the diff (for a multi-line note); null = single line.
+    diff_anchor: ?usize = null,
 
     /// The group order shown in the sidebar.
     const group_order = [_]git.Group{ .staged, .unstaged, .untracked };
@@ -208,9 +211,83 @@ pub const Review = struct {
         return null;
     }
 
+    /// Toggle a diff selection anchored at the current line (for a range note).
+    pub fn toggleDiffSelection(self: *Review) void {
+        self.diff_anchor = if (self.diff_anchor == null) self.diff_line else null;
+    }
+
+    /// The inclusive diff-line range currently selected.
+    pub fn diffSelection(self: Review) struct { start: usize, end: usize } {
+        const anchor = self.diff_anchor orelse self.diff_line;
+        return .{ .start = @min(anchor, self.diff_line), .end = @max(anchor, self.diff_line) };
+    }
+
+    /// The captured anchor for a line note over the current diff selection, or
+    /// null when nothing textual is selected. `excerpt` is owned by the caller.
+    pub const AnchorDraft = struct {
+        path: []const u8,
+        group: git.Group,
+        side: review_model.Side,
+        start_line: usize,
+        end_line: usize,
+        blob: ?[]const u8,
+        excerpt: []u8,
+    };
+
+    pub fn captureAnchor(self: Review, allocator: std.mem.Allocator) !?AnchorDraft {
+        const change_index = self.selectedChange() orelse return null;
+        const change = self.changeset.changes[change_index];
+        const diff = &self.changeset.diffs[change_index];
+        if (diff.lines.len == 0) return null;
+        const selection = self.diffSelection();
+        const lines = diff.lines[selection.start .. selection.end + 1];
+
+        var has_addition = false;
+        var has_deletion = false;
+        for (lines) |line| {
+            if (line.kind == .addition) has_addition = true;
+            if (line.kind == .deletion) has_deletion = true;
+        }
+        const side: review_model.Side = if (has_deletion and !has_addition) .old else .new;
+
+        var start_line: ?usize = null;
+        var end_line: usize = 0;
+        for (lines) |line| {
+            const number = if (side == .new) line.new_line else line.old_line;
+            if (number) |value| {
+                if (start_line == null) start_line = value;
+                end_line = value;
+            }
+        }
+
+        var excerpt: std.ArrayList(u8) = .empty;
+        errdefer excerpt.deinit(allocator);
+        for (lines) |line| {
+            const marker: u8 = switch (line.kind) {
+                .addition => '+',
+                .deletion => '-',
+                .context => ' ',
+            };
+            try excerpt.append(allocator, marker);
+            try excerpt.appendSlice(allocator, diff.text[line.text.start..line.text.end]);
+            try excerpt.append(allocator, '\n');
+        }
+
+        return .{
+            .path = change.path,
+            .group = change.group,
+            .side = side,
+            .start_line = start_line orelse 1,
+            .end_line = if (start_line == null) 1 else end_line,
+            .blob = change.sideBlob(side == .new),
+            .excerpt = try excerpt.toOwnedSlice(allocator),
+        };
+    }
+
     fn resetDiffCursor(self: *Review) void {
         self.diff_line = 0;
         self.diff_scroll = 0;
+        self.diff_anchor = null;
     }
 
     fn ensureVisible(self: *Review, viewport_rows: usize) void {
@@ -299,4 +376,26 @@ test "hunk and changed-line cursors move through the selected diff" {
     const target = review.sourceTarget().?;
     try testing.expectEqualStrings("b.zig", target.path);
     try testing.expectEqual(@as(usize, 2), target.line); // addition -> new side line 2
+}
+
+test "captureAnchor derives side, line range, and excerpt from the selection" {
+    var review_state = try Review.init(testing.allocator, try buildChangeSet(testing.allocator));
+    defer review_state.deinit();
+    review_state.moveSelection(1, 20); // select b.zig, which has a diff
+
+    // Select the whole hunk: anchor at line 0, extend the cursor to line 2.
+    review_state.toggleDiffSelection();
+    review_state.diff_line = 2;
+    const selection = review_state.diffSelection();
+    try testing.expectEqual(@as(usize, 0), selection.start);
+    try testing.expectEqual(@as(usize, 2), selection.end);
+
+    const anchor = (try review_state.captureAnchor(testing.allocator)).?;
+    defer testing.allocator.free(anchor.excerpt);
+    try testing.expectEqualStrings("b.zig", anchor.path);
+    // The selection contains an addition, so it anchors to the new side.
+    try testing.expectEqual(review_model.Side.new, anchor.side);
+    try testing.expectEqual(@as(usize, 1), anchor.start_line); // context new line 1
+    try testing.expectEqual(@as(usize, 2), anchor.end_line); // addition new line 2
+    try testing.expect(anchor.excerpt.len != 0);
 }

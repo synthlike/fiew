@@ -74,12 +74,29 @@ pub const Change = struct {
     similarity: ?u8 = null,
     old_mode: u32 = 0,
     new_mode: u32 = 0,
+    /// Old/new side blob IDs when present (the new side is absent for unstaged
+    /// working-tree changes). Used to anchor review notes to reviewed content.
+    old_blob: ?[]const u8 = null,
+    new_blob: ?[]const u8 = null,
+
+    /// The blob ID for the requested diff side, if one exists.
+    pub fn sideBlob(self: Change, new_side: bool) ?[]const u8 {
+        return if (new_side) self.new_blob else self.old_blob;
+    }
 
     /// Whether this entry shows a unified textual diff.
     pub fn showsDiff(self: Change) bool {
         return self.content.hasTextDiff() and self.kind != .mode_changed;
     }
 };
+
+/// Free every owned string in a change.
+pub fn freeChange(allocator: std.mem.Allocator, change: Change) void {
+    allocator.free(change.path);
+    if (change.old_path) |old| allocator.free(old);
+    if (change.old_blob) |blob| allocator.free(blob);
+    if (change.new_blob) |blob| allocator.free(blob);
+}
 
 /// An owned list of changes for one or more groups.
 pub const ChangeList = struct {
@@ -89,10 +106,7 @@ pub const ChangeList = struct {
     pub const empty: ChangeList = .{ .allocator = undefined, .items = &.{} };
 
     pub fn deinit(self: *ChangeList) void {
-        for (self.items) |change| {
-            self.allocator.free(change.path);
-            if (change.old_path) |old| self.allocator.free(old);
-        }
+        for (self.items) |change| freeChange(self.allocator, change);
         self.allocator.free(self.items);
         self.* = undefined;
     }
@@ -172,10 +186,7 @@ pub const ChangeSet = struct {
     pub const empty: ChangeSet = .{ .allocator = undefined, .changes = &.{}, .diffs = &.{} };
 
     pub fn deinit(self: *ChangeSet) void {
-        for (self.changes) |change| {
-            self.allocator.free(change.path);
-            if (change.old_path) |old| self.allocator.free(old);
-        }
+        for (self.changes) |change| freeChange(self.allocator, change);
         self.allocator.free(self.changes);
         for (self.diffs) |*diff| diff.deinit();
         self.allocator.free(self.diffs);

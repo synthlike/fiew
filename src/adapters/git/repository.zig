@@ -312,10 +312,7 @@ fn freePartial(
     changes: *std.ArrayList(git.Change),
     diffs: *std.ArrayList(git.FileDiff),
 ) void {
-    for (changes.items) |change| {
-        allocator.free(change.path);
-        if (change.old_path) |old| allocator.free(old);
-    }
+    for (changes.items) |change| git.freeChange(allocator, change);
     changes.deinit(allocator);
     for (diffs.items) |*diff| diff.deinit();
     diffs.deinit(allocator);

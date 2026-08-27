@@ -45,6 +45,10 @@ pub fn parseRaw(
         const path = try allocator.dupe(u8, second_path orelse first_path);
         errdefer allocator.free(path);
         const old_path = if (two_paths) try allocator.dupe(u8, first_path) else null;
+        errdefer if (old_path) |value| allocator.free(value);
+        const old_blob = try blobOrNull(allocator, old_sha);
+        errdefer if (old_blob) |value| allocator.free(value);
+        const new_blob = try blobOrNull(allocator, new_sha);
 
         try items.append(allocator, .{
             .group = group,
@@ -55,6 +59,8 @@ pub fn parseRaw(
             .similarity = if (two_paths) parseScore(status[1..]) else null,
             .old_mode = old_mode,
             .new_mode = new_mode,
+            .old_blob = old_blob,
+            .new_blob = new_blob,
         });
     }
 
@@ -106,11 +112,16 @@ fn parseScore(text: []const u8) ?u8 {
     return std.fmt.parseInt(u8, text, 10) catch null;
 }
 
-fn freeChanges(allocator: std.mem.Allocator, items: *std.ArrayList(git.Change)) void {
-    for (items.items) |change| {
-        allocator.free(change.path);
-        if (change.old_path) |old| allocator.free(old);
+/// Dupe a blob SHA, treating git's all-zero placeholder as "no blob".
+fn blobOrNull(allocator: std.mem.Allocator, sha: []const u8) !?[]const u8 {
+    for (sha) |character| {
+        if (character != '0') return try allocator.dupe(u8, sha);
     }
+    return null;
+}
+
+fn freeChanges(allocator: std.mem.Allocator, items: *std.ArrayList(git.Change)) void {
+    for (items.items) |change| git.freeChange(allocator, change);
     items.deinit(allocator);
 }
 
