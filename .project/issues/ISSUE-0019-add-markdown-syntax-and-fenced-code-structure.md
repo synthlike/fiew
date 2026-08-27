@@ -5,7 +5,7 @@ kind: "implementation"
 status: open
 created: 2026-08-25
 assignee: 
-parent: "ISSUE-0013-implement-fiew-v0-1.md"
+parent: "ISSUE-0052-hold-deferred-fiew-v0-2-implementation-candidates.md"
 blocked_by:
   - "ISSUE-0018-add-zig-syntax-folding-and-structural-navigation.md"
 labels: []
@@ -14,11 +14,11 @@ labels: []
 
 ## Parent
 
-[Implement fiew v0.1](<.project/issues/ISSUE-0013-implement-fiew-v0-1.md>)
+[Hold deferred fiew v0.2 implementation candidates](<.project/issues/ISSUE-0052-hold-deferred-fiew-v0-2-implementation-candidates.md>)
 
-## Source specification
+## Planning status
 
-[fiew v0.1](<docs/specs/fiew-v0-1.md>)
+Deferred from v0.1. This is a candidate v0.2 implementation slice and must be reconciled with the eventual v0.2 specification before implementation.
 
 ## What to build
 

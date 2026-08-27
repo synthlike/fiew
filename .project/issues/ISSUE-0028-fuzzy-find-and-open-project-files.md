@@ -5,7 +5,7 @@ kind: "implementation"
 status: open
 created: 2026-08-27
 assignee: 
-parent: "ISSUE-0013-implement-fiew-v0-1.md"
+parent: "ISSUE-0052-hold-deferred-fiew-v0-2-implementation-candidates.md"
 blocked_by:
 labels: []
 ---
@@ -13,33 +13,31 @@ labels: []
 
 ## Parent
 
-[Implement fiew v0.1](<.project/issues/ISSUE-0013-implement-fiew-v0-1.md>)
+[Hold deferred fiew v0.2 implementation candidates](<.project/issues/ISSUE-0052-hold-deferred-fiew-v0-2-implementation-candidates.md>)
 
-## Source specification
+## Planning status
 
-[fiew v0.1](<docs/specs/fiew-v0-1.md>)
+Deferred from v0.1. This is a candidate v0.2 implementation slice and must be reconciled with the eventual v0.2 specification before implementation.
 
 ## What to build
 
-Replace the placeholder `Space f` file-commands submenu with a transient fuzzy file finder: an overlay that filters the repository's tracked files by a typed query, ranks the matches, and opens (pins) the selected file. It reuses the named-command prompt interaction — a query input, `Up`/`Down` selection, and `Enter` to act — applied to file paths.
-
-This is a file-name navigation utility (an accepted extension of file browsing), distinct from the excluded project-wide content search.
+Add a transient fuzzy file finder that filters repository files by typed path query, ranks matches, and opens the selected file without expanding into project-wide content search.
 
 ## Acceptance criteria
 
-- [ ] `Space f` opens a fuzzy file overlay listing repository files; `Esc` cancels and restores the prior view.
-- [ ] Typing filters and ranks by subsequence match that favors boundary starts and contiguous runs; `Up`/`Down` move the selection and results stay bounded.
+- [ ] The accepted command opens a fuzzy file overlay; `Esc` restores the prior view.
+- [ ] Typing filters and ranks by subsequence match favoring boundary starts and contiguous runs.
 - [ ] `Enter` opens and pins the selected file, focuses the main view, and adds a history location.
-- [ ] The matcher is pure and unit-tested, and remains responsive at the 10,000-file target.
+- [ ] Results stay bounded and the pure matcher remains responsive at the 10,000-file target.
 - [ ] No source file or Git state is modified.
 
 ## Blocked by
 
-Managed by native issue relationships. Sequenced after [Create and manage local review notes](<.project/issues/ISSUE-0022-create-and-manage-local-review-notes.md>) by preference, not technical dependency.
+Managed by native issue relationships.
 
 ## Out of scope
 
-Project-wide content search, regular expressions, and multi-select. This finds files by path only.
+Project-wide content search, regular expressions, and multi-select.
 
 ## Comments
 

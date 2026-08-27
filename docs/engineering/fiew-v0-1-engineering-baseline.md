@@ -1,77 +1,83 @@
 <!-- agent-workflows-record
-{"archived":false,"created":"2026-08-25T20:21:26Z","id":"fiew-v0-1-engineering-baseline","modified":"2026-08-25T21:42:02Z","record_type":"technical_baselines","title":"fiew v0.1 engineering baseline"}
+{"archived":false,"created":"2026-08-25T20:21:26Z","id":"fiew-v0-1-engineering-baseline","modified":"2026-08-27T20:47:56Z","record_type":"technical_baselines","title":"fiew v0.1 engineering baseline"}
 -->
 # fiew v0.1 engineering baseline
 
 ## Purpose and maturity
 
-This baseline indexes the minimal production-compatible foundation for the approved read-first v0.1 workflows. Accepted consequential integration and architecture choices remain authoritative in their ARPs.
+This baseline indexes the minimal production-compatible foundation for the approved review-first v0.1 workflows. The current repository contains a working Zig application and tests; remaining implementation is tracked by [Implement fiew v0.1](<.project/issues/ISSUE-0013-implement-fiew-v0-1.md>). Observable product behavior remains authoritative in [fiew v0.1](<docs/specs/fiew-v0-1.md>), and consequential integration and architecture choices remain authoritative in their ARPs.
 
 ## Fixed technology constraints
 
 | Technology or platform | Supported version or boundary | Evidence |
 | --- | --- | --- |
-| Operating system and architecture | macOS on Apple Silicon only | [Choose initial platform and terminal compatibility](<.project/issues/ISSUE-0004-choose-initial-platform-and-terminal-compatibility.md>) |
+| Operating system and architecture | macOS on Apple Silicon only | [fiew v0.1](<docs/specs/fiew-v0-1.md>) |
 | Terminal | Ghostty only | [Choose initial platform and terminal compatibility](<.project/issues/ISSUE-0004-choose-initial-platform-and-terminal-compatibility.md>) |
-| Toolchain | Zig 0.16.0 exactly | User approval; verified by local `zig version` |
+| Toolchain | Zig 0.16.0 exactly | Repository build files and verified local `zig version` |
 | Terminal UI | Low-level libvaxis at immutable revision `c060d314930c5552b99a89278a6a695baf0352da` | [Adopt libvaxis’s low-level API for fiew v0.1](<docs/decisions/ARP-0001.md>) |
-| Parsing | Tree-sitter 0.26.13 with pinned Zig and Markdown grammars | [Integrate Tree-sitter behind a direct C adapter](<docs/decisions/ARP-0002.md>) |
-| Semantic navigation | Optional trusted ZLS 0.16.x for Zig definition navigation | [Use trusted ZLS as an optional definition provider](<docs/decisions/ARP-0003.md>) |
-| Mermaid preview | Optional `mermaid-ascii` 1.5.x terminal-text rendering | [Render a Mermaid subset as terminal text](<docs/decisions/ARP-0004.md>) |
+| Parsing | Tree-sitter 0.26.13 with the pinned Zig grammar | Repository `build.zig`, vendored sources, and [Integrate Tree-sitter behind a direct C adapter](<docs/decisions/ARP-0002.md>) |
+| VCS | Installed Git CLI, surfaced as the only v0.1 VCS backend | [fiew v0.1](<docs/specs/fiew-v0-1.md>) |
+| Local review | Versioned Markdown under the repository's gitignored `.reviews/` directory | [Use reviewer-owned local threads with command-mediated agent replies](<docs/decisions/ARP-0007.md>) |
+| Bookmarks | Versioned fiew-owned global state outside repositories, keyed by repository identity | [fiew v0.1](<docs/specs/fiew-v0-1.md>) |
 | Internal architecture | Single-owner event-driven ports and adapters | [Structure fiew as a single-owner event-driven application](<docs/decisions/ARP-0005.md>) |
 | Repository scale | Up to 10,000 tracked files | [Choose initial platform and terminal compatibility](<.project/issues/ISSUE-0004-choose-initial-platform-and-terminal-compatibility.md>) |
 | Distribution | Manually installed Apple Silicon binaries from GitHub Releases | [Choose initial platform and terminal compatibility](<.project/issues/ISSUE-0004-choose-initial-platform-and-terminal-compatibility.md>) |
-| Product boundary | Read-first browsing, diff review, and definition navigation | [Define the v0.1 workflows and feature boundary](<.project/issues/ISSUE-0003-define-the-v0-1-workflows-and-feature-boundary.md>) |
+| Product boundary | Immutable browsing, Git-backed VCS review, reviewer-agent threads, strict reviewer resolution, and private bookmarks | [fiew v0.1](<docs/specs/fiew-v0-1.md>) |
 
 ## Compatibility and prerequisites
 
-- The local development environment has Zig 0.16.0 installed.
-- The inspected libvaxis revision declares Zig 0.16.0 support; libvaxis v0.5.1 declares Zig 0.13.0 and is incompatible.
+- The development environment and repository build target Zig 0.16.0.
+- The pinned libvaxis revision declares Zig 0.16.0 support; the low-level API remains the accepted terminal boundary.
 - Development and release verification require Apple Silicon macOS and Ghostty.
-- Git is required only for Git workflows. ZLS and `mermaid-ascii` are optional and were not installed during research.
-- Tree-sitter core and selected grammars use compatible ABI 15 inputs at their accepted revisions.
-- No source tree or build definition exists yet, so project build, test, adapter, and performance commands remain unverified.
+- Git is required only for VCS and review workflows. Non-Git directories remain browsable with those capabilities disabled.
+- Tree-sitter core and the selected Zig grammar use the accepted compatible ABI inputs.
+- Markdown parsing, Mermaid rendering, fuzzy file finding, ZLS, Linux, and additional terminals are not v0.1 prerequisites. They are planned under [Plan fiew v0.2](<.project/issues/ISSUE-0030-plan-fiew-v0-2.md>).
+- `.reviews/` is the only repository-local write boundary. fiew does not edit `.gitignore`; the user or invoking workflow must ensure the directory is ignored.
+- The next threaded review schema is incompatible with the implemented `fiew.review/v1` note model and requires explicit migration or read-only legacy handling.
 
 ## Approved conventions
 
 ### Repository and dependency boundaries
 
-- Start with a standard Zig executable using `build.zig`, `build.zig.zon`, and `src/`.
-- Use `model/`, `app/`, `view/`, `ports/`, and adapter-specific source boundaries, with `main.zig` as the composition root.
+- Keep `model/`, `app/`, `view/`, `ports/`, and adapter-specific source boundaries, with `main.zig` as the composition root.
 - Keep imports acyclic and prevent third-party types from entering core state.
 - Resolve linked dependencies at accepted immutable revisions and commit Zig package integrity hashes. Do not float branches or version ranges.
-- The complete accepted architecture and dependency boundary is [Structure fiew as a single-owner event-driven application](<docs/decisions/ARP-0005.md>).
+- Use typed asynchronous effects for Git, filesystem, persistence, and other latency-bearing work; never run them on the terminal render/event path.
+- The complete architecture and dependency boundary is [Structure fiew as a single-owner event-driven application](<docs/decisions/ARP-0005.md>).
 
 ### Toolchain and local development
 
 - Require Zig 0.16.0 exactly for v0.1 development and release builds.
-- Treat toolchain, linked-dependency, grammar, and external-protocol upgrades as explicit compatibility changes.
+- Treat toolchain, linked-dependency, grammar, public review-schema, and external-protocol upgrades as explicit compatibility changes.
 
 ### Testing and verification
 
-- Keep `zig build test` deterministic without network access or optional executables.
-- Use pure model/reducer tests, fixed-size render-plan snapshots, fixture/transcript adapter contracts, ownership/leak tests, and fuzz/property checks.
-- Keep installed-tool integration tests opt-in.
-- Maintain a documented manual Ghostty smoke check covering startup and restoration, keyboard input, resize, mouse input, and representative code and diff rendering.
-- Intended stable verification commands are `zig build`, `zig build test`, and `zig fmt --check src build.zig`. They remain unverified until the project exists.
+- Keep `zig build test --system zig-pkg` deterministic without network access or optional executables.
+- Use pure model/reducer tests, fixed-size render-plan snapshots, fixture adapter contracts, ownership/leak tests, and fuzz/property checks.
+- Keep real Git integration tests opt-in through `-Dgit-integration`.
+- Maintain a manual Ghostty smoke checklist covering startup and restoration, keyboard input, resize, mouse input, all four sidebar contexts, representative source and diff rendering, threaded review, and bookmarks.
+- Treat nested repository roots, command failure, concurrent Git change, review persistence failure, schema refusal, backup recovery, and role authority as required contract cases.
 
 ### Build and distribution
 
 - Produce Apple Silicon macOS release artifacts with `-Doptimize=ReleaseSafe`.
 - Publish manually installed binaries through GitHub Releases.
+- Do not claim Markdown, Mermaid, fuzzy finding, ZLS, Linux, or non-Ghostty support in the v0.1 release artifact.
 
 ### Configuration, operations, and data
 
-- Keep configuration, trust, and review-note state local and fiew-owned, outside repositories and Git metadata.
-- Use schema-versioned JSON, atomic replacement, future-version refusal, and one validated backup as established by [Structure fiew as a single-owner event-driven application](<docs/decisions/ARP-0005.md>).
+- Keep configuration and bookmarks in schema-versioned fiew-owned global state outside repositories.
+- Keep reviews as public versioned Markdown under `.reviews/`; only the command-mediated operations accepted by [Use reviewer-owned local threads with command-mediated agent replies](<docs/decisions/ARP-0007.md>) may mutate them.
+- Use same-directory temporary files, flush, atomic replacement, future-version refusal, and one validated backup for durable state.
+- Never clear dirty state or report approval after a persistence failure.
 - Do not add telemetry, remote services, or secrets handling.
-- Diagnostics are bounded and redact source contents, review-note bodies, environment values, and protocol payloads by default.
+- Bound diagnostics and redact source contents, review comments, environment values, and protocol payloads by default.
 
 ### Supply chain
 
 - Pin every linked Zig package with the package manager's integrity hash.
 - Review every dependency revision intentionally; do not accept automated floating updates.
-- Do not bundle or download Git, ZLS, or `mermaid-ascii` at runtime.
+- Do not bundle or download Git or future optional tools at runtime.
 
 ## Recommendations awaiting approval
 
@@ -80,31 +86,35 @@ None.
 ## Open decisions
 
 - Artifact naming, signing, notarization, and release automation.
-- Replacing the libvaxis commit pin when a Zig-0.16-compatible tagged release exists.
+- Replacing the libvaxis commit pin when a compatible tagged release exists.
 
 ## Deferred product questions
 
 - Behavior above the 10,000-tracked-file guarantee remains outside v0.1.
-- Additional parsers, LSP features, Git comparisons, note synchronization, and full Mermaid rendering require later product evidence and decisions.
+- Markdown, Mermaid, fuzzy finding, expanded Zig navigation, Linux distribution compatibility, and additional terminal behavior are owned by [Plan fiew v0.2](<.project/issues/ISSUE-0030-plan-fiew-v0-2.md>).
+- Go and TypeScript/React language behavior is owned by [Plan fiew v0.3](<.project/issues/ISSUE-0031-plan-fiew-v0-3.md>).
+- GitHub pull-request review is owned by [Plan fiew v0.4](<.project/issues/ISSUE-0032-plan-fiew-v0-4.md>).
 
 ## Verification and operating commands
 
 | Command | Status |
 | --- | --- |
 | `zig version` | Verified locally: `0.16.0` |
-| `zig build` | Unverified: no `build.zig` exists |
-| `zig build test` | Unverified: no project exists |
-| `zig fmt --check src build.zig` | Unverified: no project exists |
-| `zls --version` | Unavailable locally during research |
-| `mermaid-ascii --version` | Unavailable locally during research |
+| `zig build` | Verified on the current workspace |
+| `zig build test --system zig-pkg` | Verified; deterministic suite passed |
+| `zig build test --system zig-pkg -Dgit-integration --summary all` | Verified; 94/94 tests passed in the reviewed workspace |
+| `zig fmt --check src build.zig` | Verified |
+| `zig build -Doptimize=ReleaseSafe --system zig-pkg` | Verified |
+| `zig build -Dtarget=aarch64-macos --system zig-pkg` | Verified |
+| Manual Ghostty smoke checklist | Documented; not rerun during the implementation-conformance and roadmap revision session |
 
 ## References
 
+- [fiew v0.1](<docs/specs/fiew-v0-1.md>)
 - [Adopt libvaxis’s low-level API for fiew v0.1](<docs/decisions/ARP-0001.md>)
 - [Integrate Tree-sitter behind a direct C adapter](<docs/decisions/ARP-0002.md>)
-- [Use trusted ZLS as an optional definition provider](<docs/decisions/ARP-0003.md>)
-- [Render a Mermaid subset as terminal text](<docs/decisions/ARP-0004.md>)
 - [Structure fiew as a single-owner event-driven application](<docs/decisions/ARP-0005.md>)
-- [Define the v0.1 workflows and feature boundary](<.project/issues/ISSUE-0003-define-the-v0-1-workflows-and-feature-boundary.md>)
+- [Store review notes as gitignored `.reviews/` Markdown for agent retrieval](<docs/decisions/ARP-0006.md>)
+- [Use reviewer-owned local threads with command-mediated agent replies](<docs/decisions/ARP-0007.md>)
+- [Implement fiew v0.1](<.project/issues/ISSUE-0013-implement-fiew-v0-1.md>)
 - [Choose initial platform and terminal compatibility](<.project/issues/ISSUE-0004-choose-initial-platform-and-terminal-compatibility.md>)
-- [Zig 0.16.0 Apple Silicon macOS distribution](https://ziglang.org/download/0.16.0/zig-aarch64-macos-0.16.0.tar.xz)

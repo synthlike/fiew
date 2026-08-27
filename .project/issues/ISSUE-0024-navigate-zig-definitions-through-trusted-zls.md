@@ -1,37 +1,38 @@
 ---
 id: ISSUE-0024
-title: "Navigate Zig definitions through trusted ZLS"
+title: "Navigate Zig through trusted ZLS"
 kind: "implementation"
 status: open
 created: 2026-08-25
 assignee: 
-parent: "ISSUE-0013-implement-fiew-v0-1.md"
+parent: "ISSUE-0052-hold-deferred-fiew-v0-2-implementation-candidates.md"
 blocked_by:
   - "ISSUE-0016-complete-the-modal-command-and-workspace-language.md"
   - "ISSUE-0017-establish-recoverable-fiew-owned-state.md"
 labels: []
 ---
-# Navigate Zig definitions through trusted ZLS
+# Navigate Zig through trusted ZLS
 
 ## Parent
 
-[Implement fiew v0.1](<.project/issues/ISSUE-0013-implement-fiew-v0-1.md>)
+[Hold deferred fiew v0.2 implementation candidates](<.project/issues/ISSUE-0052-hold-deferred-fiew-v0-2-implementation-candidates.md>)
 
-## Source specification
+## Planning status
 
-[fiew v0.1](<docs/specs/fiew-v0-1.md>)
+Deferred from v0.1 and expanded for v0.2. This candidate slice must be reconciled with the v0.2 interaction decision and specification before implementation.
 
 ## What to build
 
-Deliver repository trust, ZLS version validation and process lifecycle, definition requests, UTF-8/UTF-16 mapping, multiple-result previews, External views, cancellation, timeout, and read-only protocol enforcement.
+Deliver repository trust, ZLS version validation and lifecycle, go-to-definition, find references, hover documentation and type information, position mapping, result previews, External views where allowed, cancellation, timeout, and strict read-only protocol enforcement.
 
 ## Acceptance criteria
 
 - [ ] ZLS never launches before explicit repository trust.
-- [ ] Definition navigation and history return work with transcript and opt-in integration tests.
-- [ ] Stale, late, malformed, cancelled, and timed-out responses never navigate.
-- [ ] Workspace edits and server commands are refused.
-- [ ] Missing, incompatible, or crashed ZLS preserves non-LSP behavior.
+- [ ] Definition navigation, reference results, hover content, and history return work with transcript and opt-in integration tests.
+- [ ] Stale, late, malformed, cancelled, and timed-out responses never navigate or replace current information.
+- [ ] Multiple definitions and references use the accepted v0.2 result interaction; hover is dismissible and preserves selection/history.
+- [ ] Workspace edits, formatting, rename, code actions, file operations, and server commands are refused.
+- [ ] Missing, incompatible, or crashed ZLS preserves Tree-sitter and plain-text behavior.
 - [ ] Shutdown, restart, and trust revocation cleanly stop the process.
 
 ## Blocked by
@@ -40,7 +41,7 @@ Managed by native issue relationships.
 
 ## Out of scope
 
-Other LSP methods, generic servers, and Markdown LSP.
+Other languages, source-writing LSP methods, and a generic language-server framework.
 
 ## Comments
 

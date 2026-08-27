@@ -13,20 +13,22 @@ labels: []
 
 ## Destination
 
-Deliver the complete read-first v0.1 behavior defined by [fiew v0.1](<docs/specs/fiew-v0-1.md>) as a verified Apple Silicon macOS binary for Ghostty.
+Deliver the review-first v0.1 behavior defined by [fiew v0.1](<docs/specs/fiew-v0-1.md>) as a verified Apple Silicon macOS binary for Ghostty.
 
 ## Acceptance criteria
 
-- All required browse, Git review-note, and Zig definition-navigation workflows pass.
-- Optional integrations fail without impairing core viewing or violating the read-only boundary.
+- Immutable repository browsing and Zig structural navigation work without source or Git mutation.
+- The Git-backed VCS view publishes only complete, consistent snapshots and preserves repository-root identity.
+- Reviewer-owned threads, agent replies, strict reviewer resolution, and the non-interactive review interface work against durable review state.
+- Private repository bookmarks and the Project/VCS/Review/Bookmarks context bindings work as specified.
 - The supported build, test, performance, and Ghostty verification complete honestly.
 - A documented `ReleaseSafe` Apple Silicon artifact can be produced from a clean checkout.
 
 ## Out of scope
 
-- Behavior excluded by the source specification.
-- Automatically publishing a release.
-- Signing, notarization, and package-manager distribution.
+- Markdown, Mermaid, fuzzy file finding, ZLS, Linux, and additional terminals; these move to v0.2.
+- Remote review providers, source editing, and Git mutation.
+- Automatically publishing a release, signing, notarization, or package-manager distribution.
 
 ## Comments
 

@@ -1,189 +1,160 @@
 <!-- agent-workflows-record
-{"archived":false,"created":"2026-08-25T21:48:04Z","id":"fiew-v0-1","modified":"2026-08-26T14:38:11Z","record_type":"specs","title":"fiew v0.1"}
+{"archived":false,"created":"2026-08-25T21:48:04Z","id":"fiew-v0-1","modified":"2026-08-27T19:06:54Z","record_type":"specs","title":"fiew v0.1"}
 -->
 # fiew v0.1
 
 ## Problem
 
-Developers need a fast terminal tool for inspecting repositories, reading code, reviewing current Git changes, recording private review notes, and following Zig definitions without risking accidental source or Git modification. General editors expose broad editing and IDE behavior that is unnecessary for this read-first workflow.
+Developers working with coding agents need a fast terminal workspace for inspecting a repository, reviewing current changes, discussing findings with an agent, and withholding approval until every concern is resolved. A general editor exposes source and Git mutation that is unnecessary and risky for this review-first workflow.
 
 ## Desired behavior
 
-On Apple Silicon macOS in Ghostty, a user can open a repository, browse and inspect files, navigate and fold Zig or Markdown structure, review current staged/unstaged/untracked changes, record local review notes, follow Zig definitions through optional trusted ZLS, and preview supported Mermaid fences as terminal text. Optional-integration failures preserve text viewing and the read-only boundary.
+On Apple Silicon macOS in Ghostty, a reviewer can browse immutable source, inspect current staged, unstaged, and untracked Git changes through a VCS view, hold anchored reviewer-agent conversations, keep private bookmarks for later inspection, and approve only after explicitly resolving every thread. An agent can discover a named review, read its complete history, and append replies through a stable non-interactive interface without receiving source-write or review-lifecycle authority.
 
 ## Requirements
 
 ### 1. Read-only boundary
 
-1. fiew must never modify source files or Git state.
-2. fiew must not invoke mutating Git commands, apply LSP workspace edits, execute server commands, or write inside repositories or Git metadata, except that it may create and write review files within a gitignored `.reviews/` directory at the repository root ([ARP-0006](<docs/decisions/ARP-0006.md>)).
-3. fiew may write only fiew-owned configuration, trust, explicitly enabled bounded diagnostics, disposable caches, and review notes in the repository's gitignored `.reviews/` directory. It never modifies `.gitignore`, tracked files, or any other repository path.
-4. Integration failures and cancellation must preserve this boundary.
+1. fiew must never modify source files, tracked files, `.gitignore`, Git metadata, the index, branches, commits, or other Git state.
+2. fiew must not invoke mutating Git commands, apply workspace edits, execute language-server commands, or expose general file-writing operations.
+3. fiew may write only fiew-owned global state, bounded diagnostics when explicitly enabled, disposable caches, and versioned review files within the repository's gitignored `.reviews/` directory.
+4. Agent review commands may mutate only the operation explicitly granted by that command. In v0.1, the only agent mutation is appending a reply to an existing thread.
+5. Integration failures, cancellation, malformed input, and persistence errors must preserve this boundary.
 
 ### 2. Platform and workspace
 
 1. v0.1 supports Apple Silicon macOS in Ghostty.
 2. The supported repository target is up to 10,000 tracked files.
-3. At 100 columns or wider, the sidebar appears beside the main view at 30% width, clamped to 24–40 columns.
-4. Below 100 columns, the sidebar becomes a full-height overlay.
-5. Below 60×20, fiew shows an unsupported-size message.
-6. v0.1 displays one main view at a time. Tabs, arbitrary splits, and simultaneous main views are excluded.
-7. Location history supports backward and forward navigation.
+3. At 100 columns or wider, the sidebar appears beside the main view at 30% width, clamped to 24–40 columns. Below 100 columns it becomes a full-height overlay. Below 60×20 fiew shows an unsupported-size message.
+4. v0.1 displays one main view at a time. Tabs, arbitrary splits, and simultaneous main views are excluded.
+5. Location history supports backward and forward navigation.
 
-### 3. Sidebar and previews
+### 3. Sidebar contexts and previews
 
-1. The collapsible sidebar shows one of Project, Git, or Review at a time.
-2. Each context preserves selection and scroll position.
-3. Project uses a directory tree; Git groups changed files by Git state; Review groups notes by file and source location.
-4. Moving over a file, diff, or note previews it without moving focus or altering history.
-5. `Enter` pins the preview, adds a history location, and focuses the main view.
-6. `Esc` or sidebar collapse restores the last pinned view.
-7. `Tab`, `Shift-Tab`, and mouse clicks move focus.
-8. The focused region is visually explicit.
+1. The sidebar has four user-visible contexts: Project, VCS, Review, and Bookmarks.
+2. `Space p`, `Space v`, `Space r`, and `Space b` open their respective context namespaces. Git is the only v0.1 VCS backend and is identified as the active backend in the VCS view.
+3. Each context preserves its own selection and scroll position.
+4. Project uses a directory tree; VCS groups changed files by Git state; Review groups threads by file, anchor, and status; Bookmarks lists private saved source locations.
+5. Moving over an item previews it without moving focus or altering history. `Enter` pins the preview, adds a history location where applicable, and focuses the main view.
+6. `Esc` or sidebar collapse restores the last pinned view. `Tab`, `Shift-Tab`, and mouse clicks move focus. The focused region is visually explicit.
 
 ### 4. Modal interaction
 
 1. v0.1 uses one contiguous, selection-first selection.
-2. Persistent modes are Normal, Extend, and Command. Command may host the transient Note Composer for fiew-owned text.
+2. Persistent modes are Normal, Extend, and Command. Command may host transient fiew-owned text composers.
 3. Insert and Replace modes, multiple selections, macros, remapping, and search-result selections are excluded.
-4. Character movement operates on displayed grapheme clusters and never selects inside an invalid encoding boundary. Vertical movement preserves the preferred visual column.
+4. Character movement operates on displayed grapheme clusters. Vertical movement preserves the preferred visual column.
 5. Required movement bindings are `h j k l`, `w b e`, `g g`, `g e`, `Ctrl-u`, `Ctrl-d`, PageUp, and PageDown.
-6. Required selection bindings are `v` for Extend, `x` for line selection, `;` to collapse to the active end, and `Alt-;` to reverse ends.
+6. Required selection bindings are `v`, `x`, `;`, and `Alt-;`.
 7. `Space` opens the leader menu; `:` opens named-command search. Both use one command registry and show disabled reasons.
-8. The status line shows mode, pending keys, the active line and visual column, and concise feedback. Focus remains visually explicit through the active region header. `Esc` safely cancels transient interaction.
-9. `Space ?` shows generated key help. Quitting requires an explicit named or leader command.
+8. `Space ?` shows generated key help. `Esc` safely cancels transient interaction. Quitting requires an explicit named or leader command.
 
-### 5. Documents
+### 5. Immutable documents and Zig structure
 
-1. Every displayed document is an immutable, versioned snapshot.
-2. Selections, history, parsing, diffs, folds, and LSP operations refer to snapshot identity and byte ranges.
-3. NUL-containing files appear as binary metadata views.
-4. Non-NUL files with invalid UTF-8 render replacement characters while preserving byte mapping.
-5. Invalid UTF-8 disables Tree-sitter, LSP, and Mermaid processing without changing source bytes.
-6. External reloads publish a new snapshot and stale asynchronous results cannot alter the current view.
+1. Every displayed document is an immutable, versioned snapshot. Selections, history, parsing, diffs, folds, threads, and bookmarks refer to snapshot identity and byte ranges.
+2. NUL-containing files appear as binary metadata views. Other invalid UTF-8 renders replacement characters while preserving byte mapping and disables structural processing.
+3. External reloads publish a new snapshot, and stale asynchronous results cannot alter the current view.
+4. Tree-sitter highlighting, folding, and structural navigation are available for Zig. Other files remain fully navigable plain text.
+5. Files over 2 MiB use plain-text fallback. Parsing occurs outside rendering and preserves the previous valid snapshot during reload.
+6. Zig fold commands remain `z c`, `z o`, `z a`, `z M`, and `z R`. Structural commands remain `Alt-o`, `Alt-i`, `Alt-n`, and `Alt-p`.
 
-### 6. Syntax, folding, and structural navigation
+### 6. Current-change VCS review
 
-1. Tree-sitter behavior is available for Zig and Markdown only; other files remain fully navigable plain text.
-2. Files over 2 MiB use plain-text fallback.
-3. Parsing occurs outside rendering, shows pending status after 100 ms, cancels after one second, and preserves the previous valid snapshot during reload.
-4. Highlighting covers the viewport plus one viewport above and below.
-5. Zig uses its pinned fold query. Markdown supports section and fenced-block folds. Indentation folding is excluded.
-6. Fold commands are `z c`, `z o`, `z a`, `z M`, and `z R`.
-7. Structural commands are `Alt-o` for a named parent, `Alt-i` for prior expansion, and `Alt-n`/`Alt-p` for named siblings.
-8. Markdown may inject Zig parsing into explicitly labeled `zig` fences to one nesting level.
+1. Git supports standard repositories and linked worktrees. Non-Git directories remain browsable with VCS disabled; bare repositories are unsupported.
+2. VCS shows Staged (`HEAD` to index), Unstaged (index to working tree), and Untracked changes separately. Unborn repositories compare the index with Git's empty tree.
+3. Added, modified, deleted, renamed, type-changed, mode-only, binary, and submodule entries are visible. Renames use 50% similarity; copies are excluded.
+4. Text changes use unified diffs with three context lines and old/new line numbers. Unsupported textual forms show metadata rather than fabricated hunks.
+5. `[ f`/`] f`, `[ h`/`] h`, and `[ c`/`] c` navigate files, hunks, and changed lines. `Enter` opens source context and `Ctrl-o` returns.
+6. Git work runs outside the terminal event loop. Every command failure is explicit, repository-root identity is preserved, and only a complete internally consistent snapshot may replace the prior snapshot.
+7. Debounced filesystem change or a manual VCS refresh requests a new snapshot. Failure retains and marks the previous snapshot stale; obsolete work cannot publish.
+8. fiew never uses hooks, pagers, prompts, external diff drivers, text converters, or mutating Git operations.
 
-### 7. Git review
+### 7. Review threads
 
-1. Git behavior supports standard repositories and linked worktrees. Non-Git directories remain browsable with Git disabled; bare repositories are unsupported.
-2. Git shows Staged (`HEAD` to index), Unstaged (index to working tree), and Untracked (full contents added) separately. Unborn repositories compare the index with Git's empty tree. Nested repositories are not combined.
-3. fiew detects renames at 50% similarity but not copies.
-4. Added, modified, deleted, renamed, type-changed, mode-only, binary, and submodule entries are visible.
-5. Text changes use unified diffs with three context lines and old/new line numbers. Binary, mode-only, and submodule changes show metadata without textual hunks.
-6. Zig and Markdown diffs may layer syntax styles beneath diff styling without delaying display.
-7. `[ f`/`] f`, `[ h`/`] h`, and `[ c`/`] c` navigate files, hunks, and changed lines. `Enter` opens source context and `Ctrl-o` returns.
-8. Git refreshes after debounced repository changes and through `Space g r`, retaining the previous complete snapshot until replacement succeeds.
-9. fiew never uses hooks, pagers, prompts, external diff drivers, text converters, or mutating Git operations.
+1. A review contains stable threads. A thread attaches to a changed file or to one contiguous old-side or new-side textual diff selection.
+2. Anchors include repository identity, Git group, path, side, line range, available blob identifiers, and surrounding context sufficient for exact matching.
+3. Each thread contains ordered, append-only comments. Every comment records the author role `reviewer` or `agent`; individual agent identity is not required.
+4. Neither role edits or deletes a persisted comment. Only the reviewer creates threads, resolves or reopens them, or deletes a complete thread. Deletion requires confirmation.
+5. Agents may read all prior comments and append replies. Agents may not create threads or change thread status.
+6. Thread states are Open, Resolved, and Outdated. Open and Outdated threads block approval. A review is approved only when the reviewer explicitly resolves every thread.
+7. Exact unique anchor matches preserve identity and lifecycle state across Git groups or refreshes. Missing or ambiguous matches become Outdated; fiew never guesses.
+8. The reviewer composer accepts multiline UTF-8 plain text. Saving and cancellation protect modified text.
+9. The Review sidebar supports independent keyboard and mouse selection, preview, scrolling, status visibility, and navigation.
 
-### 8. Review notes
+### 8. Agent review interface
 
-1. A note attaches to a contiguous old-side or new-side textual diff selection.
-2. Anchors include repository identity, Git group, path, side, line range, available blob IDs, and surrounding context.
-3. Notes are stored as versioned Markdown (`fiew.review/v1`) in a gitignored `.reviews/` directory at the repository root so a coding agent can retrieve them, never elsewhere in the repository or in `.git`. Each line note embeds an anchored diff excerpt and, when a side blob exists, its blob ID, so the note can be reconciled to the reviewed content ([ARP-0006](<docs/decisions/ARP-0006.md>)).
-4. Note states are Open, Resolved, and Outdated. Resolved notes can reopen; editing and deletion are explicit, and deletion requires confirmation.
-5. A note follows an unchanged diff moved between Git groups only when exactly one anchor match exists. Missing or ambiguous matches become Outdated.
-6. Commands are `Space r n` create, `Space r e` edit, `Space r x` resolve/reopen, `Space r d` delete, and `[ n`/`] n` navigate.
-7. The Note Composer accepts multiline UTF-8 plain text. `Ctrl-Enter` saves; `Esc` cancels and confirms only when modified.
-8. Threads, authors, reactions, attachments, synchronization, publishing, and repository-local note files are excluded.
+1. `fiew review start [--name <slug>] [--repo <path>]` creates a new review and opens the interactive reviewer UI.
+2. `fiew review open <review-id> [--repo <path>]` opens an existing review in the reviewer UI.
+3. `fiew review show <review-id> [--repo <path>]` emits a stable machine-readable JSON representation including every thread, anchor, status, and ordered comment. `--format markdown` emits the human-readable representation.
+4. `fiew review reply <review-id> <thread-id> --body-file <path> [--repo <path>]` appends one `agent` comment to an existing thread and performs no other mutation.
+5. Repository selection defaults to the current working directory. The optional `--repo` overrides it.
+6. Every newly created review ID begins with a local datetime prefix. An explicit name contributes a sanitized slug. Without a name, interactive start generates a bundled adjective-noun slug. `.md` is automatic; a numeric suffix resolves collisions.
+7. Interactive start prints the canonical review ID after terminal restoration.
+8. Invalid identifiers, roles, schemas, paths, or operations fail explicitly. Successful status and approval output must agree with durable state; persistence failure is never reported as approval.
+9. Exit status is zero only when every thread is reviewer-resolved. Open, Outdated, malformed, or unsaved review state produces a non-success result.
 
-### 9. Zig definition navigation
+### 9. Bookmarks
 
-1. ZLS 0.16.x is optional, user-installed, resolved from `PATH`, and used only for Zig `textDocument/definition`.
-2. fiew requires explicit repository trust before launch and explains that ZLS may evaluate repository-controlled Zig build logic. Build-on-save is disabled, but ZLS is not represented as sandboxed.
-3. One lazy ZLS process serves each trusted repository with orderly initialization, balanced document open/close, cancellation, shutdown, and explicit restart.
-4. UTF-8 and UTF-16 positions are supported.
-5. A definition request shows pending status after 100 ms, times out after two seconds, and is bound to repository, snapshot, selection, and generation.
-6. Stale or invalid responses do not change selection or history.
-7. One valid result opens directly; multiple results open a transient preview picker.
-8. Valid external `file:` targets may open read-only as External views.
-9. Workspace edits, commands, formatting, rename, code actions, file operations, dynamic registration, and non-file URIs are rejected.
-10. Without ZLS, `g d` performs no heuristic jump and reports the exact unavailable state while Tree-sitter navigation, text viewing, and history remain usable.
+1. Bookmarks are private reviewer navigation state and never appear in review output available to agents.
+2. They are stored in fiew-owned global state outside the repository and keyed by repository identity.
+3. A bookmark records a source location and may have a short optional label.
+4. Creating a bookmark from a diff maps it to the corresponding source location; reopening never presents a historical diff as current source.
+5. Bookmarks re-anchor only through an exact unique match. Missing or ambiguous locations become Outdated and never move heuristically.
+6. `Space b Enter` shows the Bookmarks sidebar, `Space b n` creates a bookmark through an optional-label composer, and `Space b d` deletes the selected bookmark with confirmation. `[ b` and `] b` navigate previous and next bookmarks.
 
-### 10. Mermaid preview
+### 10. Persistence and diagnostics
 
-1. Only Markdown fences explicitly labeled `mermaid` are recognized.
-2. Supported types are `graph`/`flowchart`, `sequenceDiagram`, and `erDiagram`.
-3. Preview uses optional user-installed `mermaid-ascii` 1.5.x.
-4. `Space m p` shows Unicode box drawing; `Space m a` shows strict ASCII.
-5. Preview is transient; `q` or `Esc` returns to the exact source location without changing history.
-6. Oversized output uses normal vertical and horizontal scrolling.
-7. Renderer input is limited to 256 KiB, output to 2 MiB, and runtime to one second.
-8. Captured output and stderr are bounded and sanitized before normal cell rendering.
-9. Missing tools, unsupported types, timeout, crash, or invalid output preserve source and show an error.
-10. Standalone Mermaid files, automatic rendering, full Mermaid compatibility, SVG, PNG, Kitty graphics, hyperlinks, and interaction are excluded.
-
-### 11. Persistence and diagnostics
-
-1. Global state uses schema-versioned JSON. Review notes use versioned Markdown files (`fiew.review/v1`) in the repository's gitignored `.reviews/` directory ([ARP-0006](<docs/decisions/ARP-0006.md>)).
+1. Global state uses schema-versioned storage. Reviews use a public versioned Markdown schema in `.reviews/`.
 2. Writes use same-directory temporary files, flush, atomic replacement, and one previous validated backup.
-3. Unknown future schemas are not overwritten.
-4. Diagnostic history is bounded. File logging is opt-in and redacts source, note bodies, environment values, and protocol payloads by default.
-5. Recoverable failures disable only the affected capability and preserve the last valid snapshot.
-6. Fatal terminal failures restore terminal state before reporting.
+3. Unknown future schemas are never overwritten. Review Markdown bodies may contain ordinary Markdown headings without corrupting structural parsing.
+4. Diagnostic history is bounded. File logging is opt-in and redacts source, comment bodies, environment values, and protocol payloads by default.
+5. Recoverable failures disable only the affected capability and preserve the last valid snapshot. Fatal terminal failures restore terminal state before reporting.
 
 ## Constraints and decisions
 
 - Zig 0.16.0 on Apple Silicon macOS and Ghostty.
 - Low-level libvaxis; no `vxfw`.
-- Direct Tree-sitter C adapter with pinned Zig and Markdown grammars.
-- Installed Git CLI; no libgit2.
-- Optional trusted ZLS 0.16.x.
-- Optional `mermaid-ascii` 1.5.x.
-- Single-owner event-driven ports-and-adapters architecture.
+- Direct Tree-sitter C adapter with the pinned Zig grammar.
+- Installed Git CLI behind the VCS surface; no generic VCS abstraction or libgit2 in v0.1.
+- Single-owner event-driven ports-and-adapters architecture with typed asynchronous effects.
 - Pure fiew-owned ViewModel and RenderPlan pipeline.
-- Zig standard library for JSON, JSON-RPC, subprocesses, queues, persistence, hashing, diagnostics, and tests.
-- No SQLite, generic LSP framework, Node, Chromium, or application framework.
+- No source-writing feature, generic LSP framework, language server, Node, Chromium, SQLite, or application framework.
 
 ## Verification
 
-- Pure command/reducer tests verify modal transitions, preview behavior, stale-event rejection, and disabled reasons.
-- Fixed-dimension RenderPlan snapshots verify workspace, sidebar, status, code, diff, binary, and error views.
-- Document tests verify UTF-8/grapheme mapping, invalid-byte behavior, reload generations, and byte-range stability.
-- Fixture/transcript tests verify Git parsing, LSP framing/lifecycle, Tree-sitter mappings, Mermaid sanitization, and JSON recovery.
-- Cancellation and leak tests verify Tree-sitter ownership, worker shutdown, ZLS cleanup, and subprocess limits.
-- Fuzz/property tests cover UTF-8 mapping, Git/LSP framing, persisted-state decoding, and untrusted subprocess output.
-- `zig build test` requires no network or optional executable. Installed-tool integration tests are opt-in.
-- Manual Ghostty checks cover startup/restoration, keyboard protocol, mouse input, resize, and representative rendering.
+- Pure command and reducer tests verify modes, context bindings, role permissions, thread lifecycle, bookmark behavior, stale-event rejection, and disabled reasons.
+- Fixed-dimension RenderPlan snapshots verify Project, VCS, Review, Bookmarks, status, source, diff, binary, outdated, and error views.
+- Document and anchor fixtures verify UTF-8 mapping, reload generations, multiline/file threads, diff-to-source bookmarks, exact-unique relocation, ambiguity, and Outdated transitions.
+- Git adapter tests verify repository discovery, nested-directory roots, nonzero exits, snapshot consistency, cancellation, linked worktrees, and the mutation boundary.
+- Review-format tests verify arbitrary Markdown comment bodies, schema refusal, backup recovery, atomic persistence, stable JSON output, and persistence-aware exit status.
+- `zig build test` requires no network or optional executable. Git integration tests remain opt-in.
+- Manual Ghostty checks cover startup/restoration, keyboard and mouse interaction, resize, all four sidebar contexts, review conversations, and representative source/diff rendering.
 
 ## Out of scope
 
 - Source editing or Git mutation.
 - Linux, Windows, Intel macOS, or non-Ghostty terminals.
-- General IDE functionality or project-wide content search.
-- Multiple selections, key remapping, macros, tabs, or arbitrary splits.
-- Additional grammars or language servers.
+- Markdown syntax/folding, Mermaid preview, or fuzzy file finding.
+- ZLS, go-to-definition, references, hover documentation, or other language-server behavior.
+- Additional grammars or language ecosystems.
+- jj or any VCS backend other than Git.
 - Commit history, branch comparison, staging, committing, merge, or conflict workflows.
-- Remote review systems or shared notes.
-- Full-fidelity Mermaid graphics.
+- Remote review systems, GitHub synchronization, shared bookmarks, reactions, and attachments.
+- Tabs, arbitrary splits, multiple selections, key remapping, or macros.
 - Homebrew and other package managers.
-- Guaranteed responsiveness above 10,000 tracked files.
 
 ## Open items
 
-- Artifact naming, signing, notarization, and release automation.
+- Artifact naming, signing, notarization, and release automation remain non-blocking release follow-up.
 - Replacement of the libvaxis commit pin when a compatible release exists.
-- Empirical profiling of accepted parse and subprocess limits.
+- Empirical profiling of the accepted repository and parsing limits.
 
 ## References
 
-- [Plan fiew v0.1](<.project/issues/ISSUE-0001-plan-fiew-v0-1.md>)
+- [Implement fiew v0.1](<.project/issues/ISSUE-0013-implement-fiew-v0-1.md>)
 - [fiew v0.1 engineering baseline](<docs/engineering/fiew-v0-1-engineering-baseline.md>)
 - [Adopt libvaxis’s low-level API for fiew v0.1](<docs/decisions/ARP-0001.md>)
 - [Integrate Tree-sitter behind a direct C adapter](<docs/decisions/ARP-0002.md>)
-- [Use trusted ZLS as an optional definition provider](<docs/decisions/ARP-0003.md>)
-- [Render a Mermaid subset as terminal text](<docs/decisions/ARP-0004.md>)
 - [Structure fiew as a single-owner event-driven application](<docs/decisions/ARP-0005.md>)
 - [Store review notes as gitignored `.reviews/` Markdown for agent retrieval](<docs/decisions/ARP-0006.md>)
-- [Tree-sitter integration constraints for fiew v0.1](<docs/research/tree-sitter-integration-constraints-for-fiew-v0-1.md>)
-- [ZLS definition-navigation constraints for fiew v0.1](<docs/research/zls-definition-navigation-constraints-for-fiew-v0-1.md>)
-- [Mermaid ASCII rendering constraints for fiew v0.1](<docs/research/mermaid-ascii-rendering-constraints-for-fiew-v0-1.md>)
+- [Use reviewer-owned local threads with command-mediated agent replies](<docs/decisions/ARP-0007.md>)

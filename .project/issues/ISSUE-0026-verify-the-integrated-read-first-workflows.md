@@ -1,6 +1,6 @@
 ---
 id: ISSUE-0026
-title: "Verify the integrated read-first workflows"
+title: "Verify the integrated v0.1 review workflows"
 kind: "implementation"
 status: open
 created: 2026-08-25
@@ -8,11 +8,10 @@ assignee:
 parent: "ISSUE-0013-implement-fiew-v0-1.md"
 blocked_by:
   - "ISSUE-0023-re-anchor-notes-across-git-refreshes.md"
-  - "ISSUE-0024-navigate-zig-definitions-through-trusted-zls.md"
-  - "ISSUE-0025-preview-mermaid-fences-as-terminal-text.md"
+  - "ISSUE-0034-replace-the-legacy-review-flag-with-the-agent-review-interface.md"
 labels: []
 ---
-# Verify the integrated read-first workflows
+# Verify the integrated v0.1 review workflows
 
 ## Parent
 
@@ -24,12 +23,14 @@ labels: []
 
 ## What to build
 
-Exercise browsing, Git review with notes, and Zig definition navigation end to end; harden queues and cancellation; profile the 10,000-file target; and complete the Ghostty smoke checklist.
+Exercise immutable browsing, Git-backed VCS review, reviewer-agent thread conversations, strict approval, private bookmarks, refresh, and recovery end to end. Harden queues and cancellation, profile the 10,000-file target, and complete the Ghostty smoke checklist.
 
 ## Acceptance criteria
 
-- [ ] All three required workflows pass from a clean user-data directory.
-- [ ] Optional-tool failures preserve documented fallback behavior.
+- [ ] Project, VCS, Review, and Bookmarks workflows pass from a clean user-data directory and a nested repository working directory.
+- [ ] An agent can read all previous comments and append a reply but cannot create, resolve, reopen, or delete a thread.
+- [ ] Exit status reports approval only after every thread is durably reviewer-resolved.
+- [ ] Malformed, future-schema, failed-write, and backup-recovery cases preserve durable state and the read-only boundary.
 - [ ] Mutation audits confirm source and Git state remain unchanged.
 - [ ] Shutdown cleans workers and subprocesses and restores Ghostty.
 - [ ] Accepted performance limits are measured and documented honestly.
@@ -41,7 +42,7 @@ Managed by native issue relationships.
 
 ## Out of scope
 
-Release packaging and behavior outside the v0.1 compatibility boundary.
+Release packaging and all v0.2 capabilities.
 
 ## Comments
 
