@@ -123,6 +123,11 @@ Private, local review comments anchored to a diff selection, stored as Markdown
 in a gitignored `.reviews/` directory so a coding agent can read them (see
 [ARP-0006](docs/decisions/ARP-0006.md)). fiew writes only inside `.reviews/`.
 
+For an agent-driven "review before commit" loop, run `fiew --review <name> <repo>`:
+the session's notes go to `.reviews/<name>`, and fiew exits `1` when that file
+has open notes (changes requested) or `0` when it has none (approved). The agent
+picks the name, branches on the exit code, and reads `<repo>/.reviews/<name>`.
+
 | Key | Action |
 | --- | --- |
 | `Space r n` | Create a note on the current diff selection |

@@ -154,11 +154,25 @@ fn parseWorker(
     };
 }
 
-pub fn run(init: std.process.Init) !void {
+pub fn run(init: std.process.Init) !u8 {
     const allocator = init.gpa;
     var args = std.process.Args.Iterator.init(init.minimal.args);
     _ = args.skip();
-    const root_path = args.next() orelse ".";
+
+    // Parse `--review <name>` (a bare filename kept within .reviews/) and the
+    // optional repository path.
+    var root_path: []const u8 = ".";
+    var review_name: ?[]const u8 = null;
+    while (args.next()) |arg| {
+        if (std.mem.eql(u8, arg, "--review")) {
+            review_name = args.next();
+        } else {
+            root_path = arg;
+        }
+    }
+    if (review_name) |name| {
+        if (name.len == 0 or std.mem.indexOfScalar(u8, name, '/') != null) review_name = null;
+    }
 
     var repository = try fiew.filesystem.Repository.open(allocator, init.io, root_path);
     defer repository.deinit();
@@ -175,11 +189,15 @@ pub fn run(init: std.process.Init) !void {
         else => {},
     }
 
-    // Load any existing review notes from .reviews/.
+    // Load any existing review notes from .reviews/, routing new notes into the
+    // named review file when `--review` was given.
     {
         var loaded = fiew.review_store.loadAll(allocator, init.io, repository.root_dir) catch fiew.review_store.Loaded.empty;
         defer loaded.deinit();
         app.notes = fiew.notes.Notes.fromLoaded(allocator, loaded) catch null;
+    }
+    if (review_name) |name| {
+        if (app.notes) |*state_notes| state_notes.useSession(name);
     }
     var command_session = fiew.commands.Session.init(allocator);
     defer command_session.deinit();
@@ -243,7 +261,18 @@ pub fn run(init: std.process.Init) !void {
                         &generation,
                         commandDimensions(vx.window(), &app),
                         effect,
-                    )) return;
+                        review_name,
+                    )) {
+                        // Exit code reports whether the named review has open
+                        // notes, so an agent can branch on approval. Cleanup
+                        // defers restore the terminal before we return.
+                        if (review_name) |name| {
+                            if (app.notes) |*state_notes| {
+                                if (state_notes.openCountInFile(name) > 0) return 1;
+                            }
+                        }
+                        return 0;
+                    }
                 }
             },
             .mouse => |mouse| try handleMouse(
@@ -328,6 +357,7 @@ fn applyEffect(
     generation: *u64,
     dimensions: fiew.commands.Dimensions,
     effect: fiew.commands.Effect,
+    review_name: ?[]const u8,
 ) !bool {
     switch (effect) {
         .none => {},
@@ -393,6 +423,7 @@ fn applyEffect(
                     var sha_buffer: [64]u8 = undefined;
                     const note_session = buildNoteSession(
                         repository,
+                        review_name,
                         &name_buffer,
                         &created_buffer,
                         &sha_buffer,
@@ -425,6 +456,7 @@ fn applyEffect(
 /// Metadata for the session's review file, generated once per note batch.
 fn buildNoteSession(
     repository: fiew.filesystem.Repository,
+    override_name: ?[]const u8,
     name_buffer: []u8,
     created_buffer: []u8,
     sha_buffer: []u8,
@@ -432,7 +464,7 @@ fn buildNoteSession(
     const nanoseconds = std.Io.Timestamp.now(repository.io, .real).nanoseconds;
     const seconds: u64 = @intCast(@divFloor(nanoseconds, std.time.ns_per_s));
     const created = formatTimestamp(created_buffer, seconds);
-    const filename = std.fmt.bufPrint(name_buffer, "review-{d}.md", .{seconds}) catch "review.md";
+    const filename = override_name orelse (std.fmt.bufPrint(name_buffer, "review-{d}.md", .{seconds}) catch "review.md");
 
     var sha: []const u8 = "";
     var output = fiew.git_command.run(repository.allocator, repository.io, repository.root_dir, &.{ "rev-parse", "HEAD" }) catch null;

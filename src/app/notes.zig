@@ -82,6 +82,28 @@ pub const Notes = struct {
         return count;
     }
 
+    /// Route new notes into an already-loaded review file named `filename`.
+    pub fn useSession(self: *Notes, filename: []const u8) void {
+        for (self.files.items, 0..) |file, index| {
+            if (std.mem.eql(u8, file.filename, filename)) {
+                self.session = index;
+                return;
+            }
+        }
+    }
+
+    /// Count of Open notes in the review file named `filename`.
+    pub fn openCountInFile(self: Notes, filename: []const u8) usize {
+        var count: usize = 0;
+        for (self.files.items) |file| {
+            if (!std.mem.eql(u8, file.filename, filename)) continue;
+            for (file.notes.items) |note| {
+                if (note.status == .open) count += 1;
+            }
+        }
+        return count;
+    }
+
     pub fn refAt(self: Notes, flat_index: usize) ?NoteRef {
         var remaining = flat_index;
         for (self.files.items, 0..) |file, file_index| {
