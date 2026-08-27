@@ -1,5 +1,6 @@
 const std = @import("std");
 const state = @import("state.zig");
+const HandleError = std.mem.Allocator.Error || error{ PermissionDenied, InvalidComment };
 
 pub const Id = enum {
     move_left,
@@ -370,7 +371,7 @@ pub const Session = struct {
         }
     }
 
-    pub fn handle(self: *Session, app: *state.App, key: Key, dimensions: Dimensions) !Effect {
+    pub fn handle(self: *Session, app: *state.App, key: Key, dimensions: Dimensions) HandleError!Effect {
         if (self.surface == .note_composer) return self.handleComposer(app, key, dimensions);
         if (self.surface == .confirm_delete) return self.handleDeleteConfirmation(app, key, dimensions);
         if (key.code == .escape) return self.execute(app, .cancel, dimensions);
@@ -708,18 +709,14 @@ pub const Session = struct {
     }
 
     fn handleVcs(self: *Session, app: *state.App, key: Key, dimensions: Dimensions) !Effect {
-        return switch (normalizedCharacter(key)) {
-            'r' => self.executeAndClose(app, .git_refresh, dimensions),
-            else => blk: {
-                if (key.code == .enter) {
-                    self.resetTransient(app);
-                    break :blk .none;
-                }
-                app.feedback = "invalid VCS command";
-                self.resetTransient(app);
-                break :blk .none;
-            },
-        };
+        if (normalizedCharacter(key) == 'r')
+            return self.executeAndClose(app, .git_refresh, dimensions);
+
+        // `Space v` is both a complete command and the prefix of `Space v r`.
+        // Once Git is open, a non-refresh key belongs to normal navigation and
+        // must not be swallowed by the optional refresh continuation.
+        self.resetTransient(app);
+        return self.handle(app, key, dimensions);
     }
 
     fn handleReview(self: *Session, app: *state.App, key: Key, dimensions: Dimensions) !Effect {
@@ -1070,6 +1067,48 @@ test "Space v opens Git immediately and exposes a pending refresh state" {
     try std.testing.expectEqual(state.GitStatus.pending, app.git_status);
     try std.testing.expectEqual(std.meta.Tag(Effect).open_review, std.meta.activeTag(effect));
     try std.testing.expectEqualStrings("Git refresh pending", unavailableReason(&app, .git_refresh).?);
+}
+
+test "first navigation key after Space v moves the Git selection" {
+    const git = @import("../model/git.zig");
+    const review_mod = @import("git_review.zig");
+    var app = try testApp();
+    defer app.deinit();
+    app.git_enabled = true;
+
+    const changes = try std.testing.allocator.alloc(git.Change, 2);
+    changes[0] = .{ .group = .unstaged, .kind = .modified, .content = .text, .path = try std.testing.allocator.dupe(u8, "first.zig") };
+    changes[1] = .{ .group = .unstaged, .kind = .modified, .content = .text, .path = try std.testing.allocator.dupe(u8, "second.zig") };
+    const diffs = try std.testing.allocator.alloc(git.FileDiff, 2);
+    for (diffs) |*diff| diff.* = .{
+        .allocator = std.testing.allocator,
+        .text = try std.testing.allocator.alloc(u8, 0),
+        .hunks = try std.testing.allocator.alloc(git.Hunk, 0),
+        .lines = try std.testing.allocator.alloc(git.DiffLine, 0),
+    };
+    app.openReview(try review_mod.Review.init(std.testing.allocator, .{
+        .allocator = std.testing.allocator,
+        .changes = changes,
+        .diffs = diffs,
+    }));
+
+    var session = Session.init(std.testing.allocator);
+    defer session.deinit();
+    const dimensions: Dimensions = .{ .sidebar_rows = 20, .document_rows = 20, .document_columns = 80 };
+
+    _ = try session.handle(&app, charKey(' '), dimensions);
+    _ = try session.handle(&app, charKey('v'), dimensions);
+    _ = try session.handle(&app, charKey('j'), dimensions);
+
+    try std.testing.expectEqual(@as(usize, 1), app.review.?.selectedChange().?);
+    try std.testing.expect(app.feedback == null);
+
+    // The longer refresh binding remains available after normal navigation.
+    app.git_status = .idle;
+    _ = try session.handle(&app, charKey(' '), dimensions);
+    _ = try session.handle(&app, charKey('v'), dimensions);
+    const refresh = try session.handle(&app, charKey('r'), dimensions);
+    try std.testing.expectEqual(std.meta.Tag(Effect).open_review, std.meta.activeTag(refresh));
 }
 
 test "leader and named command surfaces use the same registry" {

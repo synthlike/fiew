@@ -110,6 +110,28 @@ The repair separates requesting a refresh from opening the VCS context:
 
 Verification passed, including 101/101 integration-enabled tests and all build, format, ReleaseSafe, and Apple Silicon macOS checks.
 
+### 2026-08-27T23:16:49Z — agent
+
+## Post-resolution regression: first navigation key after `Space v` was swallowed
+
+A reviewer reported that `Space v` opened and previewed the first Unstaged file, but the first `j` or Down did not move and displayed `invalid VCS command`; repeating the key then worked.
+
+Root cause: `Space v` is both a complete open command and the prefix of `Space v r`. After opening Git, the command session incorrectly retained its VCS continuation surface indefinitely. `handleVcs` consumed the next non-`r` key as an invalid continuation, closed the surface, and prevented normal navigation until the following key.
+
+A command-session regression check with two Unstaged changes reproduced the production sequence before repair:
+
+```text
+expected 1, found 0
+```
+
+The repair keeps `Space v r` as the refresh binding, but closes the optional continuation and redispatches every non-`r` key through normal input handling. Thus the first `j`, Down, Enter, or other normal key after `Space v` takes effect instead of being swallowed.
+
+Verification after repair:
+
+- `zig build test --system zig-pkg` passed
+- `zig build test --system zig-pkg -Dgit-integration --summary all` — 106/106 tests passed
+- build, formatting, ReleaseSafe, Apple Silicon macOS target, and `git diff --check` passed
+
 ## Resolution
 
 **Outcome: Achieved.**
