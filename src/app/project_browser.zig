@@ -11,7 +11,8 @@ pub const Browser = struct {
 
     pub fn init(allocator: std.mem.Allocator, tree: *const project.Tree) !Browser {
         const expanded = try allocator.alloc(bool, tree.nodes.len);
-        @memset(expanded, true);
+        // Directories start collapsed, so only top-level entries show initially.
+        @memset(expanded, false);
         var self: Browser = .{
             .allocator = allocator,
             .tree = tree,
@@ -155,13 +156,20 @@ test "collapse preserves selection and hides descendants" {
     };
     var browser = try Browser.init(std.testing.allocator, &tree);
     defer browser.deinit();
-    browser.move(1, 20);
 
+    // Folded by default: only the two top-level entries are visible.
+    try std.testing.expectEqual(@as(usize, 2), browser.visible.items.len);
+    browser.move(1, 20);
+    try std.testing.expectEqualStrings("src", browser.selectedNode().?.path);
+
+    // Expanding `src` reveals its immediate children (src/app stays collapsed).
+    try browser.expandOrChild(20);
+    try std.testing.expectEqual(@as(usize, 4), browser.visible.items.len);
+
+    // Collapsing `src` hides them again and keeps the selection on `src`.
     try std.testing.expect(try browser.toggleSelected(20));
     try std.testing.expectEqual(@as(usize, 2), browser.visible.items.len);
     try std.testing.expectEqualStrings("src", browser.selectedNode().?.path);
-    try browser.expandOrChild(20);
-    try std.testing.expectEqual(@as(usize, 5), browser.visible.items.len);
 }
 
 test "selection remains bounded with ten thousand files" {
