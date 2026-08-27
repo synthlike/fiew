@@ -174,6 +174,13 @@ pub fn run(init: std.process.Init) !void {
         },
         else => {},
     }
+
+    // Load any existing review notes from .reviews/.
+    {
+        var loaded = fiew.review_store.loadAll(allocator, init.io, repository.root_dir) catch fiew.review_store.Loaded.empty;
+        defer loaded.deinit();
+        app.notes = fiew.notes.Notes.fromLoaded(allocator, loaded) catch null;
+    }
     var command_session = fiew.commands.Session.init(allocator);
     defer command_session.deinit();
 
@@ -374,9 +381,103 @@ fn applyEffect(
             });
             app.viewing_source = true;
         },
+        .save_note => {
+            const state_notes = if (app.notes) |*value| value else {
+                app.cancelComposer();
+                return false;
+            };
+            if (app.composer) |*composer| {
+                if (composer.anchor) |anchor| {
+                    var name_buffer: [64]u8 = undefined;
+                    var created_buffer: [32]u8 = undefined;
+                    var sha_buffer: [64]u8 = undefined;
+                    const note_session = buildNoteSession(
+                        repository,
+                        &name_buffer,
+                        &created_buffer,
+                        &sha_buffer,
+                    );
+                    const note: fiew.review.Note = .{
+                        .id = try state_notes.nextId(repository.allocator),
+                        .path = try repository.allocator.dupe(u8, anchor.path),
+                        .group = anchor.group,
+                        .status = .open,
+                        .side = anchor.side,
+                        .start_line = anchor.start_line,
+                        .end_line = anchor.end_line,
+                        .blob = if (anchor.blob) |blob| try repository.allocator.dupe(u8, blob) else null,
+                        .excerpt = try repository.allocator.dupe(u8, anchor.excerpt),
+                        .body = try repository.allocator.dupe(u8, composer.buffer.items),
+                    };
+                    try state_notes.add(note_session, note);
+                } else {
+                    state_notes.replaceBody(try repository.allocator.dupe(u8, composer.buffer.items));
+                }
+                app.cancelComposer();
+            }
+            flushNotes(repository, state_notes);
+        },
         .quit => return true,
     }
     return false;
+}
+
+/// Metadata for the session's review file, generated once per note batch.
+fn buildNoteSession(
+    repository: fiew.filesystem.Repository,
+    name_buffer: []u8,
+    created_buffer: []u8,
+    sha_buffer: []u8,
+) fiew.notes.SessionInit {
+    const nanoseconds = std.Io.Timestamp.now(repository.io, .real).nanoseconds;
+    const seconds: u64 = @intCast(@divFloor(nanoseconds, std.time.ns_per_s));
+    const created = formatTimestamp(created_buffer, seconds);
+    const filename = std.fmt.bufPrint(name_buffer, "review-{d}.md", .{seconds}) catch "review.md";
+
+    var sha: []const u8 = "";
+    var output = fiew.git_command.run(repository.allocator, repository.io, repository.root_dir, &.{ "rev-parse", "HEAD" }) catch null;
+    if (output) |*result| {
+        defer result.deinit();
+        if (result.succeeded()) {
+            const line = std.mem.trimEnd(u8, std.mem.sliceTo(result.stdout, '\n'), "\r");
+            const length = @min(line.len, sha_buffer.len);
+            @memcpy(sha_buffer[0..length], line[0..length]);
+            sha = sha_buffer[0..length];
+        }
+    }
+    return .{ .filename = filename, .base_ref = "HEAD", .base_sha = sha, .created = created };
+}
+
+fn formatTimestamp(buffer: []u8, unix_seconds: u64) []const u8 {
+    const epoch: std.time.epoch.EpochSeconds = .{ .secs = unix_seconds };
+    const day = epoch.getEpochDay();
+    const year_day = day.calculateYearDay();
+    const month_day = year_day.calculateMonthDay();
+    const day_seconds = epoch.getDaySeconds();
+    return std.fmt.bufPrint(buffer, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{
+        year_day.year,
+        month_day.month.numeric(),
+        month_day.day_index + 1,
+        day_seconds.getHoursIntoDay(),
+        day_seconds.getMinutesIntoHour(),
+        day_seconds.getSecondsIntoMinute(),
+    }) catch "1970-01-01T00:00:00Z";
+}
+
+/// Persist dirty review files and delete emptied ones.
+fn flushNotes(repository: fiew.filesystem.Repository, state_notes: *fiew.notes.Notes) void {
+    var buffer: [64]fiew.notes.Notes.DirtyFile = undefined;
+    const dirty = state_notes.dirtyFiles(&buffer);
+    for (dirty) |file| {
+        fiew.review_store.save(repository.allocator, repository.io, repository.root_dir, file.filename, file.review) catch {};
+    }
+    state_notes.clearDirty();
+    const removed = state_notes.takeRemoved();
+    defer {
+        for (removed) |name| repository.allocator.free(name);
+        repository.allocator.free(removed);
+    }
+    for (removed) |name| fiew.review_store.remove(repository.io, repository.root_dir, name);
 }
 
 fn handleMouse(
@@ -488,6 +589,7 @@ fn drawSidebar(
     root_path: []const u8,
 ) !void {
     if (app.sidebar_context == .git) return drawGitSidebar(allocator, window, app);
+    if (app.sidebar_context == .review) return drawReviewSidebar(allocator, window, app);
     _ = window.printSegment(.{
         .text = " Project ",
         .style = .{ .bold = true, .reverse = app.focus == .sidebar },
@@ -607,6 +709,19 @@ fn drawGitSidebar(allocator: std.mem.Allocator, window: vaxis.Window, app: *cons
     }
 }
 
+fn lineHasNote(app: *const fiew.app.App, change_notes: []fiew.notes.NoteRef, line: fiew.git_model.DiffLine) bool {
+    const state_notes = if (app.notes) |*value| value else return false;
+    for (change_notes) |ref| {
+        const note = state_notes.noteAt(ref);
+        const side = note.side orelse continue;
+        const number = (if (side == .new) line.new_line else line.old_line) orelse continue;
+        const start = note.start_line orelse continue;
+        const end = note.end_line orelse start;
+        if (number >= start and number <= end) return true;
+    }
+    return false;
+}
+
 fn drawDiff(allocator: std.mem.Allocator, window: vaxis.Window, app: *const fiew.app.App) !void {
     const review = if (app.review) |*value| value else {
         _ = window.printSegment(.{ .text = " Diff", .style = .{ .bold = true } }, .{ .wrap = .none });
@@ -635,6 +750,13 @@ fn drawDiff(allocator: std.mem.Allocator, window: vaxis.Window, app: *const fiew
         _ = window.printSegment(.{ .text = "No textual changes", .style = .{ .dim = true } }, .{ .row_offset = 2, .col_offset = 2, .wrap = .none });
         return;
     }
+
+    // Notes anchored to this change, for gutter markers.
+    var note_buffer: [64]fiew.notes.NoteRef = undefined;
+    const change_notes: []fiew.notes.NoteRef = if (app.notes) |*value|
+        value.forFile(change.path, change.group, &note_buffer)
+    else
+        &.{};
 
     const body_rows = window.height -| 1;
     var row: usize = 0;
@@ -676,7 +798,12 @@ fn drawDiff(allocator: std.mem.Allocator, window: vaxis.Window, app: *const fiew
             .deletion => "-",
             .context => " ",
         };
+        const noted = lineHasNote(app, change_notes, line);
         _ = window.print(&.{
+            .{
+                .text = if (noted) "▸" else " ",
+                .style = .{ .fg = .{ .index = 5 }, .bold = true },
+            },
             .{ .text = old_number, .style = .{ .dim = true } },
             .{ .text = " " },
             .{ .text = new_number, .style = .{ .dim = true } },
@@ -684,7 +811,7 @@ fn drawDiff(allocator: std.mem.Allocator, window: vaxis.Window, app: *const fiew
             .{ .text = symbol, .style = .{ .fg = color, .bold = true } },
             .{ .text = " " },
             .{
-                .text = try sanitizeLine(allocator, diff.text[line.text.start..line.text.end], window.width -| 12),
+                .text = try sanitizeLine(allocator, diff.text[line.text.start..line.text.end], window.width -| 13),
                 .style = .{ .fg = color, .reverse = cursor },
             },
         }, .{ .row_offset = @intCast(row + 1), .wrap = .none });
@@ -695,6 +822,7 @@ fn drawDiff(allocator: std.mem.Allocator, window: vaxis.Window, app: *const fiew
 
 fn drawDocument(allocator: std.mem.Allocator, window: vaxis.Window, app: *const fiew.app.App) !void {
     if (app.sidebar_context == .git and !app.viewing_source) return drawDiff(allocator, window, app);
+    if (app.sidebar_context == .review) return drawNoteDetail(allocator, window, app);
     const view = app.activeView() orelse {
         if (app.feedback) |name| {
             const message = try std.fmt.allocPrint(allocator, "Unable to open selected file: {s}", .{name});
@@ -880,6 +1008,111 @@ fn drawDocument(allocator: std.mem.Allocator, window: vaxis.Window, app: *const 
     }
 }
 
+fn drawReviewSidebar(allocator: std.mem.Allocator, window: vaxis.Window, app: *const fiew.app.App) !void {
+    _ = window.printSegment(.{
+        .text = " Review ",
+        .style = .{ .bold = true, .reverse = app.focus == .sidebar },
+    }, .{ .wrap = .none });
+    const state_notes = if (app.notes) |*value| value else {
+        _ = window.printSegment(.{ .text = "No notes", .style = .{ .dim = true } }, .{ .row_offset = 2, .col_offset = 1, .wrap = .none });
+        return;
+    };
+    if (state_notes.total() == 0) {
+        _ = window.printSegment(.{ .text = "No notes yet", .style = .{ .dim = true } }, .{ .row_offset = 2, .col_offset = 1, .wrap = .none });
+        return;
+    }
+    const available = window.height -| 1;
+    var index: usize = 0;
+    while (index < available and index < state_notes.total()) : (index += 1) {
+        const ref = state_notes.refAt(index) orelse break;
+        const note = state_notes.noteAt(ref);
+        const selected = index == state_notes.selected;
+        const resolved = note.status == .resolved;
+        const name = try sanitizeLine(allocator, std.fs.path.basename(note.path), window.width -| 3);
+        _ = window.print(&.{
+            .{
+                .text = if (resolved) "✓ " else "• ",
+                .style = .{ .fg = if (resolved) .{ .index = 2 } else .{ .index = 3 }, .reverse = selected },
+            },
+            .{ .text = name, .style = .{ .reverse = selected, .bold = selected, .dim = resolved } },
+        }, .{ .row_offset = @intCast(index + 1), .col_offset = 1, .wrap = .none });
+    }
+}
+
+fn drawNoteDetail(allocator: std.mem.Allocator, window: vaxis.Window, app: *const fiew.app.App) !void {
+    const state_notes = if (app.notes) |*value| value else return;
+    const ref = state_notes.selectedRef() orelse {
+        _ = window.printSegment(.{ .text = " Note", .style = .{ .bold = true, .reverse = app.focus == .main } }, .{ .wrap = .none });
+        _ = window.printSegment(.{ .text = "No note selected", .style = .{ .dim = true } }, .{ .row_offset = 2, .col_offset = 2, .wrap = .none });
+        return;
+    };
+    const note = state_notes.noteAt(ref);
+    const header = try std.fmt.allocPrint(allocator, " {s}  {s}", .{ note.status.label(), note.path });
+    _ = window.print(&.{
+        .{ .text = " Note", .style = .{ .bold = true, .reverse = app.focus == .main } },
+        .{ .text = try sanitizeLine(allocator, header, window.width -| 6) },
+    }, .{ .wrap = .none });
+
+    var row: u16 = 2;
+    if (note.side) |side| {
+        const anchor = try std.fmt.allocPrint(allocator, "{s}/{s} · L{d}–L{d}", .{
+            @tagName(note.group), side.label(), note.start_line orelse 0, note.end_line orelse 0,
+        });
+        _ = window.printSegment(.{ .text = try sanitizeLine(allocator, anchor, window.width -| 2), .style = .{ .dim = true } }, .{ .row_offset = row, .col_offset = 2, .wrap = .none });
+        row += 1;
+    }
+    if (note.excerpt) |excerpt| {
+        var lines = std.mem.splitScalar(u8, excerpt, '\n');
+        while (lines.next()) |line| {
+            if (line.len == 0) continue;
+            if (row >= window.height -| 1) break;
+            const color: vaxis.Cell.Color = if (line[0] == '+') .{ .index = 2 } else if (line[0] == '-') .{ .index = 1 } else .default;
+            _ = window.printSegment(.{ .text = try sanitizeLine(allocator, line, window.width -| 2), .style = .{ .fg = color } }, .{ .row_offset = row, .col_offset = 2, .wrap = .none });
+            row += 1;
+        }
+    }
+    row += 1;
+    var body_lines = std.mem.splitScalar(u8, note.body, '\n');
+    while (body_lines.next()) |line| {
+        if (row >= window.height -| 1) break;
+        _ = window.printSegment(.{ .text = try sanitizeLine(allocator, line, window.width -| 2), .style = .{} }, .{ .row_offset = row, .col_offset = 2, .wrap = .none });
+        row += 1;
+    }
+}
+
+fn drawComposer(allocator: std.mem.Allocator, window: vaxis.Window, app: *const fiew.app.App) !void {
+    const composer = if (app.composer) |*value| value else return;
+    const height: u16 = @min(window.height, 12);
+    const box = window.child(.{ .y_off = window.height - height, .height = height });
+    box.clear();
+
+    const title = if (composer.anchor) |anchor|
+        try std.fmt.allocPrint(allocator, " Note — {s} · {s} · L{d}–L{d} ", .{
+            anchor.path, anchor.side.label(), anchor.start_line, anchor.end_line,
+        })
+    else
+        try allocator.dupe(u8, " Edit note ");
+    _ = box.printSegment(.{
+        .text = try sanitizeLine(allocator, title, box.width),
+        .style = .{ .bold = true, .reverse = true },
+    }, .{ .wrap = .none });
+
+    var row: u16 = 1;
+    var lines = std.mem.splitScalar(u8, composer.buffer.items, '\n');
+    while (lines.next()) |text| {
+        if (row >= height -| 1) break;
+        _ = box.printSegment(.{
+            .text = try sanitizeLine(allocator, text, box.width -| 1),
+            .style = .{},
+        }, .{ .row_offset = row, .col_offset = 1, .wrap = .none });
+        row += 1;
+    }
+    _ = box.printSegment(.{
+        .text = "Ctrl-Enter save · Esc cancel",
+        .style = .{ .dim = true },
+    }, .{ .row_offset = height -| 1, .col_offset = 1, .wrap = .none });
+}
+
 fn drawCommandSurface(
     allocator: std.mem.Allocator,
     window: vaxis.Window,
@@ -893,7 +1126,7 @@ fn drawCommandSurface(
             menu.clear();
             _ = menu.printSegment(.{ .text = " Leader ", .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
             _ = menu.printSegment(.{
-                .text = "f files  b Project  g Git  r Review [not implemented]  ? help  q quit",
+                .text = "f files  b Project  g Git  r Review  ? help  q quit",
             }, .{ .row_offset = 1, .col_offset = 1, .wrap = .none });
         },
         .file => {
@@ -906,6 +1139,15 @@ fn drawCommandSurface(
                 .wrap = .none,
             });
         },
+        .review => {
+            const menu = window.child(.{ .y_off = window.height -| 2, .height = 2 });
+            menu.clear();
+            _ = menu.printSegment(.{ .text = " Review ", .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
+            _ = menu.printSegment(.{
+                .text = "n new  e edit  x resolve/reopen  d delete  Enter show notes",
+            }, .{ .row_offset = 1, .col_offset = 1, .wrap = .none });
+        },
+        .note_composer => try drawComposer(allocator, window, app),
         .command => {
             const height: u16 = @min(window.height, 10);
             const prompt = window.child(.{ .y_off = window.height - height, .height = height });

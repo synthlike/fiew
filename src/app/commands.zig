@@ -48,6 +48,13 @@ pub const Id = enum {
     diff_hunk_previous,
     diff_line_next,
     diff_line_previous,
+    review_show,
+    note_create,
+    note_edit,
+    note_resolve,
+    note_delete,
+    note_next,
+    note_previous,
     leader_menu,
     file_commands,
     help,
@@ -103,7 +110,14 @@ pub const definitions = [_]Definition{
     .{ .id = .diff_hunk_previous, .stable_id = "diff-hunk-previous", .title = "Previous hunk", .binding = "[ h" },
     .{ .id = .diff_line_next, .stable_id = "diff-line-next", .title = "Next changed line", .binding = "] c" },
     .{ .id = .diff_line_previous, .stable_id = "diff-line-previous", .title = "Previous changed line", .binding = "[ c" },
-    .{ .id = .review_open, .stable_id = "review-open", .title = "Open Review sidebar", .binding = "Space r", .disabled_reason = "Review notes are not implemented" },
+    .{ .id = .review_open, .stable_id = "review-open", .title = "Review notes menu", .binding = "Space r" },
+    .{ .id = .review_show, .stable_id = "review-show", .title = "Show the Review sidebar", .binding = "Space r Enter" },
+    .{ .id = .note_create, .stable_id = "note-create", .title = "Create a review note", .binding = "Space r n" },
+    .{ .id = .note_edit, .stable_id = "note-edit", .title = "Edit the selected note", .binding = "Space r e" },
+    .{ .id = .note_resolve, .stable_id = "note-resolve", .title = "Resolve or reopen the selected note", .binding = "Space r x" },
+    .{ .id = .note_delete, .stable_id = "note-delete", .title = "Delete the selected note", .binding = "Space r d" },
+    .{ .id = .note_next, .stable_id = "note-next", .title = "Next note", .binding = "] n" },
+    .{ .id = .note_previous, .stable_id = "note-previous", .title = "Previous note", .binding = "[ n" },
     .{ .id = .definition, .stable_id = "definition", .title = "Go to definition", .binding = "g d", .disabled_reason = "trusted ZLS is not available" },
     .{ .id = .fold_close, .stable_id = "fold-close", .title = "Close fold", .binding = "z c" },
     .{ .id = .fold_open, .stable_id = "fold-open", .title = "Open fold", .binding = "z o" },
@@ -198,6 +212,16 @@ pub fn unavailableReason(app: *const state.App, id: Id) ?[]const u8 {
             "no changes to review"
         else
             null,
+        .note_create => if (app.review == null or app.review.?.isEmpty())
+            "open a Git diff to annotate"
+        else
+            null,
+        .note_edit,
+        .note_resolve,
+        .note_delete,
+        .note_next,
+        .note_previous,
+        => if (!app.hasNotes()) "no notes yet" else null,
         else => null,
     };
 }
@@ -242,6 +266,8 @@ pub const Effect = union(enum) {
     open_review,
     /// Open a change's source file at a diff line.
     open_source: SourceLocation,
+    /// Save the active Note Composer's content (create or edit) and persist.
+    save_note,
     quit,
 };
 
@@ -251,6 +277,8 @@ pub const Surface = enum {
     file,
     command,
     help,
+    review,
+    note_composer,
 };
 
 const Pending = enum {
@@ -286,6 +314,8 @@ pub const Session = struct {
                 .file => "Space f",
                 .command => ":",
                 .help => "help",
+                .review => "Space r",
+                .note_composer => "note",
                 .none => "",
             },
             .goto => "g",
@@ -307,7 +337,9 @@ pub const Session = struct {
     }
 
     pub fn handle(self: *Session, app: *state.App, key: Key, dimensions: Dimensions) !Effect {
+        if (self.surface == .note_composer) return self.handleComposer(app, key, dimensions);
         if (key.code == .escape) return self.execute(app, .cancel, dimensions);
+        if (self.surface == .review) return self.handleReview(app, key, dimensions);
         if (self.surface == .command) return self.handleCommandInput(app, key, dimensions);
         if (self.surface == .help) {
             if (isCharacter(key, 'q')) return self.execute(app, .close_transient, dimensions);
@@ -497,7 +529,36 @@ pub const Session = struct {
             .diff_hunk_previous => diffHunk(app, false, dimensions),
             .diff_line_next => diffChangedLine(app, true, dimensions),
             .diff_line_previous => diffChangedLine(app, false, dimensions),
-            .review_open, .definition, .note_save, .note_discard => unreachable,
+            .review_open => {
+                self.surface = .review;
+                app.mode = .normal;
+            },
+            .review_show => app.showReviewSidebar(),
+            .note_create => {
+                if (app.beginNoteFromDiff() catch false) {
+                    self.surface = .note_composer;
+                    app.mode = .command;
+                } else {
+                    app.feedback = "select a diff line to annotate";
+                }
+            },
+            .note_edit => {
+                if (app.beginNoteEdit() catch false) {
+                    self.surface = .note_composer;
+                    app.mode = .command;
+                }
+            },
+            .note_resolve => {
+                app.resolveSelectedNote();
+                return .save_note;
+            },
+            .note_delete => {
+                try app.deleteSelectedNote();
+                return .save_note;
+            },
+            .note_next => app.moveNoteSelection(1),
+            .note_previous => app.moveNoteSelection(-1),
+            .definition, .note_save, .note_discard => unreachable,
         }
         // Fold and structural commands can move the cursor far from the current
         // scroll position; keep it on screen.
@@ -543,12 +604,14 @@ pub const Session = struct {
                 'f' => .diff_file_next,
                 'h' => .diff_hunk_next,
                 'c' => .diff_line_next,
+                'n' => .note_next,
                 else => null,
             },
             .bracket_previous => switch (character) {
                 'f' => .diff_file_previous,
                 'h' => .diff_hunk_previous,
                 'c' => .diff_line_previous,
+                'n' => .note_previous,
                 else => null,
             },
             .none => unreachable,
@@ -579,6 +642,53 @@ pub const Session = struct {
                 break :blk .none;
             },
         };
+    }
+
+    fn handleReview(self: *Session, app: *state.App, key: Key, dimensions: Dimensions) !Effect {
+        return switch (normalizedCharacter(key)) {
+            'n' => self.executeAndClose(app, .note_create, dimensions),
+            'e' => self.executeAndClose(app, .note_edit, dimensions),
+            'x' => self.executeAndClose(app, .note_resolve, dimensions),
+            'd' => self.executeAndClose(app, .note_delete, dimensions),
+            else => blk: {
+                if (key.code == .enter) break :blk self.executeAndClose(app, .review_show, dimensions);
+                app.feedback = "invalid review command";
+                self.resetTransient(app);
+                break :blk .none;
+            },
+        };
+    }
+
+    fn handleComposer(self: *Session, app: *state.App, key: Key, dimensions: Dimensions) !Effect {
+        _ = dimensions;
+        if (key.code == .escape) {
+            if (app.composer) |*composer| {
+                if (composer.modified and !composer.discard_armed) {
+                    composer.discard_armed = true;
+                    app.feedback = "press Esc again to discard the note";
+                    return .none;
+                }
+            }
+            app.cancelComposer();
+            self.resetTransient(app);
+            app.feedback = "note discarded";
+            return .none;
+        }
+        // Ctrl-Enter saves; a bare Enter inserts a newline.
+        if (key.code == .enter and key.ctrl) {
+            self.resetTransient(app);
+            return .save_note;
+        }
+        if (key.code == .enter) {
+            app.composerNewline();
+            return .none;
+        }
+        if (key.code == .backspace) {
+            app.composerBackspace();
+            return .none;
+        }
+        if (key.code == .character and !key.ctrl and !key.alt) app.composerInsert(key.character);
+        return .none;
     }
 
     fn handleCommandInput(self: *Session, app: *state.App, key: Key, dimensions: Dimensions) !Effect {
@@ -1019,4 +1129,48 @@ test "git review navigation dispatches through the reducer" {
     _ = try session.handle(&app, charKey(']'), dimensions);
     _ = try session.handle(&app, charKey('f'), dimensions);
     try std.testing.expectEqualStrings("no more files in this group", app.feedback.?);
+}
+
+test "review note composer opens from a diff and cancels with confirmation" {
+    const git = @import("../model/git.zig");
+    const review_mod = @import("git_review.zig");
+    var app = try testApp();
+    defer app.deinit();
+    app.git_enabled = true;
+
+    const changes = try std.testing.allocator.alloc(git.Change, 1);
+    changes[0] = .{ .group = .unstaged, .kind = .modified, .content = .text, .path = try std.testing.allocator.dupe(u8, "m.zig") };
+    const diffs = try std.testing.allocator.alloc(git.FileDiff, 1);
+    const lines = try std.testing.allocator.dupe(git.DiffLine, &.{
+        .{ .kind = .addition, .old_line = null, .new_line = 2, .text = .{ .start = 0, .end = 0 } },
+    });
+    const hunks = try std.testing.allocator.dupe(git.Hunk, &.{
+        .{ .old_start = 1, .old_count = 1, .new_start = 1, .new_count = 2, .header = .{ .start = 0, .end = 0 }, .first_line = 0, .line_count = 1 },
+    });
+    diffs[0] = .{ .allocator = std.testing.allocator, .text = "", .hunks = hunks, .lines = lines };
+    const review = try review_mod.Review.init(std.testing.allocator, .{ .allocator = std.testing.allocator, .changes = changes, .diffs = diffs });
+    app.openReview(review);
+
+    var session = Session.init(std.testing.allocator);
+    defer session.deinit();
+    const dimensions: Dimensions = .{ .sidebar_rows = 20, .document_rows = 20, .document_columns = 80 };
+
+    // Space r n opens the composer with a captured anchor.
+    _ = try session.handle(&app, charKey(' '), dimensions);
+    _ = try session.handle(&app, charKey('r'), dimensions);
+    _ = try session.handle(&app, charKey('n'), dimensions);
+    try std.testing.expect(app.composer != null);
+    try std.testing.expect(app.composer.?.anchor != null);
+    try std.testing.expectEqual(@import("../model/review.zig").Side.new, app.composer.?.anchor.?.side);
+
+    // Typing accumulates in the buffer.
+    _ = try session.handle(&app, charKey('h'), dimensions);
+    _ = try session.handle(&app, charKey('i'), dimensions);
+    try std.testing.expectEqualStrings("hi", app.composer.?.buffer.items);
+
+    // First Esc arms discard (buffer modified); second Esc cancels.
+    _ = try session.handle(&app, .{ .code = .escape }, dimensions);
+    try std.testing.expect(app.composer != null);
+    _ = try session.handle(&app, .{ .code = .escape }, dimensions);
+    try std.testing.expect(app.composer == null);
 }

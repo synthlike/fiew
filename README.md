@@ -117,15 +117,29 @@ changes with unified diffs. It never modifies the repository.
 | `] h` / `[ h` | Next / previous hunk |
 | `] c` / `[ c` | Next / previous changed line |
 
+### Review notes
+
+Private, local review comments anchored to a diff selection, stored as Markdown
+in a gitignored `.reviews/` directory so a coding agent can read them (see
+[ARP-0006](docs/decisions/ARP-0006.md)). fiew writes only inside `.reviews/`.
+
+| Key | Action |
+| --- | --- |
+| `Space r n` | Create a note on the current diff selection |
+| `Space r e` | Edit the selected note |
+| `Space r x` | Resolve or reopen the selected note |
+| `Space r d` | Delete the selected note |
+| `Space r` `Enter` | Show the Review sidebar |
+| `] n` / `[ n` | Next / previous note |
+| `Ctrl-Enter` / `Esc` | In the composer: save / cancel (Esc confirms if modified) |
+
 ### Planned
 
 Visible in the command list with a disabled reason until implemented:
 
 | Key | Action |
 | --- | --- |
-| `Space r` | Review sidebar |
 | `g d` | Go to definition |
-| `Ctrl-Enter` / `Esc` | Save / discard a review note |
 
 ## Language support
 

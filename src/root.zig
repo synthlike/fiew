@@ -6,6 +6,7 @@ pub const app = @import("app/state.zig");
 pub const commands = @import("app/commands.zig");
 pub const diagnostics = @import("app/diagnostics.zig");
 pub const document = @import("model/document.zig");
+pub const notes = @import("app/notes.zig");
 pub const filesystem = @import("adapters/filesystem/repository.zig");
 pub const git = @import("adapters/git/repository.zig");
 pub const git_review = @import("app/git_review.zig");

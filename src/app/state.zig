@@ -4,12 +4,48 @@ const project = @import("../model/project.zig");
 const syntax = @import("../model/syntax.zig");
 const project_browser = @import("project_browser.zig");
 const git_review = @import("git_review.zig");
+const notes_state = @import("notes.zig");
+const git = @import("../model/git.zig");
+const review = @import("../model/review.zig");
 
 /// Which structural relation to move the selection toward.
 pub const StructuralMove = enum { parent, child, next_sibling, previous_sibling };
 
 /// Which context the collapsible sidebar is showing.
-pub const SidebarContext = enum { project, git };
+pub const SidebarContext = enum { project, git, review };
+
+/// A captured diff anchor with owned strings, held while composing a new note.
+pub const OwnedAnchor = struct {
+    path: []u8,
+    group: git.Group,
+    side: review.Side,
+    start_line: usize,
+    end_line: usize,
+    blob: ?[]u8,
+    excerpt: []u8,
+
+    pub fn deinit(self: *OwnedAnchor, allocator: std.mem.Allocator) void {
+        allocator.free(self.path);
+        if (self.blob) |blob| allocator.free(blob);
+        allocator.free(self.excerpt);
+    }
+};
+
+/// The transient Note Composer: a multiline text buffer plus what it will save.
+pub const Composer = struct {
+    buffer: std.ArrayListUnmanaged(u8) = .empty,
+    modified: bool = false,
+    /// Set after one Esc when modified, requiring a second Esc to discard.
+    discard_armed: bool = false,
+    /// Present when composing a new note; null when editing the selected note.
+    anchor: ?OwnedAnchor = null,
+
+    pub fn deinit(self: *Composer, allocator: std.mem.Allocator) void {
+        self.buffer.deinit(allocator);
+        if (self.anchor) |*anchor| anchor.deinit(allocator);
+        self.* = undefined;
+    }
+};
 
 pub const Focus = enum {
     sidebar,
@@ -130,6 +166,10 @@ pub const App = struct {
     /// In the Git context, whether the main view shows a change's source (opened
     /// with `Enter`) rather than its diff.
     viewing_source: bool = false,
+    /// Loaded review notes (from `.reviews/`), when a repository is open.
+    notes: ?notes_state.Notes = null,
+    /// The active Note Composer, when open.
+    composer: ?Composer = null,
 
     pub fn init(allocator: std.mem.Allocator, tree: *const project.Tree) !App {
         return .{
@@ -141,7 +181,9 @@ pub const App = struct {
     pub fn deinit(self: *App) void {
         if (self.preview) |*view| view.deinit();
         if (self.pinned) |*view| view.deinit();
-        if (self.review) |*review| review.deinit();
+        if (self.review) |*review_state| review_state.deinit();
+        if (self.notes) |*state_notes| state_notes.deinit();
+        if (self.composer) |*composer| composer.deinit(self.allocator);
         for (self.history.items) |location| self.allocator.free(location.path);
         self.history.deinit(self.allocator);
         self.browser.deinit();
@@ -149,18 +191,108 @@ pub const App = struct {
     }
 
     /// Show the Git review context with a freshly loaded change set.
-    pub fn openReview(self: *App, review: git_review.Review) void {
+    pub fn openReview(self: *App, review_state: git_review.Review) void {
         if (self.review) |*previous| previous.deinit();
-        self.review = review;
+        self.review = review_state;
         self.sidebar_context = .git;
         self.focus = .sidebar;
-        self.feedback = if (review.isEmpty()) "no changes to review" else null;
+        self.feedback = if (review_state.isEmpty()) "no changes to review" else null;
     }
 
     /// Return the sidebar to the Project tree.
     pub fn showProjectSidebar(self: *App) void {
         self.sidebar_context = .project;
         self.focus = .sidebar;
+    }
+
+    /// Show the Review sidebar (the list of notes).
+    pub fn showReviewSidebar(self: *App) void {
+        self.sidebar_context = .review;
+        self.focus = .sidebar;
+    }
+
+    pub fn hasNotes(self: *const App) bool {
+        const state_notes = self.notes orelse return false;
+        return state_notes.total() != 0;
+    }
+
+    /// Begin composing a new note anchored to the current Git diff selection.
+    /// Returns false when there is nothing textual selected to annotate.
+    pub fn beginNoteFromDiff(self: *App) !bool {
+        const review_state = if (self.review) |*value| value else return false;
+        const draft = (try review_state.captureAnchor(self.allocator)) orelse return false;
+        errdefer self.allocator.free(draft.excerpt);
+        const path = try self.allocator.dupe(u8, draft.path);
+        errdefer self.allocator.free(path);
+        const blob = if (draft.blob) |value| try self.allocator.dupe(u8, value) else null;
+        self.setComposer(.{ .anchor = .{
+            .path = path,
+            .group = draft.group,
+            .side = draft.side,
+            .start_line = draft.start_line,
+            .end_line = draft.end_line,
+            .blob = blob,
+            .excerpt = draft.excerpt,
+        } });
+        return true;
+    }
+
+    /// Begin editing the selected note's body.
+    pub fn beginNoteEdit(self: *App) !bool {
+        const state_notes = if (self.notes) |*value| value else return false;
+        const ref = state_notes.selectedRef() orelse return false;
+        var composer: Composer = .{};
+        try composer.buffer.appendSlice(self.allocator, state_notes.noteAt(ref).body);
+        self.setComposer(composer);
+        return true;
+    }
+
+    pub fn composerInsert(self: *App, codepoint: u21) void {
+        const composer = if (self.composer) |*value| value else return;
+        var buffer: [4]u8 = undefined;
+        const length = std.unicode.utf8Encode(codepoint, &buffer) catch return;
+        composer.buffer.appendSlice(self.allocator, buffer[0..length]) catch return;
+        composer.modified = true;
+        composer.discard_armed = false;
+    }
+
+    pub fn composerNewline(self: *App) void {
+        const composer = if (self.composer) |*value| value else return;
+        composer.buffer.append(self.allocator, '\n') catch return;
+        composer.modified = true;
+        composer.discard_armed = false;
+    }
+
+    pub fn composerBackspace(self: *App) void {
+        const composer = if (self.composer) |*value| value else return;
+        if (composer.buffer.items.len == 0) return;
+        var start = composer.buffer.items.len - 1;
+        while (start > 0 and (composer.buffer.items[start] & 0xc0) == 0x80) start -= 1;
+        composer.buffer.shrinkRetainingCapacity(start);
+        composer.modified = true;
+        composer.discard_armed = false;
+    }
+
+    pub fn cancelComposer(self: *App) void {
+        if (self.composer) |*composer| composer.deinit(self.allocator);
+        self.composer = null;
+    }
+
+    pub fn resolveSelectedNote(self: *App) void {
+        if (self.notes) |*state_notes| state_notes.toggleResolved();
+    }
+
+    pub fn deleteSelectedNote(self: *App) !void {
+        if (self.notes) |*state_notes| try state_notes.deleteSelected();
+    }
+
+    pub fn moveNoteSelection(self: *App, delta: isize) void {
+        if (self.notes) |*state_notes| state_notes.moveSelection(delta);
+    }
+
+    fn setComposer(self: *App, composer: Composer) void {
+        if (self.composer) |*previous| previous.deinit(self.allocator);
+        self.composer = composer;
     }
 
     pub fn activeView(self: *const App) ?*const View {
@@ -364,7 +496,7 @@ pub const App = struct {
     /// Git review is showing a diff rather than a source document.
     pub fn mainVerticalMove(self: *App, delta: isize, viewport_height: usize, viewport_width: usize) void {
         if (self.sidebar_context == .git and !self.viewing_source) {
-            if (self.review) |*review| review.moveDiffLine(delta, viewport_height);
+            if (self.review) |*review_state| review_state.moveDiffLine(delta, viewport_height);
             return;
         }
         self.moveVertical(delta, viewport_height, viewport_width);
