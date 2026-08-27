@@ -164,6 +164,16 @@ pub fn run(init: std.process.Init) !void {
     defer repository.deinit();
     var app = try fiew.app.App.init(allocator, &repository.tree);
     defer app.deinit();
+
+    // Enable the Git review only for a usable (non-bare) work tree.
+    switch (fiew.git.discover(allocator, init.io, repository.root_dir) catch .not_a_repository) {
+        .ready => |context| {
+            var owned = context;
+            owned.deinit();
+            app.git_enabled = true;
+        },
+        else => {},
+    }
     var command_session = fiew.commands.Session.init(allocator);
     defer command_session.deinit();
 
@@ -332,6 +342,38 @@ fn applyEffect(
             };
             app.installHistorySnapshot(snapshot, location);
         },
+        .open_review => {
+            const changeset = fiew.git.loadChanges(repository.allocator, repository.io, repository.root_dir) catch |err| {
+                app.feedback = @errorName(err);
+                return false;
+            };
+            const review = fiew.git_review.Review.init(repository.allocator, changeset) catch |err| {
+                var owned = changeset;
+                owned.deinit();
+                app.feedback = @errorName(err);
+                return false;
+            };
+            app.openReview(review);
+        },
+        .open_source => |source| {
+            generation.* +%= 1;
+            const snapshot = repository.loadDocument(source.path, generation.*, segmenter) catch |err| {
+                app.feedback = @errorName(err);
+                return false;
+            };
+            const line_index = source.line -| 1;
+            const source_start = if (line_index < snapshot.line_starts.len)
+                snapshot.line_starts[line_index]
+            else
+                0;
+            app.installHistorySnapshot(snapshot, .{
+                .path = source.path,
+                .source_start = source_start,
+                .scroll_line = line_index -| (dimensions.document_rows / 2),
+                .scroll_column = 0,
+            });
+            app.viewing_source = true;
+        },
         .quit => return true,
     }
     return false;
@@ -445,6 +487,7 @@ fn drawSidebar(
     app: *const fiew.app.App,
     root_path: []const u8,
 ) !void {
+    if (app.sidebar_context == .git) return drawGitSidebar(allocator, window, app);
     _ = window.printSegment(.{
         .text = " Project ",
         .style = .{ .bold = true, .reverse = app.focus == .sidebar },
@@ -487,7 +530,171 @@ fn drawSidebar(
     }
 }
 
+fn changeMarker(change: fiew.git_model.Change) []const u8 {
+    return switch (change.content) {
+        .submodule => "S",
+        .binary => "B",
+        .text => switch (change.kind) {
+            .added => "+",
+            .deleted => "-",
+            .modified => "~",
+            .renamed => "R",
+            .copied => "C",
+            .type_changed => "T",
+            .mode_changed => "±",
+            .unmerged => "U",
+        },
+    };
+}
+
+fn changeColor(change: fiew.git_model.Change) vaxis.Cell.Color {
+    if (change.content != .text) return .default;
+    return switch (change.kind) {
+        .added => .{ .index = 2 }, // green
+        .deleted => .{ .index = 1 }, // red
+        .modified => .{ .index = 3 }, // yellow
+        .renamed, .copied => .{ .index = 6 }, // cyan
+        else => .default,
+    };
+}
+
+fn metadataLine(allocator: std.mem.Allocator, change: fiew.git_model.Change) ![]u8 {
+    if (change.kind == .mode_changed) {
+        return std.fmt.allocPrint(allocator, "Mode changed: {o} → {o}", .{ change.old_mode, change.new_mode });
+    }
+    return switch (change.content) {
+        .binary => std.fmt.allocPrint(allocator, "Binary file — no textual diff", .{}),
+        .submodule => std.fmt.allocPrint(allocator, "Submodule change — no textual diff", .{}),
+        .text => std.fmt.allocPrint(allocator, "No textual diff", .{}),
+    };
+}
+
+fn drawGitSidebar(allocator: std.mem.Allocator, window: vaxis.Window, app: *const fiew.app.App) !void {
+    _ = window.printSegment(.{
+        .text = " Git ",
+        .style = .{ .bold = true, .reverse = app.focus == .sidebar },
+    }, .{ .wrap = .none });
+
+    const review = if (app.review) |*value| value else {
+        _ = window.printSegment(.{ .text = "No repository", .style = .{ .dim = true } }, .{ .row_offset = 2, .col_offset = 1, .wrap = .none });
+        return;
+    };
+    if (review.isEmpty()) {
+        _ = window.printSegment(.{ .text = "No changes", .style = .{ .dim = true } }, .{ .row_offset = 2, .col_offset = 1, .wrap = .none });
+        return;
+    }
+
+    const available = window.height -| 1;
+    var row: usize = 0;
+    while (row < available and review.scroll + row < review.rows.len) : (row += 1) {
+        const row_index = review.scroll + row;
+        switch (review.rows[row_index]) {
+            .header => |group| {
+                const text = try std.fmt.allocPrint(allocator, "{s} ({d})", .{ group.title(), review.changeset.groupCount(group) });
+                _ = window.printSegment(.{ .text = text, .style = .{ .bold = true } }, .{ .row_offset = @intCast(row + 1), .wrap = .none });
+            },
+            .change => |change_index| {
+                const change = review.changeset.changes[change_index];
+                const selected = row_index == review.selected;
+                const name = try sanitizeLine(allocator, std.fs.path.basename(change.path), window.width -| 5);
+                _ = window.print(&.{
+                    .{ .text = changeMarker(change), .style = .{ .fg = changeColor(change), .bold = true, .reverse = selected } },
+                    .{ .text = " " },
+                    .{ .text = name, .style = .{ .reverse = selected, .bold = selected } },
+                }, .{ .row_offset = @intCast(row + 1), .col_offset = 2, .wrap = .none });
+            },
+        }
+    }
+}
+
+fn drawDiff(allocator: std.mem.Allocator, window: vaxis.Window, app: *const fiew.app.App) !void {
+    const review = if (app.review) |*value| value else {
+        _ = window.printSegment(.{ .text = " Diff", .style = .{ .bold = true } }, .{ .wrap = .none });
+        return;
+    };
+    const change_index = review.selectedChange() orelse {
+        _ = window.printSegment(.{ .text = " Diff", .style = .{ .bold = true, .reverse = app.focus == .main } }, .{ .wrap = .none });
+        const message = if (review.isEmpty()) "No changes to review" else "Select a change";
+        _ = window.printSegment(.{ .text = message, .style = .{ .dim = true } }, .{ .row_offset = 2, .col_offset = 2, .wrap = .none });
+        return;
+    };
+    const change = review.changeset.changes[change_index];
+    const diff = &review.changeset.diffs[change_index];
+
+    const heading = try std.fmt.allocPrint(allocator, " {s}  {s}", .{ change.kind.label(), change.path });
+    _ = window.print(&.{
+        .{ .text = " Diff", .style = .{ .bold = true, .reverse = app.focus == .main } },
+        .{ .text = try sanitizeLine(allocator, heading, window.width -| 6) },
+    }, .{ .wrap = .none });
+
+    if (!change.showsDiff()) {
+        _ = window.printSegment(.{ .text = try metadataLine(allocator, change), .style = .{ .dim = true } }, .{ .row_offset = 2, .col_offset = 2, .wrap = .none });
+        return;
+    }
+    if (diff.lines.len == 0) {
+        _ = window.printSegment(.{ .text = "No textual changes", .style = .{ .dim = true } }, .{ .row_offset = 2, .col_offset = 2, .wrap = .none });
+        return;
+    }
+
+    const body_rows = window.height -| 1;
+    var row: usize = 0;
+    var line_index = review.diff_scroll;
+    while (row < body_rows and line_index < diff.lines.len) {
+        for (diff.hunks) |hunk| {
+            if (hunk.first_line == line_index) {
+                const heading_text = diff.text[hunk.header.start..hunk.header.end];
+                const header = try std.fmt.allocPrint(allocator, "@@ -{d},{d} +{d},{d} @@ {s}", .{
+                    hunk.old_start, hunk.old_count, hunk.new_start, hunk.new_count, heading_text,
+                });
+                _ = window.printSegment(.{
+                    .text = try sanitizeLine(allocator, header, window.width -| 1),
+                    .style = .{ .fg = .{ .index = 6 }, .dim = true },
+                }, .{ .row_offset = @intCast(row + 1), .wrap = .none });
+                row += 1;
+                break;
+            }
+        }
+        if (row >= body_rows) break;
+
+        const line = diff.lines[line_index];
+        const cursor = line_index == review.diff_line and app.focus == .main;
+        const color: vaxis.Cell.Color = switch (line.kind) {
+            .addition => .{ .index = 2 },
+            .deletion => .{ .index = 1 },
+            .context => .default,
+        };
+        const old_number = if (line.old_line) |number|
+            try std.fmt.allocPrint(allocator, "{d: >4}", .{number})
+        else
+            "    ";
+        const new_number = if (line.new_line) |number|
+            try std.fmt.allocPrint(allocator, "{d: >4}", .{number})
+        else
+            "    ";
+        const symbol: []const u8 = switch (line.kind) {
+            .addition => "+",
+            .deletion => "-",
+            .context => " ",
+        };
+        _ = window.print(&.{
+            .{ .text = old_number, .style = .{ .dim = true } },
+            .{ .text = " " },
+            .{ .text = new_number, .style = .{ .dim = true } },
+            .{ .text = " " },
+            .{ .text = symbol, .style = .{ .fg = color, .bold = true } },
+            .{ .text = " " },
+            .{
+                .text = try sanitizeLine(allocator, diff.text[line.text.start..line.text.end], window.width -| 12),
+                .style = .{ .fg = color, .reverse = cursor },
+            },
+        }, .{ .row_offset = @intCast(row + 1), .wrap = .none });
+        line_index += 1;
+        row += 1;
+    }
+}
+
 fn drawDocument(allocator: std.mem.Allocator, window: vaxis.Window, app: *const fiew.app.App) !void {
+    if (app.sidebar_context == .git and !app.viewing_source) return drawDiff(allocator, window, app);
     const view = app.activeView() orelse {
         if (app.feedback) |name| {
             const message = try std.fmt.allocPrint(allocator, "Unable to open selected file: {s}", .{name});
@@ -686,7 +893,7 @@ fn drawCommandSurface(
             menu.clear();
             _ = menu.printSegment(.{ .text = " Leader ", .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
             _ = menu.printSegment(.{
-                .text = "f files  b Project  g Git [not implemented]  r Review [not implemented]  ? help  q quit",
+                .text = "f files  b Project  g Git  r Review [not implemented]  ? help  q quit",
             }, .{ .row_offset = 1, .col_offset = 1, .wrap = .none });
         },
         .file => {

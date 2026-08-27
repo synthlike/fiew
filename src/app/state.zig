@@ -3,9 +3,13 @@ const document = @import("../model/document.zig");
 const project = @import("../model/project.zig");
 const syntax = @import("../model/syntax.zig");
 const project_browser = @import("project_browser.zig");
+const git_review = @import("git_review.zig");
 
 /// Which structural relation to move the selection toward.
 pub const StructuralMove = enum { parent, child, next_sibling, previous_sibling };
+
+/// Which context the collapsible sidebar is showing.
+pub const SidebarContext = enum { project, git };
 
 pub const Focus = enum {
     sidebar,
@@ -119,6 +123,13 @@ pub const App = struct {
     feedback: ?[]const u8 = null,
     history: std.ArrayListUnmanaged(Location) = .empty,
     history_index: ?usize = null,
+    sidebar_context: SidebarContext = .project,
+    review: ?git_review.Review = null,
+    /// Set once at startup: whether the browsed directory is a usable Git repo.
+    git_enabled: bool = false,
+    /// In the Git context, whether the main view shows a change's source (opened
+    /// with `Enter`) rather than its diff.
+    viewing_source: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, tree: *const project.Tree) !App {
         return .{
@@ -130,10 +141,26 @@ pub const App = struct {
     pub fn deinit(self: *App) void {
         if (self.preview) |*view| view.deinit();
         if (self.pinned) |*view| view.deinit();
+        if (self.review) |*review| review.deinit();
         for (self.history.items) |location| self.allocator.free(location.path);
         self.history.deinit(self.allocator);
         self.browser.deinit();
         self.* = undefined;
+    }
+
+    /// Show the Git review context with a freshly loaded change set.
+    pub fn openReview(self: *App, review: git_review.Review) void {
+        if (self.review) |*previous| previous.deinit();
+        self.review = review;
+        self.sidebar_context = .git;
+        self.focus = .sidebar;
+        self.feedback = if (review.isEmpty()) "no changes to review" else null;
+    }
+
+    /// Return the sidebar to the Project tree.
+    pub fn showProjectSidebar(self: *App) void {
+        self.sidebar_context = .project;
+        self.focus = .sidebar;
     }
 
     pub fn activeView(self: *const App) ?*const View {
@@ -331,6 +358,16 @@ pub const App = struct {
             if (fallback_index) |index| best_index = index;
         }
         self.applyMovementPreservingColumn(best_index, viewport_height, viewport_width);
+    }
+
+    /// Vertical movement in the main view, routed to the diff cursor when the
+    /// Git review is showing a diff rather than a source document.
+    pub fn mainVerticalMove(self: *App, delta: isize, viewport_height: usize, viewport_width: usize) void {
+        if (self.sidebar_context == .git and !self.viewing_source) {
+            if (self.review) |*review| review.moveDiffLine(delta, viewport_height);
+            return;
+        }
+        self.moveVertical(delta, viewport_height, viewport_width);
     }
 
     /// Attach syntax analysis to the active view, taking ownership of `data`.

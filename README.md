@@ -101,13 +101,28 @@ command registry generates the in-app help (`Space ?`) and named-command search
 | `Alt-i` | Select the first child node |
 | `Alt-n` / `Alt-p` | Select the next / previous sibling node |
 
+### Git review
+
+Read-only review of the current working tree — Staged, Unstaged, and Untracked
+changes with unified diffs. It never modifies the repository.
+
+| Key | Action |
+| --- | --- |
+| `Space g` | Open the Git review |
+| `Space b` | Return to the Project sidebar |
+| `j` / `k` | Select the next / previous change |
+| `Enter` | Focus the diff; on a diff line, open the source in context |
+| `Ctrl-o` | Return from the source view to the diff |
+| `] f` / `[ f` | Next / previous changed file |
+| `] h` / `[ h` | Next / previous hunk |
+| `] c` / `[ c` | Next / previous changed line |
+
 ### Planned
 
 Visible in the command list with a disabled reason until implemented:
 
 | Key | Action |
 | --- | --- |
-| `Space g` | Git sidebar |
 | `Space r` | Review sidebar |
 | `g d` | Go to definition |
 | `Ctrl-Enter` / `Esc` | Save / discard a review note |

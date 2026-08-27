@@ -42,6 +42,12 @@ pub const Id = enum {
     structural_child,
     structural_next,
     structural_previous,
+    diff_file_next,
+    diff_file_previous,
+    diff_hunk_next,
+    diff_hunk_previous,
+    diff_line_next,
+    diff_line_previous,
     leader_menu,
     file_commands,
     help,
@@ -90,7 +96,13 @@ pub const definitions = [_]Definition{
     .{ .id = .project_expand, .stable_id = "project-expand", .title = "Expand or child", .binding = "l" },
     .{ .id = .project_toggle, .stable_id = "project-toggle", .title = "Toggle Project directory", .binding = "Enter" },
     .{ .id = .project_open, .stable_id = "project-open", .title = "Open Project sidebar", .binding = "Space b" },
-    .{ .id = .git_open, .stable_id = "git-open", .title = "Open Git sidebar", .binding = "Space g", .disabled_reason = "Git view is not implemented" },
+    .{ .id = .git_open, .stable_id = "git-open", .title = "Open Git sidebar", .binding = "Space g" },
+    .{ .id = .diff_file_next, .stable_id = "diff-file-next", .title = "Next changed file", .binding = "] f" },
+    .{ .id = .diff_file_previous, .stable_id = "diff-file-previous", .title = "Previous changed file", .binding = "[ f" },
+    .{ .id = .diff_hunk_next, .stable_id = "diff-hunk-next", .title = "Next hunk", .binding = "] h" },
+    .{ .id = .diff_hunk_previous, .stable_id = "diff-hunk-previous", .title = "Previous hunk", .binding = "[ h" },
+    .{ .id = .diff_line_next, .stable_id = "diff-line-next", .title = "Next changed line", .binding = "] c" },
+    .{ .id = .diff_line_previous, .stable_id = "diff-line-previous", .title = "Previous changed line", .binding = "[ c" },
     .{ .id = .review_open, .stable_id = "review-open", .title = "Open Review sidebar", .binding = "Space r", .disabled_reason = "Review notes are not implemented" },
     .{ .id = .definition, .stable_id = "definition", .title = "Go to definition", .binding = "g d", .disabled_reason = "trusted ZLS is not available" },
     .{ .id = .fold_close, .stable_id = "fold-close", .title = "Close fold", .binding = "z c" },
@@ -146,7 +158,12 @@ pub fn unavailableReason(app: *const state.App, id: Id) ?[]const u8 {
             "document has no navigable text"
         else
             null,
-        .activate => if (app.focus != .sidebar) "focus Project to activate an item" else null,
+        .activate => if (app.focus == .sidebar)
+            null
+        else if (app.sidebar_context == .git and !app.viewing_source)
+            null // Enter opens the source of the diff line under the cursor
+        else
+            "focus Project to activate an item",
         .fold_close,
         .fold_open,
         .fold_toggle,
@@ -166,6 +183,19 @@ pub fn unavailableReason(app: *const state.App, id: Id) ?[]const u8 {
             "focus main view to navigate structure"
         else if (!app.outlineAvailable())
             "Tree-sitter structure is not available"
+        else
+            null,
+        .git_open => if (!app.git_enabled) "not a Git repository" else null,
+        .diff_file_next,
+        .diff_file_previous,
+        .diff_hunk_next,
+        .diff_hunk_previous,
+        .diff_line_next,
+        .diff_line_previous,
+        => if (app.sidebar_context != .git)
+            "open the Git view first"
+        else if (app.review == null or app.review.?.isEmpty())
+            "no changes to review"
         else
             null,
         else => null,
@@ -200,11 +230,18 @@ pub const Dimensions = struct {
     document_columns: usize,
 };
 
+/// A source location to open in context from a diff line.
+pub const SourceLocation = struct { path: []const u8, line: usize };
+
 pub const Effect = union(enum) {
     none,
     preview_selection,
     activate_selection,
     open_history: state.Location,
+    /// Load and show the Git working-tree review.
+    open_review,
+    /// Open a change's source file at a diff line.
+    open_source: SourceLocation,
     quit,
 };
 
@@ -220,6 +257,8 @@ const Pending = enum {
     none,
     goto,
     fold,
+    bracket_next,
+    bracket_previous,
 };
 
 pub const Session = struct {
@@ -251,6 +290,8 @@ pub const Session = struct {
             },
             .goto => "g",
             .fold => "z",
+            .bracket_next => "]",
+            .bracket_previous => "[",
         };
     }
 
@@ -323,6 +364,8 @@ pub const Session = struct {
             ';' => self.execute(app, .collapse_selection, dimensions),
             'g' => self.startPending(.goto, app),
             'z' => self.startPending(.fold, app),
+            ']' => self.startPending(.bracket_next, app),
+            '[' => self.startPending(.bracket_previous, app),
             ' ' => self.execute(app, .leader_menu, dimensions),
             ':' => self.execute(app, .command_prompt, dimensions),
             'q' => self.execute(app, .close_transient, dimensions),
@@ -339,39 +382,59 @@ pub const Session = struct {
         app.feedback = null;
         switch (id) {
             .move_left => app.moveHorizontal(-1, dimensions.document_columns),
-            .move_down => app.moveVertical(1, dimensions.document_rows, dimensions.document_columns),
-            .move_up => app.moveVertical(-1, dimensions.document_rows, dimensions.document_columns),
+            .move_down => app.mainVerticalMove(1, dimensions.document_rows, dimensions.document_columns),
+            .move_up => app.mainVerticalMove(-1, dimensions.document_rows, dimensions.document_columns),
             .move_right => app.moveHorizontal(1, dimensions.document_columns),
             .word_forward => app.moveWordForward(false, dimensions.document_columns),
             .word_backward => app.moveWordBackward(dimensions.document_columns),
             .word_end => app.moveWordForward(true, dimensions.document_columns),
             .document_start => app.moveDocumentBoundary(false, dimensions.document_rows, dimensions.document_columns),
             .document_end => app.moveDocumentBoundary(true, dimensions.document_rows, dimensions.document_columns),
-            .half_page_up => app.moveVertical(-@as(isize, @intCast(@max(dimensions.document_rows / 2, 1))), dimensions.document_rows, dimensions.document_columns),
-            .half_page_down => app.moveVertical(@intCast(@max(dimensions.document_rows / 2, 1)), dimensions.document_rows, dimensions.document_columns),
-            .page_up => app.moveVertical(-@as(isize, @intCast(@max(dimensions.document_rows, 1))), dimensions.document_rows, dimensions.document_columns),
-            .page_down => app.moveVertical(@intCast(@max(dimensions.document_rows, 1)), dimensions.document_rows, dimensions.document_columns),
+            .half_page_up => app.mainVerticalMove(-@as(isize, @intCast(@max(dimensions.document_rows / 2, 1))), dimensions.document_rows, dimensions.document_columns),
+            .half_page_down => app.mainVerticalMove(@intCast(@max(dimensions.document_rows / 2, 1)), dimensions.document_rows, dimensions.document_columns),
+            .page_up => app.mainVerticalMove(-@as(isize, @intCast(@max(dimensions.document_rows, 1))), dimensions.document_rows, dimensions.document_columns),
+            .page_down => app.mainVerticalMove(@intCast(@max(dimensions.document_rows, 1)), dimensions.document_rows, dimensions.document_columns),
             .toggle_extend => app.toggleExtend(),
             .select_line => app.selectLine(),
             .collapse_selection => app.collapseSelection(),
             .reverse_selection => app.reverseSelection(),
-            .activate => return if (app.focus == .sidebar) .activate_selection else .none,
-            .history_back => if (try app.historyBack()) |location| return .{ .open_history = location },
+            .activate => return activate(app),
+            .history_back => {
+                // In the Git review, Ctrl-o returns from a source view to its diff.
+                if (app.sidebar_context == .git and app.viewing_source) {
+                    app.viewing_source = false;
+                    app.focus = .main;
+                    return .none;
+                }
+                if (try app.historyBack()) |location| return .{ .open_history = location };
+            },
             .history_forward => if (try app.historyForward()) |location| return .{ .open_history = location },
             .focus_next, .focus_previous => app.toggleFocus(),
             .project_up => {
+                if (app.sidebar_context == .git) {
+                    if (app.review) |*review| review.moveSelection(-1, dimensions.sidebar_rows);
+                    app.viewing_source = false;
+                    return .none;
+                }
                 app.browser.move(-1, dimensions.sidebar_rows);
                 return .preview_selection;
             },
             .project_down => {
+                if (app.sidebar_context == .git) {
+                    if (app.review) |*review| review.moveSelection(1, dimensions.sidebar_rows);
+                    app.viewing_source = false;
+                    return .none;
+                }
                 app.browser.move(1, dimensions.sidebar_rows);
                 return .preview_selection;
             },
             .project_collapse => {
+                if (app.sidebar_context == .git) return .none;
                 try app.browser.collapseOrParent(dimensions.sidebar_rows);
                 return .preview_selection;
             },
             .project_expand => {
+                if (app.sidebar_context == .git) return .none;
                 try app.browser.expandOrChild(dimensions.sidebar_rows);
                 return .preview_selection;
             },
@@ -380,7 +443,13 @@ pub const Session = struct {
                 app.clearPreview();
             },
             .project_open => {
-                if (app.sidebar_visible and app.focus == .sidebar) app.collapseSidebar() else app.showSidebar();
+                if (app.sidebar_context == .git) {
+                    app.showProjectSidebar();
+                } else if (app.sidebar_visible and app.focus == .sidebar) {
+                    app.collapseSidebar();
+                } else {
+                    app.showSidebar();
+                }
             },
             .leader_menu => {
                 self.surface = .leader;
@@ -421,7 +490,14 @@ pub const Session = struct {
             .structural_child => app.structuralMove(.child),
             .structural_next => app.structuralMove(.next_sibling),
             .structural_previous => app.structuralMove(.previous_sibling),
-            .git_open, .review_open, .definition, .note_save, .note_discard => unreachable,
+            .git_open => return .open_review,
+            .diff_file_next => diffFile(app, true, dimensions),
+            .diff_file_previous => diffFile(app, false, dimensions),
+            .diff_hunk_next => diffHunk(app, true, dimensions),
+            .diff_hunk_previous => diffHunk(app, false, dimensions),
+            .diff_line_next => diffChangedLine(app, true, dimensions),
+            .diff_line_previous => diffChangedLine(app, false, dimensions),
+            .review_open, .definition, .note_save, .note_discard => unreachable,
         }
         // Fold and structural commands can move the cursor far from the current
         // scroll position; keep it on screen.
@@ -461,6 +537,18 @@ pub const Session = struct {
                 'c' => .fold_close,
                 'o' => .fold_open,
                 'a' => .fold_toggle,
+                else => null,
+            },
+            .bracket_next => switch (character) {
+                'f' => .diff_file_next,
+                'h' => .diff_hunk_next,
+                'c' => .diff_line_next,
+                else => null,
+            },
+            .bracket_previous => switch (character) {
+                'f' => .diff_file_previous,
+                'h' => .diff_hunk_previous,
+                'c' => .diff_line_previous,
                 else => null,
             },
             .none => unreachable,
@@ -585,6 +673,51 @@ pub const Session = struct {
         app.mode = .normal;
     }
 };
+
+fn activate(app: *state.App) Effect {
+    if (app.focus == .sidebar) {
+        if (app.sidebar_context == .git) {
+            // Focus the diff of the selected change.
+            if (app.review != null and app.review.?.selectedChange() != null) {
+                app.focus = .main;
+                app.viewing_source = false;
+            }
+            return .none;
+        }
+        return .activate_selection;
+    }
+    // In the diff view, Enter opens the change's source in context.
+    if (app.sidebar_context == .git and !app.viewing_source) {
+        if (app.review) |*review| {
+            if (review.sourceTarget()) |target|
+                return .{ .open_source = .{ .path = target.path, .line = target.line } };
+        }
+    }
+    return .none;
+}
+
+fn diffFile(app: *state.App, forward: bool, dimensions: Dimensions) void {
+    const review = &app.review.?;
+    if (review.moveFile(forward, dimensions.sidebar_rows)) {
+        app.viewing_source = false;
+    } else {
+        app.feedback = "no more files in this group";
+    }
+}
+
+fn diffHunk(app: *state.App, forward: bool, dimensions: Dimensions) void {
+    const review = &app.review.?;
+    if (!review.moveHunk(forward)) app.feedback = "no more hunks";
+    review.ensureDiffVisible(dimensions.document_rows);
+    app.viewing_source = false;
+}
+
+fn diffChangedLine(app: *state.App, forward: bool, dimensions: Dimensions) void {
+    const review = &app.review.?;
+    if (!review.moveChangedLine(forward)) app.feedback = "no more changed lines";
+    review.ensureDiffVisible(dimensions.document_rows);
+    app.viewing_source = false;
+}
 
 fn matchesQuery(item: Definition, query: []const u8) bool {
     if (query.len == 0) return true;
@@ -719,7 +852,7 @@ test "leader and named command surfaces use the same registry" {
 
     _ = try session.handle(&app, charKey(' '), dimensions);
     _ = try session.handle(&app, charKey('g'), dimensions);
-    try std.testing.expectEqualStrings("Git view is not implemented", app.feedback.?);
+    try std.testing.expectEqualStrings("not a Git repository", app.feedback.?);
 
     _ = try session.handle(&app, charKey(':'), dimensions);
     for ("quit") |character| _ = try session.handle(&app, charKey(character), dimensions);
@@ -838,4 +971,52 @@ test "structural navigation scrolls the view to a distant target" {
     const view = app.activeView().?;
     try std.testing.expectEqual(@as(usize, 20), view.snapshot.graphemes[view.active_grapheme].line);
     try std.testing.expect(view.scroll_line > 0);
+}
+
+test "git review navigation dispatches through the reducer" {
+    const git = @import("../model/git.zig");
+    const review_mod = @import("git_review.zig");
+    var app = try testApp();
+    defer app.deinit();
+    app.git_enabled = true;
+
+    const changes = try std.testing.allocator.alloc(git.Change, 1);
+    changes[0] = .{ .group = .unstaged, .kind = .modified, .content = .text, .path = try std.testing.allocator.dupe(u8, "m.zig") };
+    const diffs = try std.testing.allocator.alloc(git.FileDiff, 1);
+    const lines = try std.testing.allocator.dupe(git.DiffLine, &.{
+        .{ .kind = .context, .old_line = 1, .new_line = 1, .text = .{ .start = 0, .end = 0 } },
+        .{ .kind = .deletion, .old_line = 2, .new_line = null, .text = .{ .start = 0, .end = 0 } },
+        .{ .kind = .addition, .old_line = null, .new_line = 2, .text = .{ .start = 0, .end = 0 } },
+    });
+    const hunks = try std.testing.allocator.dupe(git.Hunk, &.{
+        .{ .old_start = 1, .old_count = 2, .new_start = 1, .new_count = 2, .header = .{ .start = 0, .end = 0 }, .first_line = 0, .line_count = 3 },
+    });
+    diffs[0] = .{ .allocator = std.testing.allocator, .text = "", .hunks = hunks, .lines = lines };
+    const review = try review_mod.Review.init(std.testing.allocator, .{ .allocator = std.testing.allocator, .changes = changes, .diffs = diffs });
+    app.openReview(review);
+
+    var session = Session.init(std.testing.allocator);
+    defer session.deinit();
+    const dimensions: Dimensions = .{ .sidebar_rows = 20, .document_rows = 20, .document_columns = 80 };
+
+    // Enter focuses the diff view.
+    _ = try session.handle(&app, .{ .code = .enter }, dimensions);
+    try std.testing.expectEqual(state.Focus.main, app.focus);
+
+    // ] c moves the diff cursor to the next changed line (the deletion).
+    _ = try session.handle(&app, charKey(']'), dimensions);
+    _ = try session.handle(&app, charKey('c'), dimensions);
+    try std.testing.expectEqual(@as(usize, 1), app.review.?.diff_line);
+
+    // Enter on a diff line requests opening the source in context.
+    const effect = try session.handle(&app, .{ .code = .enter }, dimensions);
+    try std.testing.expect(effect == .open_source);
+    try std.testing.expectEqualStrings("m.zig", effect.open_source.path);
+    try std.testing.expectEqual(@as(usize, 2), effect.open_source.line); // deletion -> old side line 2
+
+    // ] f at the only file in the group reports a boundary.
+    app.viewing_source = false;
+    _ = try session.handle(&app, charKey(']'), dimensions);
+    _ = try session.handle(&app, charKey('f'), dimensions);
+    try std.testing.expectEqualStrings("no more files in this group", app.feedback.?);
 }

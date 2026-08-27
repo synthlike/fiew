@@ -8,6 +8,7 @@ pub const diagnostics = @import("app/diagnostics.zig");
 pub const document = @import("model/document.zig");
 pub const filesystem = @import("adapters/filesystem/repository.zig");
 pub const git = @import("adapters/git/repository.zig");
+pub const git_review = @import("app/git_review.zig");
 pub const git_changes = @import("adapters/git/changes.zig");
 pub const git_command = @import("adapters/git/command.zig");
 pub const git_diff = @import("adapters/git/diff.zig");
