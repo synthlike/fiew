@@ -10,10 +10,183 @@ const Event = union(enum) {
     /// A completed parse job, delivered from the worker thread. The main thread
     /// owns and frees the boxed completion.
     parse_done: *fiew.parse_job.Completion,
+    git_done: *fiew.git_job.Completion,
+    git_probe_done: *GitProbeCompletion,
 };
 
 const Completion = fiew.parse_job.Completion;
 const ParseFuture = std.Io.Future(void);
+const GitFuture = std.Io.Future(void);
+
+const GitProbeCompletion = union(enum) {
+    success: fiew.git.Fingerprint,
+    failure: fiew.git_job.Failure,
+};
+
+/// Owns the single bounded Git worker slot. New requests supersede old
+/// generations; obsolete completions are destroyed without publishing.
+const GitLoadState = struct {
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    loop: *vaxis.Loop(Event),
+    future: ?GitFuture = null,
+    running_generation: ?u64 = null,
+    queued_generation: ?u64 = null,
+    probing: bool = false,
+    last_fingerprint: ?fiew.git.Fingerprint = null,
+    probe_ticks: u8 = 0,
+
+    fn init(io: std.Io, allocator: std.mem.Allocator, loop: *vaxis.Loop(Event)) GitLoadState {
+        return .{ .io = io, .allocator = allocator, .loop = loop };
+    }
+
+    fn deinit(self: *GitLoadState) void {
+        if (self.future) |*future| _ = future.await(self.io);
+        self.* = undefined;
+    }
+
+    fn submit(self: *GitLoadState, repository: fiew.filesystem.Repository, generation: u64) void {
+        if (self.future != null) {
+            self.queued_generation = generation;
+            return;
+        }
+        self.probing = false;
+        self.future = self.io.concurrent(gitWorker, .{
+            self.loop, self.allocator, repository.io, repository.root_dir, generation,
+        }) catch {
+            self.queued_generation = generation;
+            return;
+        };
+        self.running_generation = generation;
+    }
+
+    fn onCompletion(
+        self: *GitLoadState,
+        app: *fiew.app.App,
+        repository: fiew.filesystem.Repository,
+        box: *fiew.git_job.Completion,
+    ) void {
+        if (self.running_generation == box.generation) {
+            if (self.future) |*future| _ = future.await(self.io);
+            self.future = null;
+            self.running_generation = null;
+        }
+
+        if (box.generation == app.git_generation) switch (box.result) {
+            .success => {
+                if (fiew.git_job.accept(box, app.git_generation)) |snapshot| {
+                    self.last_fingerprint = snapshot.fingerprint;
+                    const review = fiew.git_review.Review.init(self.allocator, snapshot.changeset) catch |err| {
+                        var owned = snapshot.changeset;
+                        owned.deinit();
+                        app.failGitRefresh(box.generation, @errorName(err));
+                        box.deinit();
+                        self.allocator.destroy(box);
+                        return;
+                    };
+                    app.openReview(review);
+                }
+            },
+            .failure => |failure| app.failGitRefresh(box.generation, failure.message()),
+        };
+        box.deinit();
+        self.allocator.destroy(box);
+
+        if (self.queued_generation) |generation| {
+            self.queued_generation = null;
+            if (generation == app.git_generation) self.submit(repository, generation);
+        }
+    }
+
+    /// Poll a cheap Git fingerprint once per second. A changed fingerprint is
+    /// debounced into one generation-gated full refresh.
+    fn onTick(self: *GitLoadState, app: *fiew.app.App, repository: fiew.filesystem.Repository) void {
+        if (!app.git_enabled or app.review == null or app.git_status == .pending or self.future != null) {
+            self.probe_ticks = 0;
+            return;
+        }
+        self.probe_ticks +|= 1;
+        if (self.probe_ticks < 4) return;
+        self.probe_ticks = 0;
+        self.probing = true;
+        self.future = self.io.concurrent(gitProbeWorker, .{
+            self.loop, self.allocator, repository.io, repository.root_dir,
+        }) catch {
+            self.probing = false;
+            return;
+        };
+    }
+
+    fn onProbeCompletion(
+        self: *GitLoadState,
+        app: *fiew.app.App,
+        repository: fiew.filesystem.Repository,
+        box: *GitProbeCompletion,
+    ) void {
+        if (self.probing) {
+            if (self.future) |*future| _ = future.await(self.io);
+            self.future = null;
+            self.probing = false;
+        }
+        const changed = switch (box.*) {
+            .success => |fingerprint| if (self.last_fingerprint) |last|
+                !std.mem.eql(u8, &last, &fingerprint)
+            else
+                true,
+            .failure => |failure| blk: {
+                app.git_status = .stale;
+                app.feedback = failure.message();
+                break :blk false;
+            },
+        };
+        self.allocator.destroy(box);
+
+        if (self.queued_generation) |generation| {
+            self.queued_generation = null;
+            if (generation == app.git_generation) self.submit(repository, generation);
+        } else if (changed) {
+            self.submit(repository, app.beginGitRefresh());
+        }
+    }
+};
+
+fn gitWorker(
+    loop: *vaxis.Loop(Event),
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root_dir: std.Io.Dir,
+    generation: u64,
+) void {
+    const result: fiew.git_job.Result = if (fiew.git.loadSnapshot(allocator, io, root_dir)) |snapshot|
+        .{ .success = snapshot }
+    else |err|
+        .{ .failure = fiew.git_job.failureFromError(err) };
+    const box = allocator.create(fiew.git_job.Completion) catch {
+        var owned = result;
+        owned.deinit();
+        return;
+    };
+    box.* = .{ .generation = generation, .result = result };
+    loop.postEvent(.{ .git_done = box }) catch {
+        box.deinit();
+        allocator.destroy(box);
+    };
+}
+
+fn gitProbeWorker(
+    loop: *vaxis.Loop(Event),
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root_dir: std.Io.Dir,
+) void {
+    const result: GitProbeCompletion = if (fiew.git.fingerprint(allocator, io, root_dir)) |value|
+        .{ .success = value }
+    else |err|
+        .{ .failure = fiew.git_job.failureFromError(err) };
+    const box = allocator.create(GitProbeCompletion) catch return;
+    box.* = result;
+    loop.postEvent(.{ .git_probe_done = box }) catch allocator.destroy(box);
+}
 
 /// Drives off-render-loop Zig parsing for the active document: one worker at a
 /// time, results routed by snapshot generation, cancelled past the one-second
@@ -174,20 +347,29 @@ pub fn run(init: std.process.Init) !u8 {
         if (name.len == 0 or std.mem.indexOfScalar(u8, name, '/') != null) review_name = null;
     }
 
-    var repository = try fiew.filesystem.Repository.open(allocator, init.io, root_path);
-    defer repository.deinit();
-    var app = try fiew.app.App.init(allocator, &repository.tree);
-    defer app.deinit();
-
-    // Enable the Git review only for a usable (non-bare) work tree.
-    switch (fiew.git.discover(allocator, init.io, repository.root_dir) catch .not_a_repository) {
+    // Discover once from the requested path, then make the discovered worktree
+    // top level the one root used by Project, Git, source, reviews, and state.
+    var requested_dir = try std.Io.Dir.cwd().openDir(init.io, root_path, .{});
+    defer requested_dir.close(init.io);
+    var canonical_root: ?[]u8 = null;
+    defer if (canonical_root) |path| allocator.free(path);
+    var git_ready = false;
+    switch (fiew.git.discover(allocator, init.io, requested_dir) catch .not_a_repository) {
         .ready => |context| {
             var owned = context;
-            owned.deinit();
-            app.git_enabled = true;
+            defer owned.deinit();
+            canonical_root = try allocator.dupe(u8, owned.toplevel);
+            git_ready = true;
         },
         else => {},
     }
+
+    var repository = try fiew.filesystem.Repository.open(allocator, init.io, canonical_root orelse root_path);
+    defer repository.deinit();
+    var app = try fiew.app.App.init(allocator, &repository.tree);
+    defer app.deinit();
+    app.git_enabled = git_ready;
+    app.git_status = if (git_ready) .idle else .disabled;
 
     // Load any existing review notes from .reviews/, routing new notes into the
     // named review file when `--review` was given.
@@ -231,6 +413,8 @@ pub fn run(init: std.process.Init) !u8 {
 
     var parse_state = ParseState.init(init.io, allocator, &loop);
     defer parse_state.deinit();
+    var git_state = GitLoadState.init(init.io, allocator, &loop);
+    defer git_state.deinit();
 
     try vx.enterAltScreen(tty.writer());
     try tty.writer().flush();
@@ -262,6 +446,7 @@ pub fn run(init: std.process.Init) !u8 {
                         commandDimensions(vx.window(), &app),
                         effect,
                         review_name,
+                        &git_state,
                     )) {
                         // Exit code reports whether the named review has open
                         // notes, so an agent can branch on approval. Cleanup
@@ -293,8 +478,11 @@ pub fn run(init: std.process.Init) !u8 {
             .tick => {
                 command_session.tick(&app);
                 parse_state.onTick();
+                git_state.onTick(&app, repository);
             },
             .parse_done => |box| parse_state.onCompletion(&app, box),
+            .git_done => |box| git_state.onCompletion(&app, repository, box),
+            .git_probe_done => |box| git_state.onProbeCompletion(&app, repository, box),
         }
 
         parse_state.drive(&app);
@@ -374,6 +562,7 @@ fn applyEffect(
     dimensions: fiew.commands.Dimensions,
     effect: fiew.commands.Effect,
     review_name: ?[]const u8,
+    git_state: *GitLoadState,
 ) !bool {
     switch (effect) {
         .none => {},
@@ -395,19 +584,7 @@ fn applyEffect(
             };
             app.installHistorySnapshot(snapshot, location);
         },
-        .open_review => {
-            const changeset = fiew.git.loadChanges(repository.allocator, repository.io, repository.root_dir) catch |err| {
-                app.feedback = @errorName(err);
-                return false;
-            };
-            const review = fiew.git_review.Review.init(repository.allocator, changeset) catch |err| {
-                var owned = changeset;
-                owned.deinit();
-                app.feedback = @errorName(err);
-                return false;
-            };
-            app.openReview(review);
-        },
+        .open_review => |git_generation| git_state.submit(repository, git_generation),
         .open_source => |source| {
             generation.* +%= 1;
             const snapshot = repository.loadDocument(source.path, generation.*, segmenter) catch |err| {
@@ -720,13 +897,19 @@ fn metadataLine(allocator: std.mem.Allocator, change: fiew.git_model.Change) ![]
 }
 
 fn drawGitSidebar(allocator: std.mem.Allocator, window: vaxis.Window, app: *const fiew.app.App) !void {
+    const heading = switch (app.git_status) {
+        .pending => " Git · refreshing ",
+        .stale => " Git · stale ",
+        else => " Git ",
+    };
     _ = window.printSegment(.{
-        .text = " Git ",
+        .text = heading,
         .style = .{ .bold = true, .reverse = app.focus == .sidebar },
     }, .{ .wrap = .none });
 
     const review = if (app.review) |*value| value else {
-        _ = window.printSegment(.{ .text = "No repository", .style = .{ .dim = true } }, .{ .row_offset = 2, .col_offset = 1, .wrap = .none });
+        const message = if (app.git_status == .pending) "Loading snapshot…" else "No snapshot";
+        _ = window.printSegment(.{ .text = message, .style = .{ .dim = true } }, .{ .row_offset = 2, .col_offset = 1, .wrap = .none });
         return;
     };
     if (review.isEmpty()) {
@@ -1203,7 +1386,7 @@ fn drawCommandSurface(
             menu.clear();
             _ = menu.printSegment(.{ .text = " Leader ", .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
             _ = menu.printSegment(.{
-                .text = "f files  b Project  g Git  r Review  ? help  q quit",
+                .text = "f files  p Project  v VCS  r Review  ? help  q quit",
             }, .{ .row_offset = 1, .col_offset = 1, .wrap = .none });
         },
         .file => {
@@ -1211,6 +1394,16 @@ fn drawCommandSurface(
             menu.clear();
             _ = menu.printSegment(.{ .text = " File commands ", .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
             _ = menu.printSegment(.{ .text = "Enter  open or pin selected Project file" }, .{
+                .row_offset = 1,
+                .col_offset = 1,
+                .wrap = .none,
+            });
+        },
+        .vcs => {
+            const menu = window.child(.{ .y_off = window.height -| 2, .height = 2 });
+            menu.clear();
+            _ = menu.printSegment(.{ .text = " VCS · Git ", .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
+            _ = menu.printSegment(.{ .text = if (app.git_status == .pending) "r refresh (pending)  Enter close" else "r refresh  Enter close" }, .{
                 .row_offset = 1,
                 .col_offset = 1,
                 .wrap = .none,

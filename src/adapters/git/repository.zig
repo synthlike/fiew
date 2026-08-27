@@ -9,7 +9,12 @@ const changes_parser = @import("changes.zig");
 const diff_parser = @import("diff.zig");
 const git = @import("../../model/git.zig");
 
-pub const Error = command.Error;
+pub const Error = command.Error || error{
+    RepositoryChanged,
+    UntrackedReadFailed,
+};
+
+pub const Fingerprint = [std.crypto.hash.sha2.Sha256.digest_length]u8;
 
 /// Upper bound on an untracked file we will render as a textual "all added"
 /// diff; larger files are listed but shown as metadata only.
@@ -99,9 +104,97 @@ const diff_flags = [_][]const u8{
     "--no-textconv",
 };
 
-/// Read the full current-working-tree change set: Staged, Unstaged, and
-/// Untracked groups, each change paired with its parsed diff.
+/// Read one fingerprint using Git's machine-readable view of the index,
+/// worktree, and complete untracked path set.
+pub fn fingerprint(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    dir: std.Io.Dir,
+) Error!Fingerprint {
+    var status = try command.runChecked(allocator, io, dir, &.{
+        "status", "--porcelain=v2", "-z", "--untracked-files=all",
+    });
+    defer status.deinit();
+    var staged = try runDiff(allocator, io, dir, &.{"--cached"}, &.{"--binary"});
+    defer staged.deinit();
+    var unstaged = try runDiff(allocator, io, dir, &.{}, &.{"--binary"});
+    defer unstaged.deinit();
+
+    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+    hasher.update(status.stdout);
+    hasher.update(staged.stdout);
+    hasher.update(unstaged.stdout);
+
+    // Git diff does not include untracked contents. Include each bounded file's
+    // bytes (or stable metadata for an oversized file) in repository-path order.
+    var records = std.mem.splitScalar(u8, status.stdout, 0);
+    while (records.next()) |record| {
+        if (!std.mem.startsWith(u8, record, "? ")) continue;
+        const path = record[2..];
+        const stat = dir.statFile(io, path, .{}) catch return error.UntrackedReadFailed;
+        hasher.update(path);
+        hasher.update(std.mem.asBytes(&stat.size));
+        if (stat.size <= untracked_diff_limit) {
+            const bytes = dir.readFileAlloc(io, path, allocator, .limited64(untracked_diff_limit)) catch
+                return error.UntrackedReadFailed;
+            hasher.update(bytes);
+            allocator.free(bytes);
+        } else {
+            hasher.update(std.mem.asBytes(&stat.mtime.nanoseconds));
+        }
+    }
+
+    var digest: Fingerprint = undefined;
+    hasher.final(&digest);
+    return digest;
+}
+
+pub const Snapshot = struct {
+    changeset: git.ChangeSet,
+    fingerprint: Fingerprint,
+};
+
+/// Read the full current-working-tree change set. A fingerprint brackets all
+/// composing commands. If it changes, discard everything and retry once.
+pub fn loadSnapshot(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    dir: std.Io.Dir,
+) Error!Snapshot {
+    return loadSnapshotWithHook(allocator, io, dir, null, null);
+}
+
+const LoadHook = *const fn (?*anyopaque, std.Io, std.Io.Dir, u2) void;
+
+fn loadSnapshotWithHook(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    dir: std.Io.Dir,
+    hook_context: ?*anyopaque,
+    hook: ?LoadHook,
+) Error!Snapshot {
+    var attempt: u2 = 0;
+    while (attempt < 2) : (attempt += 1) {
+        const before = try fingerprint(allocator, io, dir);
+        var set = try loadOnce(allocator, io, dir);
+        errdefer set.deinit();
+        if (hook) |run_hook| run_hook(hook_context, io, dir, attempt);
+        const after = try fingerprint(allocator, io, dir);
+        if (std.mem.eql(u8, &before, &after)) return .{ .changeset = set, .fingerprint = after };
+        set.deinit();
+    }
+    return error.RepositoryChanged;
+}
+
 pub fn loadChanges(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    dir: std.Io.Dir,
+) Error!git.ChangeSet {
+    return (try loadSnapshot(allocator, io, dir)).changeset;
+}
+
+fn loadOnce(
     allocator: std.mem.Allocator,
     io: std.Io,
     dir: std.Io.Dir,
@@ -183,7 +276,7 @@ fn appendUntracked(
     changes: *std.ArrayList(git.Change),
     diffs: *std.ArrayList(git.FileDiff),
 ) Error!void {
-    var others = try command.run(allocator, io, dir, &.{
+    var others = try command.runChecked(allocator, io, dir, &.{
         "ls-files", "-z", "--others", "--exclude-standard",
     });
     defer others.deinit();
@@ -194,7 +287,7 @@ fn appendUntracked(
         const owned = try allocator.dupe(u8, path);
         errdefer allocator.free(owned);
 
-        const content_and_diff = untrackedDiff(allocator, io, dir, path);
+        const content_and_diff = try untrackedDiff(allocator, io, dir, path);
         try diffs.append(allocator, content_and_diff.diff);
         try changes.append(allocator, .{
             .group = .untracked,
@@ -212,10 +305,16 @@ fn untrackedDiff(
     io: std.Io,
     dir: std.Io.Dir,
     path: []const u8,
-) UntrackedResult {
-    const bytes = dir.readFileAlloc(io, path, allocator, .limited64(untracked_diff_limit)) catch
+) Error!UntrackedResult {
+    const stat = dir.statFile(io, path, .{}) catch return error.UntrackedReadFailed;
+    if (stat.size > untracked_diff_limit)
         return .{ .content = .binary, .diff = emptyDiff(allocator) };
+    const bytes = dir.readFileAlloc(io, path, allocator, .limited64(untracked_diff_limit)) catch
+        return error.UntrackedReadFailed;
     defer allocator.free(bytes);
+    const after = dir.statFile(io, path, .{}) catch return error.UntrackedReadFailed;
+    if (stat.inode != after.inode or stat.size != after.size or
+        stat.mtime.nanoseconds != after.mtime.nanoseconds) return error.RepositoryChanged;
     if (std.mem.indexOfScalar(u8, bytes, 0) != null) {
         return .{ .content = .binary, .diff = emptyDiff(allocator) };
     }
@@ -304,7 +403,7 @@ fn runDiff(
     try argv.appendSlice(allocator, cached_flag);
     try argv.appendSlice(allocator, &diff_flags);
     try argv.appendSlice(allocator, tail);
-    return command.run(allocator, io, dir, argv.items);
+    return command.runChecked(allocator, io, dir, argv.items);
 }
 
 fn freePartial(
@@ -371,6 +470,73 @@ fn findChange(set: git.ChangeSet, group: git.Group, path: []const u8) ?usize {
         if (change.group == group and std.mem.eql(u8, change.path, path)) return index;
     }
     return null;
+}
+
+test "discovery from a nested directory preserves the repository top level" {
+    try requireGitIntegration();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try runGit(tmp.dir, &.{ "init", "--quiet" });
+    try tmp.dir.createDir(std.testing.io, "a", .default_dir);
+    var nested = try tmp.dir.openDir(std.testing.io, "a", .{});
+    defer nested.close(std.testing.io);
+
+    var root_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const root_length = try tmp.dir.realPath(std.testing.io, &root_buffer);
+    var discovery = try discover(std.testing.allocator, std.testing.io, nested);
+    switch (discovery) {
+        .ready => |*context| {
+            defer context.deinit();
+            try std.testing.expectEqualStrings(root_buffer[0..root_length], context.toplevel);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "fingerprint changes when already-dirty tracked or untracked content changes" {
+    try requireGitIntegration();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try runGit(tmp.dir, &.{ "init", "--quiet" });
+    try writeFileTo(tmp.dir, "tracked.txt", "base\n");
+    try runGit(tmp.dir, &.{ "add", "tracked.txt" });
+    try runGit(tmp.dir, &.{ "-c", "user.email=t@t", "-c", "user.name=t", "commit", "--quiet", "-m", "init" });
+
+    try writeFileTo(tmp.dir, "tracked.txt", "first\n");
+    try writeFileTo(tmp.dir, "new.txt", "one\n");
+    const first = try fingerprint(std.testing.allocator, std.testing.io, tmp.dir);
+    try writeFileTo(tmp.dir, "tracked.txt", "second\n");
+    const tracked_changed = try fingerprint(std.testing.allocator, std.testing.io, tmp.dir);
+    try std.testing.expect(!std.mem.eql(u8, &first, &tracked_changed));
+    try writeFileTo(tmp.dir, "new.txt", "two\n");
+    const untracked_changed = try fingerprint(std.testing.allocator, std.testing.io, tmp.dir);
+    try std.testing.expect(!std.mem.eql(u8, &tracked_changed, &untracked_changed));
+}
+
+test "a changing fingerprint discards the first snapshot and retries once" {
+    try requireGitIntegration();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try runGit(tmp.dir, &.{ "init", "--quiet" });
+    try writeFileTo(tmp.dir, "tracked.txt", "base\n");
+    try runGit(tmp.dir, &.{ "add", "tracked.txt" });
+    try runGit(tmp.dir, &.{ "-c", "user.email=t@t", "-c", "user.name=t", "commit", "--quiet", "-m", "init" });
+    try writeFileTo(tmp.dir, "tracked.txt", "first\n");
+
+    const Hook = struct {
+        calls: usize = 0,
+        fn run(raw_context: ?*anyopaque, io: std.Io, dir: std.Io.Dir, attempt: u2) void {
+            const self: *@This() = @ptrCast(@alignCast(raw_context.?));
+            self.calls += 1;
+            if (attempt == 0) dir.writeFile(io, .{ .sub_path = "tracked.txt", .data = "second\n" }) catch return;
+        }
+    };
+    var hook: Hook = .{};
+    var snapshot = try loadSnapshotWithHook(std.testing.allocator, std.testing.io, tmp.dir, &hook, Hook.run);
+    defer snapshot.changeset.deinit();
+    try std.testing.expectEqual(@as(usize, 2), hook.calls);
+    const index = findChange(snapshot.changeset, .unstaged, "tracked.txt") orelse return error.MissingUnstaged;
+    try std.testing.expect(std.mem.indexOf(u8, snapshot.changeset.diffs[index].text, "second") != null);
 }
 
 test "loadChanges assembles staged, unstaged, and untracked groups" {

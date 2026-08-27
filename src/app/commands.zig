@@ -31,6 +31,7 @@ pub const Id = enum {
     project_toggle,
     project_open,
     git_open,
+    git_refresh,
     review_open,
     definition,
     fold_close,
@@ -102,8 +103,9 @@ pub const definitions = [_]Definition{
     .{ .id = .project_collapse, .stable_id = "project-collapse", .title = "Collapse or parent", .binding = "h" },
     .{ .id = .project_expand, .stable_id = "project-expand", .title = "Expand or child", .binding = "l" },
     .{ .id = .project_toggle, .stable_id = "project-toggle", .title = "Toggle Project directory", .binding = "Enter" },
-    .{ .id = .project_open, .stable_id = "project-open", .title = "Open Project sidebar", .binding = "Space b" },
-    .{ .id = .git_open, .stable_id = "git-open", .title = "Open Git sidebar", .binding = "Space g" },
+    .{ .id = .project_open, .stable_id = "project-open", .title = "Open Project sidebar", .binding = "Space p" },
+    .{ .id = .git_open, .stable_id = "vcs-open", .title = "Open VCS sidebar (Git)", .binding = "Space v" },
+    .{ .id = .git_refresh, .stable_id = "vcs-refresh", .title = "Refresh Git snapshot", .binding = "Space v r" },
     .{ .id = .diff_file_next, .stable_id = "diff-file-next", .title = "Next changed file", .binding = "] f" },
     .{ .id = .diff_file_previous, .stable_id = "diff-file-previous", .title = "Previous changed file", .binding = "[ f" },
     .{ .id = .diff_hunk_next, .stable_id = "diff-hunk-next", .title = "Next hunk", .binding = "] h" },
@@ -214,6 +216,12 @@ pub fn unavailableReason(app: *const state.App, id: Id) ?[]const u8 {
         else
             null,
         .git_open => if (!app.git_enabled) "not a Git repository" else null,
+        .git_refresh => if (!app.git_enabled)
+            "not a Git repository"
+        else if (app.git_status == .pending)
+            "Git refresh pending"
+        else
+            null,
         .diff_file_next,
         .diff_file_previous,
         .diff_hunk_next,
@@ -276,8 +284,8 @@ pub const Effect = union(enum) {
     preview_selection,
     activate_selection,
     open_history: state.Location,
-    /// Load and show the Git working-tree review.
-    open_review,
+    /// Load and show the Git working-tree review for this owner generation.
+    open_review: u64,
     /// Open a change's source file at a diff line.
     open_source: SourceLocation,
     /// Save the active Note Composer's content (create or edit) and persist.
@@ -292,6 +300,7 @@ pub const Surface = enum {
     command,
     help,
     review,
+    vcs,
     note_composer,
 };
 
@@ -329,6 +338,7 @@ pub const Session = struct {
                 .command => ":",
                 .help => "help",
                 .review => "Space r",
+                .vcs => "Space v",
                 .note_composer => "note",
                 .none => "",
             },
@@ -354,6 +364,7 @@ pub const Session = struct {
         if (self.surface == .note_composer) return self.handleComposer(app, key, dimensions);
         if (key.code == .escape) return self.execute(app, .cancel, dimensions);
         if (self.surface == .review) return self.handleReview(app, key, dimensions);
+        if (self.surface == .vcs) return self.handleVcs(app, key, dimensions);
         if (self.surface == .command) return self.handleCommandInput(app, key, dimensions);
         if (self.surface == .help) {
             if (isCharacter(key, 'q')) return self.execute(app, .close_transient, dimensions);
@@ -536,7 +547,12 @@ pub const Session = struct {
             .structural_child => app.structuralMove(.child),
             .structural_next => app.structuralMove(.next_sibling),
             .structural_previous => app.structuralMove(.previous_sibling),
-            .git_open => return .open_review,
+            .git_open => {
+                app.showGitSidebar();
+                if (app.review == null and app.git_status != .pending)
+                    return .{ .open_review = app.beginGitRefresh() };
+            },
+            .git_refresh => return .{ .open_review = app.beginGitRefresh() },
             .diff_file_next => diffFile(app, true, dimensions),
             .diff_file_previous => diffFile(app, false, dimensions),
             .diff_hunk_next => diffHunk(app, true, dimensions),
@@ -645,13 +661,31 @@ pub const Session = struct {
         }
         return switch (normalizedCharacter(key)) {
             'f' => self.executeAndClose(app, .file_commands, dimensions),
-            'b' => self.executeAndClose(app, .project_open, dimensions),
-            'g' => self.executeAndClose(app, .git_open, dimensions),
+            'p' => self.executeAndClose(app, .project_open, dimensions),
+            'v' => blk: {
+                self.surface = .vcs;
+                break :blk try self.execute(app, .git_open, dimensions);
+            },
             'r' => self.executeAndClose(app, .review_open, dimensions),
             '?' => self.executeAndClose(app, .help, dimensions),
             'q' => self.executeAndClose(app, .quit, dimensions),
             else => blk: {
                 app.feedback = "invalid leader command";
+                self.resetTransient(app);
+                break :blk .none;
+            },
+        };
+    }
+
+    fn handleVcs(self: *Session, app: *state.App, key: Key, dimensions: Dimensions) !Effect {
+        return switch (normalizedCharacter(key)) {
+            'r' => self.executeAndClose(app, .git_refresh, dimensions),
+            else => blk: {
+                if (key.code == .enter) {
+                    self.resetTransient(app);
+                    break :blk .none;
+                }
+                app.feedback = "invalid VCS command";
                 self.resetTransient(app);
                 break :blk .none;
             },
@@ -872,8 +906,8 @@ test "required modal bindings are represented by the command registry" {
     const required = [_][]const u8{
         "h",       "j",       "k",       "l",        "w",   "b",   "e",   "g g",   "g e",
         "Ctrl-u",  "Ctrl-d",  "PageUp",  "PageDown", "v",   "x",   ";",   "Alt-;", "Enter",
-        "g d",     "Ctrl-o",  "Ctrl-i",  "z c",      "z o", "z a", "z M", "z R",   "Space b",
-        "Space g", "Space r", "Space ?", ":",        "q",
+        "g d",     "Ctrl-o",  "Ctrl-i",  "z c",      "z o", "z a", "z M", "z R",   "Space p",
+        "Space v", "Space r", "Space ?", ":",        "q",
     };
     for (required) |binding| {
         var found = false;
@@ -967,6 +1001,26 @@ test "invalid and timed out sequences preserve selection" {
     try std.testing.expectEqual(before, app.selection());
 }
 
+test "Space v opens Git immediately and exposes a pending refresh state" {
+    var app = try testApp();
+    defer app.deinit();
+    app.git_enabled = true;
+    app.git_status = .idle;
+    app.focus = .main;
+    var session = Session.init(std.testing.allocator);
+    defer session.deinit();
+    const dimensions: Dimensions = .{ .sidebar_rows = 20, .document_rows = 20, .document_columns = 80 };
+
+    _ = try session.handle(&app, charKey(' '), dimensions);
+    const effect = try session.handle(&app, charKey('v'), dimensions);
+    try std.testing.expectEqual(state.SidebarContext.git, app.sidebar_context);
+    try std.testing.expectEqual(state.Focus.sidebar, app.focus);
+    try std.testing.expectEqual(Surface.vcs, session.surface);
+    try std.testing.expectEqual(state.GitStatus.pending, app.git_status);
+    try std.testing.expectEqual(std.meta.Tag(Effect).open_review, std.meta.activeTag(effect));
+    try std.testing.expectEqualStrings("Git refresh pending", unavailableReason(&app, .git_refresh).?);
+}
+
 test "leader and named command surfaces use the same registry" {
     var app = try testApp();
     defer app.deinit();
@@ -975,7 +1029,7 @@ test "leader and named command surfaces use the same registry" {
     const dimensions: Dimensions = .{ .sidebar_rows = 20, .document_rows = 20, .document_columns = 80 };
 
     _ = try session.handle(&app, charKey(' '), dimensions);
-    _ = try session.handle(&app, charKey('g'), dimensions);
+    _ = try session.handle(&app, charKey('v'), dimensions);
     try std.testing.expectEqualStrings("not a Git repository", app.feedback.?);
 
     _ = try session.handle(&app, charKey(':'), dimensions);

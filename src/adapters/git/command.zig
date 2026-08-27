@@ -8,14 +8,19 @@ const std = @import("std");
 /// Upper bound on captured output per stream, so a pathological repository
 /// cannot exhaust memory.
 pub const output_limit: u64 = 64 << 20;
+pub const timeout: std.Io.Clock.Duration = .{ .raw = .fromSeconds(10), .clock = .real };
 
 pub const Error = error{
     /// `git` could not be found or launched.
     GitUnavailable,
     /// git produced more output than `output_limit`.
     OutputTooLarge,
+    /// git exited unsuccessfully.
+    CommandFailed,
     /// git was killed by a signal rather than exiting.
     Terminated,
+    /// git exceeded the bounded invocation deadline.
+    TimedOut,
 } || std.mem.Allocator.Error;
 
 /// The captured result of one git invocation. Owns its buffers.
@@ -67,9 +72,11 @@ pub fn run(
         .cwd = .{ .dir = repo_dir },
         .stdout_limit = .limited64(output_limit),
         .stderr_limit = .limited64(output_limit),
+        .timeout = .{ .duration = timeout },
     }) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         error.StreamTooLong => return error.OutputTooLarge,
+        error.Timeout => return error.TimedOut,
         error.FileNotFound => return error.GitUnavailable,
         else => return error.GitUnavailable,
     };
@@ -83,4 +90,30 @@ pub fn run(
             else => null,
         },
     };
+}
+
+/// Run one command and reject every unsuccessful termination explicitly.
+pub fn runChecked(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    repo_dir: std.Io.Dir,
+    args: []const []const u8,
+) Error!Output {
+    var output = try run(allocator, io, repo_dir, args);
+    errdefer output.deinit();
+    if (output.exit_code == null) return error.Terminated;
+    if (!output.succeeded()) return error.CommandFailed;
+    return output;
+}
+
+const build_options = @import("build_options");
+
+test "checked invocation rejects a nonzero Git exit" {
+    if (!build_options.git_integration) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try std.testing.expectError(
+        error.CommandFailed,
+        runChecked(std.testing.allocator, std.testing.io, tmp.dir, &.{ "rev-parse", "--verify", "definitely-missing" }),
+    );
 }

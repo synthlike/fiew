@@ -63,7 +63,7 @@ command registry generates the in-app help (`Space ?`) and named-command search
 | `j` / `k` | Next / previous item |
 | `h` / `l` | Collapse / expand (or move to parent / child) |
 | `Enter` | Toggle directory |
-| `Space b` | Open the Project sidebar |
+| `Space p` | Open or collapse the Project sidebar |
 
 ### Document movement (main view)
 
@@ -108,8 +108,9 @@ changes with unified diffs. It never modifies the repository.
 
 | Key | Action |
 | --- | --- |
-| `Space g` | Open the Git review |
-| `Space b` | Return to the Project sidebar |
+| `Space v` | Open the VCS context (Git) |
+| `Space v r` | Refresh the current Git snapshot |
+| `Space p` | Return to the Project sidebar |
 | `j` / `k` | Select the next / previous change |
 | `Enter` | Focus the diff; on a diff line, open the source in context |
 | `Ctrl-o` | Return from the source view to the diff |

@@ -14,6 +14,8 @@ pub const StructuralMove = enum { parent, child, next_sibling, previous_sibling 
 /// Which context the collapsible sidebar is showing.
 pub const SidebarContext = enum { project, git, review };
 
+pub const GitStatus = enum { disabled, idle, pending, stale };
+
 /// A captured diff anchor with owned strings, held while composing a new note.
 pub const OwnedAnchor = struct {
     path: []u8,
@@ -163,6 +165,9 @@ pub const App = struct {
     review: ?git_review.Review = null,
     /// Set once at startup: whether the browsed directory is a usable Git repo.
     git_enabled: bool = false,
+    git_status: GitStatus = .disabled,
+    /// Monotonic owner generation for asynchronous Git snapshots.
+    git_generation: u64 = 0,
     /// In the Git context, whether the main view shows a change's source (opened
     /// with `Enter`) rather than its diff.
     viewing_source: bool = false,
@@ -190,12 +195,39 @@ pub const App = struct {
         self.* = undefined;
     }
 
-    /// Show the Git review context with a freshly loaded change set.
-    pub fn openReview(self: *App, review_state: git_review.Review) void {
-        if (self.review) |*previous| previous.deinit();
-        self.review = review_state;
+    pub fn showGitSidebar(self: *App) void {
         self.sidebar_context = .git;
         self.focus = .sidebar;
+    }
+
+    /// Mark a new asynchronous refresh request and return its generation.
+    pub fn beginGitRefresh(self: *App) u64 {
+        self.git_generation +%= 1;
+        self.git_status = .pending;
+        self.feedback = null;
+        return self.git_generation;
+    }
+
+    pub fn failGitRefresh(self: *App, generation: u64, message: []const u8) void {
+        if (generation != self.git_generation) return;
+        self.git_status = .stale;
+        self.feedback = message;
+    }
+
+    /// Show the Git review context with a freshly loaded change set.
+    pub fn openReview(self: *App, incoming: git_review.Review) void {
+        var review_state = incoming;
+        const replacing = self.review != null;
+        if (self.review) |*previous| {
+            review_state.restorePosition(previous.*);
+            previous.deinit();
+        }
+        self.review = review_state;
+        if (!replacing) {
+            self.sidebar_context = .git;
+            self.focus = .sidebar;
+        }
+        self.git_status = .idle;
         self.feedback = if (review_state.isEmpty()) "no changes to review" else null;
     }
 
@@ -961,6 +993,50 @@ fn testApp() !App {
         };
     };
     return App.init(std.testing.allocator, &Static.tree);
+}
+
+test "Git refresh preserves the selected changed file and sidebar scroll" {
+    const Fixture = struct {
+        fn changeset() !git.ChangeSet {
+            const changes = try std.testing.allocator.alloc(git.Change, 2);
+            changes[0] = .{
+                .group = .unstaged,
+                .kind = .modified,
+                .content = .text,
+                .path = try std.testing.allocator.dupe(u8, "a.zig"),
+            };
+            changes[1] = .{
+                .group = .unstaged,
+                .kind = .modified,
+                .content = .text,
+                .path = try std.testing.allocator.dupe(u8, "b.zig"),
+            };
+            const diffs = try std.testing.allocator.alloc(git.FileDiff, 2);
+            for (diffs) |*diff| diff.* = .{
+                .allocator = std.testing.allocator,
+                .text = try std.testing.allocator.alloc(u8, 0),
+                .hunks = try std.testing.allocator.alloc(git.Hunk, 0),
+                .lines = try std.testing.allocator.alloc(git.DiffLine, 0),
+            };
+            return .{ .allocator = std.testing.allocator, .changes = changes, .diffs = diffs };
+        }
+    };
+
+    var app = try testApp();
+    defer app.deinit();
+    app.openReview(try git_review.Review.init(std.testing.allocator, try Fixture.changeset()));
+    app.review.?.moveSelection(1, 1);
+    app.focus = .main;
+    try std.testing.expectEqualStrings("b.zig", app.review.?.changeset.changes[app.review.?.selectedChange().?].path);
+    try std.testing.expectEqual(@as(usize, 2), app.review.?.scroll);
+
+    _ = app.beginGitRefresh();
+    try std.testing.expectEqual(Focus.main, app.focus);
+    app.openReview(try git_review.Review.init(std.testing.allocator, try Fixture.changeset()));
+
+    try std.testing.expectEqualStrings("b.zig", app.review.?.changeset.changes[app.review.?.selectedChange().?].path);
+    try std.testing.expectEqual(@as(usize, 2), app.review.?.scroll);
+    try std.testing.expectEqual(Focus.main, app.focus);
 }
 
 test "preview cancellation restores the pinned selection and scroll" {

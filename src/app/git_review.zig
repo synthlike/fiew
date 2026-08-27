@@ -54,6 +54,30 @@ pub const Review = struct {
         self.* = undefined;
     }
 
+    /// Carry stable VCS navigation state into a replacement snapshot. Selection
+    /// follows the same Git group and repository-relative path when it remains;
+    /// otherwise the replacement keeps its normal first-change fallback.
+    pub fn restorePosition(self: *Review, previous: Review) void {
+        const previous_index = previous.selectedChange() orelse return;
+        const previous_change = previous.changeset.changes[previous_index];
+        for (self.rows, 0..) |row, row_index| switch (row) {
+            .header => {},
+            .change => |change_index| {
+                const change = self.changeset.changes[change_index];
+                if (change.group == previous_change.group and
+                    std.mem.eql(u8, change.path, previous_change.path))
+                {
+                    self.selected = row_index;
+                    self.scroll = @min(previous.scroll, self.rows.len -| 1);
+                    const diff = &self.changeset.diffs[change_index];
+                    self.diff_line = @min(previous.diff_line, diff.lines.len -| 1);
+                    self.diff_scroll = @min(previous.diff_scroll, diff.lines.len -| 1);
+                    return;
+                }
+            },
+        };
+    }
+
     pub fn isEmpty(self: Review) bool {
         return self.changeset.isEmpty();
     }
