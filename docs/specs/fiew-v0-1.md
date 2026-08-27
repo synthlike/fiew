@@ -16,8 +16,8 @@ On Apple Silicon macOS in Ghostty, a user can open a repository, browse and insp
 ### 1. Read-only boundary
 
 1. fiew must never modify source files or Git state.
-2. fiew must not invoke mutating Git commands, apply LSP workspace edits, execute server commands, or write inside repositories or Git metadata.
-3. fiew may write only fiew-owned configuration, trust, review-note state, explicitly enabled bounded diagnostics, and disposable caches.
+2. fiew must not invoke mutating Git commands, apply LSP workspace edits, execute server commands, or write inside repositories or Git metadata, except that it may create and write review files within a gitignored `.reviews/` directory at the repository root ([ARP-0006](<docs/decisions/ARP-0006.md>)).
+3. fiew may write only fiew-owned configuration, trust, explicitly enabled bounded diagnostics, disposable caches, and review notes in the repository's gitignored `.reviews/` directory. It never modifies `.gitignore`, tracked files, or any other repository path.
 4. Integration failures and cancellation must preserve this boundary.
 
 ### 2. Platform and workspace
@@ -89,7 +89,7 @@ On Apple Silicon macOS in Ghostty, a user can open a repository, browse and insp
 
 1. A note attaches to a contiguous old-side or new-side textual diff selection.
 2. Anchors include repository identity, Git group, path, side, line range, available blob IDs, and surrounding context.
-3. Notes are stored under fiew's macOS user-data directory, outside repositories and `.git`.
+3. Notes are stored as versioned Markdown (`fiew.review/v1`) in a gitignored `.reviews/` directory at the repository root so a coding agent can retrieve them, never elsewhere in the repository or in `.git`. Each line note embeds an anchored diff excerpt and, when a side blob exists, its blob ID, so the note can be reconciled to the reviewed content ([ARP-0006](<docs/decisions/ARP-0006.md>)).
 4. Note states are Open, Resolved, and Outdated. Resolved notes can reopen; editing and deletion are explicit, and deletion requires confirmation.
 5. A note follows an unchanged diff moved between Git groups only when exactly one anchor match exists. Missing or ambiguous matches become Outdated.
 6. Commands are `Space r n` create, `Space r e` edit, `Space r x` resolve/reopen, `Space r d` delete, and `[ n`/`] n` navigate.
@@ -124,7 +124,7 @@ On Apple Silicon macOS in Ghostty, a user can open a repository, browse and insp
 
 ### 11. Persistence and diagnostics
 
-1. Global state and per-repository notes use schema-versioned JSON.
+1. Global state uses schema-versioned JSON. Review notes use versioned Markdown files (`fiew.review/v1`) in the repository's gitignored `.reviews/` directory ([ARP-0006](<docs/decisions/ARP-0006.md>)).
 2. Writes use same-directory temporary files, flush, atomic replacement, and one previous validated backup.
 3. Unknown future schemas are not overwritten.
 4. Diagnostic history is bounded. File logging is opt-in and redacts source, note bodies, environment values, and protocol payloads by default.
@@ -183,6 +183,7 @@ On Apple Silicon macOS in Ghostty, a user can open a repository, browse and insp
 - [Use trusted ZLS as an optional definition provider](<docs/decisions/ARP-0003.md>)
 - [Render a Mermaid subset as terminal text](<docs/decisions/ARP-0004.md>)
 - [Structure fiew as a single-owner event-driven application](<docs/decisions/ARP-0005.md>)
+- [Store review notes as gitignored `.reviews/` Markdown for agent retrieval](<docs/decisions/ARP-0006.md>)
 - [Tree-sitter integration constraints for fiew v0.1](<docs/research/tree-sitter-integration-constraints-for-fiew-v0-1.md>)
 - [ZLS definition-navigation constraints for fiew v0.1](<docs/research/zls-definition-navigation-constraints-for-fiew-v0-1.md>)
 - [Mermaid ASCII rendering constraints for fiew v0.1](<docs/research/mermaid-ascii-rendering-constraints-for-fiew-v0-1.md>)
