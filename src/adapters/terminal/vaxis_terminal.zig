@@ -370,6 +370,8 @@ pub fn run(init: std.process.Init) !u8 {
     defer app.deinit();
     app.git_enabled = git_ready;
     app.git_status = if (git_ready) .idle else .disabled;
+    const quote_time = std.Io.Timestamp.now(init.io, .real).nanoseconds;
+    app.welcome_quote = fiew.welcome.selectSeed(quote_time);
 
     // Load any existing review notes from .reviews/, routing new notes into the
     // named review file when `--review` was given.
@@ -1122,18 +1124,16 @@ fn drawDocument(allocator: std.mem.Allocator, window: vaxis.Window, app: *const 
                 .wrap = .none,
             });
         } else {
-            const positions = fiew.welcome.layout(window.width, window.height);
-            _ = window.printSegment(.{
-                .text = fiew.welcome.title,
-                .style = .{ .bold = true },
-            }, .{
-                .row_offset = positions.title.row,
-                .col_offset = positions.title.column,
+            const quote = if (app.welcome_quote.len == 0) fiew.welcome.select(0) else app.welcome_quote;
+            const positions = fiew.welcome.layout(window.width, window.height, quote);
+            _ = window.printSegment(.{ .text = quote, .style = .{ .bold = true } }, .{
+                .row_offset = positions.quote.row,
+                .col_offset = positions.quote.column,
                 .wrap = .none,
             });
-            _ = window.printSegment(.{ .text = fiew.welcome.subtitle }, .{
-                .row_offset = positions.subtitle.row,
-                .col_offset = positions.subtitle.column,
+            _ = window.printSegment(.{ .text = fiew.welcome.quit_hint, .style = .{ .dim = true } }, .{
+                .row_offset = positions.quit_hint.row,
+                .col_offset = positions.quit_hint.column,
                 .wrap = .none,
             });
         }

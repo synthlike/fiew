@@ -159,6 +159,8 @@ pub const App = struct {
     pinned: ?View = null,
     preview: ?View = null,
     feedback: ?[]const u8 = null,
+    /// Startup quote selected once by the terminal adapter and kept across redraws.
+    welcome_quote: []const u8 = "",
     history: std.ArrayListUnmanaged(Location) = .empty,
     history_index: ?usize = null,
     sidebar_context: SidebarContext = .project,
