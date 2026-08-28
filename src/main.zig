@@ -10,6 +10,8 @@ pub fn main(init: std.process.Init) !void {
     if (exit_code != 0) std.process.exit(exit_code);
 }
 
+// so far so good!
+
 fn run(init: std.process.Init) !u8 {
     var args: std.ArrayList([]const u8) = .empty;
     defer args.deinit(init.gpa);

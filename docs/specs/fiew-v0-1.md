@@ -1,5 +1,5 @@
 <!-- agent-workflows-record
-{"archived":false,"created":"2026-08-25T21:48:04Z","id":"fiew-v0-1","modified":"2026-08-28T11:52:47Z","record_type":"specs","title":"fiew v0.1"}
+{"archived":false,"created":"2026-08-25T21:48:04Z","id":"fiew-v0-1","modified":"2026-08-28T13:42:32Z","record_type":"specs","title":"fiew v0.1"}
 -->
 # fiew v0.1
 
@@ -82,7 +82,7 @@ On Apple Silicon macOS in Ghostty, a reviewer can browse immutable source, inspe
 6. Reviewer lifecycle (Open or Resolved) and anchor validity (Current or Outdated) are independent. Open and Outdated threads block approval. A review is approved only when every thread is Current and explicitly reviewer-resolved; temporary anchor loss never discards remembered reviewer lifecycle.
 7. Re-anchoring validates exact raw bytes at the stored location first. Only when that fails may one complete exact context match relocate the anchor across Git groups within the same path or an explicit Git rename target. Zero or multiple matches become Outdated without moving; unrelated paths, normalized similarity, and incomplete or stale snapshots are never used.
 8. The reviewer composer accepts multiline UTF-8 plain text. Saving and cancellation protect modified text.
-9. The Review Threads sidebar supports independent keyboard and mouse selection, preview, scrolling, status visibility, navigation, and return to an anchored Review Diff location.
+9. The Review Threads sidebar supports independent keyboard and mouse selection, preview, scrolling, status visibility, navigation, and return to an anchored Review Diff location. Inline comment bodies wrap within the Review Diff viewport and reflow on resize. Reviewer and agent contributions have distinct colors in their labels and bodies; resolved threads remain visibly dimmed.
 
 ### 8. Agent review interface
 
@@ -90,12 +90,13 @@ On Apple Silicon macOS in Ghostty, a reviewer can browse immutable source, inspe
 2. `fiew review open [<review-id>] [--repo <path>]` opens the current review when the ID is omitted. An explicit ID opens that historical review and atomically makes it current.
 3. `fiew review show [<review-id>] [--repo <path>]` emits a stable machine-readable JSON projection of the current review by default, including every public thread, anchor, status, and ordered comment. `--format markdown` emits a human-readable projection of the same public review semantics. An explicit ID accesses history without changing current. Neither output is the canonical stored file, and storage-only metadata may be omitted.
 4. `fiew review reply [<review-id>] <thread-id> --body-file <path> [--repo <path>]` appends one `agent` comment to current when the review ID is omitted, or to the explicit historical review otherwise, and performs no other mutation. Agent operations never change current.
-5. Each repository has at most one explicit current-review pointer. Approval does not clear it; only reviewer `start` or `open` changes it. Missing, malformed, or dangling current state fails explicitly and is never inferred from content, timestamps, filenames, or directory order.
+5. Each repository has at most one explicit current-review pointer. Reviewer `start`, explicit reviewer `open`, and successful first interactive reviewer-thread creation when no review is selected make a review current. Later reviewer mutations retain that selection; approval and deletion do not clear it. Agent operations, including replies to explicit historical reviews, never change it. Missing, malformed, or dangling current state fails explicitly and is never inferred from content, timestamps, filenames, or directory order.
 6. Repository selection defaults to the current working directory. The optional `--repo` overrides it.
 7. Every newly created review ID begins with a local datetime prefix. An explicit name contributes a sanitized slug. Without a name, interactive start generates a bundled adjective-noun slug. Canonical reviews use `.json`; a numeric suffix resolves collisions.
 8. Interactive start prints the canonical review ID after terminal restoration.
 9. Invalid identifiers, roles, schemas, paths, or operations fail explicitly. Successful status and approval output must agree with durable state; persistence failure is never reported as approval.
 10. Exit status is zero only when every thread is reviewer-resolved. Open, Outdated, malformed, or unsaved review state produces a non-success result.
+11. Ordinary interactive browsing, navigation, and bookmarking do not create a review or current-review pointer. When ordinary interactive browsing successfully saves its first reviewer-created thread without a selected review, fiew creates a canonical review ID using the same contract as `review start`, persists that review, and atomically makes it current. A failed creation or persistence leaves no inferred current review and reports failure. Subsequent threads in that session use the selected review. Legacy non-canonical review filenames remain unsupported.
 
 ### 9. Bookmarks
 

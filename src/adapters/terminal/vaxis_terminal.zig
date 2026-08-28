@@ -741,13 +741,28 @@ fn applyEffect(
                     var name_buffer: [64]u8 = undefined;
                     var created_buffer: [32]u8 = undefined;
                     var sha_buffer: [64]u8 = undefined;
-                    const note_session = buildNoteSession(
+                    var note_session = buildNoteSession(
                         repository,
                         review_name,
                         &name_buffer,
                         &created_buffer,
                         &sha_buffer,
                     );
+                    var created_review: ?fiew.review_cli.Created = null;
+                    defer if (created_review) |*created| created.deinit();
+                    if (review_name == null and state_notes.session == null) {
+                        const now = std.Io.Timestamp.now(repository.io, .real).nanoseconds;
+                        const seconds: u64 = @intCast(@divFloor(now, std.time.ns_per_s));
+                        created_review = try fiew.review_cli.create(
+                            repository.allocator,
+                            repository.io,
+                            repository.root_dir,
+                            seconds,
+                            null,
+                            note_session.base_sha,
+                        );
+                        note_session.filename = created_review.?.filename;
+                    }
                     const comments = try repository.allocator.alloc(fiew.review.Comment, 1);
                     comments[0] = .{
                         .author = .reviewer,
@@ -1325,25 +1340,30 @@ fn drawDiff(allocator: std.mem.Allocator, window: vaxis.Window, app: *const fiew
                 const resolved = note.projectedStatus() == .resolved;
                 _ = window.printSegment(.{
                     .text = try std.fmt.allocPrint(allocator, "▏ thread · {s}", .{@tagName(note.projectedStatus())}),
-                    .style = .{ .fg = .{ .index = 6 }, .bold = true, .dim = resolved },
+                    .style = .{ .fg = .{ .index = 5 }, .bold = true, .dim = resolved },
                 }, .{ .row_offset = @intCast(row + 1), .col_offset = 7, .wrap = .none });
                 row += 1;
 
                 for (note.comments) |comment| {
                     if (row >= body_rows) break;
+                    const author_color: vaxis.Cell.Color = switch (comment.author) {
+                        .reviewer => .{ .index = 3 },
+                        .agent => .{ .index = 6 },
+                    };
                     _ = window.printSegment(.{
                         .text = try std.fmt.allocPrint(allocator, "▏ {s}", .{@tagName(comment.author)}),
-                        .style = .{ .fg = .{ .index = 6 }, .bold = true, .dim = resolved },
+                        .style = .{ .fg = author_color, .bold = true, .dim = resolved },
                     }, .{ .row_offset = @intCast(row + 1), .col_offset = 7, .wrap = .none });
                     row += 1;
                     var body_lines = std.mem.splitScalar(u8, comment.body, '\n');
+                    const comment_window = window.child(.{ .x_off = 7, .width = window.width -| 7 });
                     while (body_lines.next()) |body_line| {
                         if (row >= body_rows) break;
-                        _ = window.printSegment(.{
-                            .text = try sanitizeLine(allocator, try std.fmt.allocPrint(allocator, "▏ {s}", .{body_line}), window.width -| 7),
-                            .style = .{ .fg = .{ .index = 6 }, .dim = resolved },
-                        }, .{ .row_offset = @intCast(row + 1), .col_offset = 7, .wrap = .none });
-                        row += 1;
+                        const result = comment_window.printSegment(.{
+                            .text = try std.fmt.allocPrint(allocator, "▏ {s}", .{body_line}),
+                            .style = .{ .fg = author_color, .dim = resolved },
+                        }, .{ .row_offset = @intCast(row + 1), .wrap = .grapheme });
+                        row = @max(row + 1, @as(usize, result.row) + 1);
                     }
                 }
             }
