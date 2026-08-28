@@ -133,6 +133,40 @@ pub const Review = struct {
         self.ensureVisible(viewport_rows);
     }
 
+    /// Select a changed file and, when available, its anchored diff line.
+    pub fn selectThreadAnchor(
+        self: *Review,
+        group: git.Group,
+        path: []const u8,
+        side: ?review_model.Side,
+        start_line: ?usize,
+        viewport_rows: usize,
+    ) bool {
+        for (self.rows, 0..) |row, row_index| switch (row) {
+            .header => {},
+            .change => |change_index| {
+                const change = self.changeset.changes[change_index];
+                if (change.group != group or !std.mem.eql(u8, change.path, path)) continue;
+                self.selected = row_index;
+                self.resetDiffCursor();
+                if (side) |anchor_side| if (start_line) |line_number| {
+                    const diff = &self.changeset.diffs[change_index];
+                    for (diff.lines, 0..) |line, line_index| {
+                        const number = if (anchor_side == .new) line.new_line else line.old_line;
+                        if (number != null and number.? == line_number) {
+                            self.diff_line = line_index;
+                            break;
+                        }
+                    }
+                };
+                self.ensureVisible(viewport_rows);
+                self.ensureDiffVisible(viewport_rows);
+                return true;
+            },
+        };
+        return false;
+    }
+
     /// `[ f` / `] f`: move among change files within the active group.
     /// Returns false at a group boundary (the caller may report it).
     pub fn moveFile(self: *Review, forward: bool, viewport_rows: usize) bool {

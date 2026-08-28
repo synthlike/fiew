@@ -107,8 +107,8 @@ changes with unified diffs. It never modifies the repository.
 
 | Key | Action |
 | --- | --- |
-| `Space v` | Open the VCS context (Git) |
-| `Space v r` | Refresh the current Git snapshot |
+| `Space r d` | Open the Review Diff context (Git) |
+| `Space r d r` | Refresh the current Git snapshot |
 | `Space p` | Return to the Project sidebar |
 | `j` / `k` | Select the next / previous change |
 | `Enter` | Focus the diff; on a diff line, open the source in context |
@@ -117,7 +117,11 @@ changes with unified diffs. It never modifies the repository.
 | `] h` / `[ h` | Next / previous hunk |
 | `] c` / `[ c` | Next / previous changed line |
 
-### Review threads
+### Review
+
+`Space r` opens the Review command namespace. Use `Space r d` for the Git-backed
+Review Diff and `Space r t` for the cross-file Review Threads dashboard.
+
 
 Reviewer-owned file or diff threads contain ordered, append-only reviewer and
 agent comments. Canonical reviews are private `fiew.review/v1` JSON under
@@ -152,12 +156,13 @@ Open, Outdated, malformed, or unsaved state is non-success. The legacy
 
 | Key | Action |
 | --- | --- |
+| `Space r d` | Open or resume the Git-backed Review Diff |
+| `Space r t` | Show the Review Threads dashboard |
 | `Space r n` | Create a thread from the current one-side diff selection |
 | `Space r f` | Create a thread for the selected changed file |
 | `Space r a` | Append a reviewer comment to the selected thread |
-| `Space r x` | Resolve or reopen the selected thread |
-| `Space r d` | Request deletion of the selected complete thread |
-| `Space r` `Enter` | Show the Review sidebar |
+| `Space r r` | Resolve or reopen the selected thread |
+| `Space r x` | Request deletion of the selected complete thread |
 | `] n` / `[ n` | Next / previous thread |
 | `Ctrl-Enter` / `Esc` | In the composer: save / cancel (Esc confirms if modified) |
 

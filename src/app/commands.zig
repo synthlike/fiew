@@ -113,21 +113,21 @@ pub const definitions = [_]Definition{
     .{ .id = .project_expand, .stable_id = "project-expand", .title = "Expand or child", .binding = "l" },
     .{ .id = .project_toggle, .stable_id = "project-toggle", .title = "Toggle Project directory", .binding = "Enter" },
     .{ .id = .project_open, .stable_id = "project-open", .title = "Open Project sidebar", .binding = "Space p" },
-    .{ .id = .git_open, .stable_id = "vcs-open", .title = "Open VCS sidebar (Git)", .binding = "Space v" },
-    .{ .id = .git_refresh, .stable_id = "vcs-refresh", .title = "Refresh Git snapshot", .binding = "Space v r" },
+    .{ .id = .git_open, .stable_id = "review-diff-open", .title = "Open Review Diff (Git)", .binding = "Space r d" },
+    .{ .id = .git_refresh, .stable_id = "review-diff-refresh", .title = "Refresh Review Diff", .binding = "Space r d r" },
     .{ .id = .diff_file_next, .stable_id = "diff-file-next", .title = "Next changed file", .binding = "] f" },
     .{ .id = .diff_file_previous, .stable_id = "diff-file-previous", .title = "Previous changed file", .binding = "[ f" },
     .{ .id = .diff_hunk_next, .stable_id = "diff-hunk-next", .title = "Next hunk", .binding = "] h" },
     .{ .id = .diff_hunk_previous, .stable_id = "diff-hunk-previous", .title = "Previous hunk", .binding = "[ h" },
     .{ .id = .diff_line_next, .stable_id = "diff-line-next", .title = "Next changed line", .binding = "] c" },
     .{ .id = .diff_line_previous, .stable_id = "diff-line-previous", .title = "Previous changed line", .binding = "[ c" },
-    .{ .id = .review_open, .stable_id = "review-open", .title = "Review threads menu", .binding = "Space r" },
-    .{ .id = .review_show, .stable_id = "review-show", .title = "Show the Review sidebar", .binding = "Space r Enter" },
+    .{ .id = .review_open, .stable_id = "review-open", .title = "Open Review commands", .binding = "Space r" },
+    .{ .id = .review_show, .stable_id = "review-threads-show", .title = "Show Review Threads", .binding = "Space r t" },
     .{ .id = .note_create, .stable_id = "thread-create-line", .title = "Create thread from diff selection", .binding = "Space r n" },
     .{ .id = .note_file, .stable_id = "thread-create-file", .title = "Create file thread", .binding = "Space r f" },
     .{ .id = .note_reply, .stable_id = "thread-reply", .title = "Append reviewer comment", .binding = "Space r a" },
-    .{ .id = .note_resolve, .stable_id = "thread-resolve", .title = "Resolve or reopen selected thread", .binding = "Space r x" },
-    .{ .id = .note_delete, .stable_id = "thread-delete", .title = "Delete selected thread", .binding = "Space r d" },
+    .{ .id = .note_resolve, .stable_id = "thread-resolve", .title = "Resolve or reopen selected thread", .binding = "Space r r" },
+    .{ .id = .note_delete, .stable_id = "thread-delete", .title = "Delete selected thread", .binding = "Space r x" },
     .{ .id = .note_next, .stable_id = "thread-next", .title = "Next thread", .binding = "] n" },
     .{ .id = .note_previous, .stable_id = "thread-previous", .title = "Previous thread", .binding = "[ n" },
     .{ .id = .bookmark_open, .stable_id = "bookmark-open", .title = "Bookmarks menu", .binding = "Space b" },
@@ -375,12 +375,12 @@ pub const Session = struct {
     pub fn pendingLabel(self: Session) []const u8 {
         return switch (self.pending) {
             .none => switch (self.surface) {
-                .leader => "Space",
+                .leader => "LDR",
                 .command => ":",
                 .help => "help",
-                .review => "Space r",
-                .vcs => "Space v",
-                .bookmarks => "Space b",
+                .review => "LDR r",
+                .vcs => "LDR r d",
+                .bookmarks => "LDR b",
                 .note_composer => "comment",
                 .bookmark_composer => "bookmark label",
                 .confirm_delete => "confirm delete",
@@ -509,7 +509,7 @@ pub const Session = struct {
             .select_line => app.selectLine(),
             .collapse_selection => app.collapseSelection(),
             .reverse_selection => app.reverseSelection(),
-            .activate => return activate(app),
+            .activate => return activate(app, dimensions),
             .history_back => {
                 // In the Git review, Ctrl-o returns from a source view to its diff.
                 if (app.sidebar_context == .git and app.viewing_source) {
@@ -752,10 +752,6 @@ pub const Session = struct {
     fn handleLeader(self: *Session, app: *state.App, key: Key, dimensions: Dimensions) !Effect {
         return switch (normalizedCharacter(key)) {
             'p' => self.executeAndClose(app, .project_open, dimensions),
-            'v' => blk: {
-                self.surface = .vcs;
-                break :blk try self.execute(app, .git_open, dimensions);
-            },
             'r' => self.executeAndClose(app, .review_open, dimensions),
             'b' => self.executeAndClose(app, .bookmark_open, dimensions),
             '?' => self.executeAndClose(app, .help, dimensions),
@@ -772,8 +768,8 @@ pub const Session = struct {
         if (normalizedCharacter(key) == 'r')
             return self.executeAndClose(app, .git_refresh, dimensions);
 
-        // `Space v` is both a complete command and the prefix of `Space v r`.
-        // Once Git is open, a non-refresh key belongs to normal navigation and
+        // `Space r d` is both a complete command and the prefix of `Space r d r`.
+        // Once Review Diff is open, a non-refresh key belongs to normal navigation and
         // must not be swallowed by the optional refresh continuation.
         self.resetTransient(app);
         return self.handle(app, key, dimensions);
@@ -794,13 +790,17 @@ pub const Session = struct {
 
     fn handleReview(self: *Session, app: *state.App, key: Key, dimensions: Dimensions) !Effect {
         return switch (normalizedCharacter(key)) {
+            'd' => blk: {
+                self.surface = .vcs;
+                break :blk try self.execute(app, .git_open, dimensions);
+            },
+            't' => self.executeAndClose(app, .review_show, dimensions),
             'n' => self.executeAndClose(app, .note_create, dimensions),
             'f' => self.executeAndClose(app, .note_file, dimensions),
             'a' => self.executeAndClose(app, .note_reply, dimensions),
-            'x' => self.executeAndClose(app, .note_resolve, dimensions),
-            'd' => self.executeAndClose(app, .note_delete, dimensions),
+            'r' => self.executeAndClose(app, .note_resolve, dimensions),
+            'x' => self.executeAndClose(app, .note_delete, dimensions),
             else => blk: {
-                if (key.code == .enter) break :blk self.executeAndClose(app, .review_show, dimensions);
                 app.feedback = "invalid review command";
                 self.resetTransient(app);
                 break :blk .none;
@@ -994,10 +994,11 @@ fn bookmarkEffect(app: *state.App, activate_bookmark: bool) Effect {
         .{ .preview_bookmark = location };
 }
 
-fn activate(app: *state.App) Effect {
+fn activate(app: *state.App, dimensions: Dimensions) Effect {
     if (app.focus == .sidebar) {
         if (app.sidebar_context == .review) {
-            if (app.hasNotes()) app.focus = .main;
+            if (app.showSelectedThreadInDiff(dimensions.document_rows)) return .none;
+            app.feedback = "thread anchor is not in the current Review Diff";
             return .none;
         }
         if (app.sidebar_context == .bookmarks) return bookmarkEffect(app, true);
@@ -1071,10 +1072,10 @@ test "registry stable identifiers are unique" {
 
 test "required modal bindings are represented by the command registry" {
     const required = [_][]const u8{
-        "h",       "j",       "k",       "l",        "w",   "b",   "e",   "g g",   "g e",
-        "Ctrl-u",  "Ctrl-d",  "PageUp",  "PageDown", "v",   "x",   ";",   "Alt-;", "Enter",
-        "g d",     "Ctrl-o",  "Ctrl-i",  "z c",      "z o", "z a", "z M", "z R",   "Space p",
-        "Space v", "Space r", "Space ?", ":",        "q",
+        "h",       "j",         "k",         "l",        "w",   "b",   "e",   "g g",   "g e",
+        "Ctrl-u",  "Ctrl-d",    "PageUp",    "PageDown", "v",   "x",   ";",   "Alt-;", "Enter",
+        "g d",     "Ctrl-o",    "Ctrl-i",    "z c",      "z o", "z a", "z M", "z R",   "Space p",
+        "Space r", "Space r d", "Space r t", "Space ?",  ":",   "q",
     };
     for (required) |binding| {
         var found = false;
@@ -1168,7 +1169,7 @@ test "invalid and timed out sequences preserve selection" {
     try std.testing.expectEqual(before, app.selection());
 }
 
-test "Space v opens Git immediately and exposes a pending refresh state" {
+test "Space r d opens Review Diff and exposes a pending refresh state" {
     var app = try testApp();
     defer app.deinit();
     app.git_enabled = true;
@@ -1179,7 +1180,8 @@ test "Space v opens Git immediately and exposes a pending refresh state" {
     const dimensions: Dimensions = .{ .sidebar_rows = 20, .document_rows = 20, .document_columns = 80 };
 
     _ = try session.handle(&app, charKey(' '), dimensions);
-    const effect = try session.handle(&app, charKey('v'), dimensions);
+    _ = try session.handle(&app, charKey('r'), dimensions);
+    const effect = try session.handle(&app, charKey('d'), dimensions);
     try std.testing.expectEqual(state.SidebarContext.git, app.sidebar_context);
     try std.testing.expectEqual(state.Focus.sidebar, app.focus);
     try std.testing.expectEqual(Surface.vcs, session.surface);
@@ -1188,7 +1190,7 @@ test "Space v opens Git immediately and exposes a pending refresh state" {
     try std.testing.expectEqualStrings("Git refresh pending", unavailableReason(&app, .git_refresh).?);
 }
 
-test "first navigation key after Space v moves the Git selection" {
+test "first navigation key after Space r d moves the Review Diff selection" {
     const git = @import("../model/git.zig");
     const review_mod = @import("git_review.zig");
     var app = try testApp();
@@ -1216,7 +1218,8 @@ test "first navigation key after Space v moves the Git selection" {
     const dimensions: Dimensions = .{ .sidebar_rows = 20, .document_rows = 20, .document_columns = 80 };
 
     _ = try session.handle(&app, charKey(' '), dimensions);
-    _ = try session.handle(&app, charKey('v'), dimensions);
+    _ = try session.handle(&app, charKey('r'), dimensions);
+    _ = try session.handle(&app, charKey('d'), dimensions);
     _ = try session.handle(&app, charKey('j'), dimensions);
 
     try std.testing.expectEqual(@as(usize, 1), app.review.?.selectedChange().?);
@@ -1225,9 +1228,25 @@ test "first navigation key after Space v moves the Git selection" {
     // The longer refresh binding remains available after normal navigation.
     app.git_status = .idle;
     _ = try session.handle(&app, charKey(' '), dimensions);
-    _ = try session.handle(&app, charKey('v'), dimensions);
+    _ = try session.handle(&app, charKey('r'), dimensions);
+    _ = try session.handle(&app, charKey('d'), dimensions);
     const refresh = try session.handle(&app, charKey('r'), dimensions);
     try std.testing.expectEqual(std.meta.Tag(Effect).open_review, std.meta.activeTag(refresh));
+}
+
+test "Space r t opens Review Threads from Project" {
+    var app = try testApp();
+    defer app.deinit();
+    var session = Session.init(std.testing.allocator);
+    defer session.deinit();
+    const dimensions: Dimensions = .{ .sidebar_rows = 20, .document_rows = 20, .document_columns = 80 };
+
+    _ = try session.handle(&app, charKey(' '), dimensions);
+    _ = try session.handle(&app, charKey('r'), dimensions);
+    _ = try session.handle(&app, charKey('t'), dimensions);
+
+    try std.testing.expectEqual(state.SidebarContext.review, app.sidebar_context);
+    try std.testing.expectEqual(state.Focus.sidebar, app.focus);
 }
 
 test "bookmark commands create show navigate and confirm deletion" {
@@ -1294,7 +1313,7 @@ test "leader and named command surfaces use the same registry" {
 
     _ = try session.handle(&app, charKey(' '), dimensions);
     _ = try session.handle(&app, charKey('v'), dimensions);
-    try std.testing.expectEqualStrings("not a Git repository", app.feedback.?);
+    try std.testing.expectEqualStrings("invalid leader command", app.feedback.?);
 
     _ = try session.handle(&app, charKey(':'), dimensions);
     for ("quit") |character| _ = try session.handle(&app, charKey(character), dimensions);
@@ -1562,13 +1581,23 @@ test "complete thread deletion requires reviewer confirmation" {
     _ = try session.execute(&app, .project_down, dimensions);
     try std.testing.expectEqual(@as(usize, 1), app.notes.?.selected);
 
-    _ = try session.execute(&app, .note_delete, dimensions);
+    _ = try session.handle(&app, charKey(' '), dimensions);
+    _ = try session.handle(&app, charKey('r'), dimensions);
+    const resolved = try session.handle(&app, charKey('r'), dimensions);
+    try std.testing.expectEqual(std.meta.Tag(Effect).save_note, std.meta.activeTag(resolved));
+    try std.testing.expectEqual(review_model.Lifecycle.resolved, app.notes.?.threadAt(app.notes.?.selectedRef().?).lifecycle);
+
+    _ = try session.handle(&app, charKey(' '), dimensions);
+    _ = try session.handle(&app, charKey('r'), dimensions);
+    _ = try session.handle(&app, charKey('x'), dimensions);
     try std.testing.expectEqual(Surface.confirm_delete, session.surface);
     try std.testing.expectEqual(@as(usize, 2), app.notes.?.total());
     _ = try session.handle(&app, charKey('n'), dimensions);
     try std.testing.expectEqual(@as(usize, 2), app.notes.?.total());
 
-    _ = try session.execute(&app, .note_delete, dimensions);
+    _ = try session.handle(&app, charKey(' '), dimensions);
+    _ = try session.handle(&app, charKey('r'), dimensions);
+    _ = try session.handle(&app, charKey('x'), dimensions);
     const effect = try session.handle(&app, charKey('y'), dimensions);
     try std.testing.expectEqual(std.meta.Tag(Effect).save_note, std.meta.activeTag(effect));
     try std.testing.expectEqual(@as(usize, 1), app.notes.?.total());

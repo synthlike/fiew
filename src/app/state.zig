@@ -273,10 +273,22 @@ pub const App = struct {
         self.focus = .sidebar;
     }
 
-    /// Show the Review sidebar (the list of notes).
+    /// Show the Review Threads sidebar.
     pub fn showReviewSidebar(self: *App) void {
         self.sidebar_context = .review;
         self.focus = .sidebar;
+    }
+
+    /// Return the selected thread to its matching current Review Diff anchor.
+    pub fn showSelectedThreadInDiff(self: *App, viewport_rows: usize) bool {
+        const state_notes = if (self.notes) |*value| value else return false;
+        const thread = state_notes.threadAt(state_notes.selectedRef() orelse return false);
+        const review_state = if (self.review) |*value| value else return false;
+        if (!review_state.selectThreadAnchor(thread.group, thread.path, thread.side, thread.start_line, viewport_rows)) return false;
+        self.showGitSidebar();
+        self.focus = .main;
+        self.viewing_source = false;
+        return true;
     }
 
     pub fn showBookmarksSidebar(self: *App) void {

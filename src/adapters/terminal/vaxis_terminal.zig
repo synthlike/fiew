@@ -1162,9 +1162,9 @@ fn metadataLine(allocator: std.mem.Allocator, change: fiew.git_model.Change) ![]
 
 fn drawGitSidebar(allocator: std.mem.Allocator, window: vaxis.Window, app: *const fiew.app.App) !void {
     const heading = switch (app.git_status) {
-        .pending => " Git · refreshing ",
-        .stale => " Git · stale ",
-        else => " Git ",
+        .pending => " Review Diff · Git · refreshing ",
+        .stale => " Review Diff · Git · stale ",
+        else => " Review Diff · Git ",
     };
     _ = window.printSegment(.{
         .text = heading,
@@ -1733,13 +1733,13 @@ fn drawCommandSurface(
             menu.clear();
             _ = menu.printSegment(.{ .text = " Leader ", .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
             _ = menu.printSegment(.{
-                .text = "p Project  v VCS  r Review  b Bookmarks  ? help  q quit",
+                .text = "p Project  r Review  b Bookmarks  ? help  q quit",
             }, .{ .row_offset = 1, .col_offset = 1, .wrap = .none });
         },
         .vcs => {
             const menu = window.child(.{ .y_off = window.height -| 2, .height = 2 });
             menu.clear();
-            _ = menu.printSegment(.{ .text = " VCS · Git ", .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
+            _ = menu.printSegment(.{ .text = " Review Diff · Git ", .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
             _ = menu.printSegment(.{ .text = if (app.git_status == .pending) "r refresh (pending)  Enter close" else "r refresh  Enter close" }, .{
                 .row_offset = 1,
                 .col_offset = 1,
@@ -1751,7 +1751,7 @@ fn drawCommandSurface(
             menu.clear();
             _ = menu.printSegment(.{ .text = " Review ", .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
             _ = menu.printSegment(.{
-                .text = "n line  f file  a append  x resolve/reopen  d delete  Enter show",
+                .text = "d Diff  t Threads  n line  f file  a append  r resolve/reopen  x delete",
             }, .{ .row_offset = 1, .col_offset = 1, .wrap = .none });
         },
         .bookmarks => {
@@ -1844,16 +1844,21 @@ fn drawStatus(
         ];
         break :location try std.fmt.allocPrint(
             allocator,
-            "line {d} col {d}",
+            "{d}:{d}",
             .{ active.line + 1, active.visual_column + 1 },
         );
     } else "";
+    const mode = switch (app.mode) {
+        .normal => "NOR",
+        .extend => "EXT",
+        .command => "CMD",
+    };
+    const input_path = session.pendingLabel();
     const feedback = app.feedback orelse "";
-    const text = try std.fmt.allocPrint(
-        allocator,
-        " {s}  pending:{s}  {s}  {s}",
-        .{ @tagName(app.mode), session.pendingLabel(), location, feedback },
-    );
+    const text = if (input_path.len == 0)
+        try std.fmt.allocPrint(allocator, " {s}  {s}  {s}", .{ mode, location, feedback })
+    else
+        try std.fmt.allocPrint(allocator, " {s}  {s}  {s}  {s}", .{ mode, input_path, location, feedback });
     _ = window.printSegment(.{ .text = text, .style = .{ .reverse = true } }, .{ .wrap = .none });
 }
 

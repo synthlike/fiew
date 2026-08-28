@@ -1,5 +1,5 @@
 <!-- agent-workflows-record
-{"archived":false,"created":"2026-08-25T21:48:04Z","id":"fiew-v0-1","modified":"2026-08-28T09:33:05Z","record_type":"specs","title":"fiew v0.1"}
+{"archived":false,"created":"2026-08-25T21:48:04Z","id":"fiew-v0-1","modified":"2026-08-28T11:52:47Z","record_type":"specs","title":"fiew v0.1"}
 -->
 # fiew v0.1
 
@@ -9,7 +9,7 @@ Developers working with coding agents need a fast terminal workspace for inspect
 
 ## Desired behavior
 
-On Apple Silicon macOS in Ghostty, a reviewer can browse immutable source, inspect current staged, unstaged, and untracked Git changes through a VCS view, hold anchored reviewer-agent conversations, keep private bookmarks for later inspection, and approve only after explicitly resolving every thread. An agent can discover a named review, read its complete history, and append replies through a stable non-interactive interface without receiving source-write or review-lifecycle authority.
+On Apple Silicon macOS in Ghostty, a reviewer can browse immutable source, inspect current staged, unstaged, and untracked Git changes through Review Diff, hold anchored reviewer-agent conversations, keep private bookmarks for later inspection, and approve only after explicitly resolving every thread. An agent can discover a named review, read its complete history, and append replies through a stable non-interactive interface without receiving source-write or review-lifecycle authority.
 
 ## Requirements
 
@@ -31,10 +31,10 @@ On Apple Silicon macOS in Ghostty, a reviewer can browse immutable source, inspe
 
 ### 3. Sidebar contexts and previews
 
-1. The sidebar has four user-visible contexts: Project, VCS, Review, and Bookmarks.
-2. `Space p`, `Space v`, `Space r`, and `Space b` open their respective context namespaces. Git is the only v0.1 VCS backend and is identified as the active backend in the VCS view.
+1. The sidebar has four user-visible contexts: Project, Review Diff, Review Threads, and Bookmarks.
+2. `Space p` and `Space b` open Project and Bookmarks. `Space r` opens the Review command namespace. `Space v` is not supported. Git is the only v0.1 Review Diff backend and is identified as the active backend in that view.
 3. Each context preserves its own selection and scroll position.
-4. Project uses a directory tree; VCS groups changed files by Git state; Review groups threads by file, anchor, and status; Bookmarks lists private saved source locations.
+4. Project uses a directory tree; Review Diff groups changed files by Git state; Review Threads groups threads by file, anchor, and status; Bookmarks lists private saved source locations.
 5. Moving over an item previews it without moving focus or altering history. `Enter` pins the preview, adds a history location where applicable, and focuses the main view.
 6. `Esc` or sidebar collapse restores the last pinned view. `Tab`, `Shift-Tab`, and mouse clicks move focus. The focused region is visually explicit.
 
@@ -47,7 +47,9 @@ On Apple Silicon macOS in Ghostty, a reviewer can browse immutable source, inspe
 5. Required movement bindings are `h j k l`, `w b e`, `g g`, `g e`, `Ctrl-u`, `Ctrl-d`, PageUp, and PageDown.
 6. Required selection bindings are `v`, `x`, `;`, and `Alt-;`.
 7. `Space` opens the leader menu; `:` opens named-command search. Both use one command registry and show disabled reasons.
-8. `Space ?` shows generated key help. `Esc` safely cancels transient interaction. Quitting requires an explicit named or leader command.
+8. `Space r d` opens or resumes Review Diff and requests a Git snapshot when none is current. `Space r t` opens Review Threads. In Review Diff, `Space r n` creates a thread from a selected one-side diff range and `Space r f` creates a thread for the selected changed file. In Review Threads, `Space r a` appends a reviewer comment, `Space r r` resolves or reopens the selected thread, and `Space r x` requests deletion of the selected complete thread with confirmation.
+9. `Space ?` shows generated key help. `Esc` safely cancels transient interaction. Quitting requires an explicit named or leader command.
+10. The status line abbreviates persistent modes as `NOR`, `EXT`, and `CMD`. It shows the Leader command path such as `LDR r` only while a key sequence or command surface is active; it omits that field while idle. Document locations use compact one-based `line:column` notation, such as `39:1`. Composers and confirmation surfaces use concise descriptive labels.
 
 ### 5. Immutable documents and Zig structure
 
@@ -58,16 +60,17 @@ On Apple Silicon macOS in Ghostty, a reviewer can browse immutable source, inspe
 5. Files over 2 MiB use plain-text fallback. Parsing occurs outside rendering and preserves the previous valid snapshot during reload.
 6. Zig fold commands remain `z c`, `z o`, `z a`, `z M`, and `z R`. Structural commands remain `Alt-o`, `Alt-i`, `Alt-n`, and `Alt-p`.
 
-### 6. Current-change VCS review
+### 6. Current-change Review Diff
 
-1. Git supports standard repositories and linked worktrees. Non-Git directories remain browsable with VCS disabled; bare repositories are unsupported.
-2. VCS shows Staged (`HEAD` to index), Unstaged (index to working tree), and Untracked changes separately. Unborn repositories compare the index with Git's empty tree.
+1. Git supports standard repositories and linked worktrees. Non-Git directories remain browsable with Review Diff disabled; bare repositories are unsupported.
+2. Review Diff shows Staged (`HEAD` to index), Unstaged (index to working tree), and Untracked changes separately. Unborn repositories compare the index with Git's empty tree.
 3. Added, modified, deleted, renamed, type-changed, mode-only, binary, and submodule entries are visible. Renames use 50% similarity; copies are excluded.
 4. Text changes use unified diffs with three context lines and old/new line numbers. Unsupported textual forms show metadata rather than fabricated hunks.
 5. `[ f`/`] f`, `[ h`/`] h`, and `[ c`/`] c` navigate files, hunks, and changed lines. `Enter` opens source context and `Ctrl-o` returns.
 6. Git work runs outside the terminal event loop. Every command failure is explicit, repository-root identity is preserved, and only a complete internally consistent snapshot may replace the prior snapshot.
-7. Debounced filesystem change or a manual VCS refresh requests a new snapshot. Failure retains and marks the previous snapshot stale; obsolete work cannot publish.
+7. Debounced filesystem change or a manual Review Diff refresh requests a new snapshot. Failure retains and marks the previous snapshot stale; obsolete work cannot publish.
 8. fiew never uses hooks, pagers, prompts, external diff drivers, text converters, or mutating Git operations.
+9. Review Diff reports pending Git loading, unavailable Git support, and empty change sets explicitly. Review Threads returns a selected thread to its Review Diff anchor.
 
 ### 7. Review threads
 
@@ -79,7 +82,7 @@ On Apple Silicon macOS in Ghostty, a reviewer can browse immutable source, inspe
 6. Reviewer lifecycle (Open or Resolved) and anchor validity (Current or Outdated) are independent. Open and Outdated threads block approval. A review is approved only when every thread is Current and explicitly reviewer-resolved; temporary anchor loss never discards remembered reviewer lifecycle.
 7. Re-anchoring validates exact raw bytes at the stored location first. Only when that fails may one complete exact context match relocate the anchor across Git groups within the same path or an explicit Git rename target. Zero or multiple matches become Outdated without moving; unrelated paths, normalized similarity, and incomplete or stale snapshots are never used.
 8. The reviewer composer accepts multiline UTF-8 plain text. Saving and cancellation protect modified text.
-9. The Review sidebar supports independent keyboard and mouse selection, preview, scrolling, status visibility, and navigation.
+9. The Review Threads sidebar supports independent keyboard and mouse selection, preview, scrolling, status visibility, navigation, and return to an anchored Review Diff location.
 
 ### 8. Agent review interface
 
@@ -116,15 +119,15 @@ On Apple Silicon macOS in Ghostty, a reviewer can browse immutable source, inspe
 - Zig 0.16.0 on Apple Silicon macOS and Ghostty.
 - Low-level libvaxis; no `vxfw`.
 - Direct Tree-sitter C adapter with the pinned Zig grammar.
-- Installed Git CLI behind the VCS surface; no generic VCS abstraction or libgit2 in v0.1.
+- Installed Git CLI behind Review Diff; no generic VCS abstraction or libgit2 in v0.1.
 - Single-owner event-driven ports-and-adapters architecture with typed asynchronous effects.
 - Pure fiew-owned ViewModel and RenderPlan pipeline.
 - No source-writing feature, generic LSP framework, language server, Node, Chromium, SQLite, or application framework.
 
 ## Verification
 
-- Pure command and reducer tests verify modes, context bindings, role permissions, thread lifecycle, bookmark behavior, stale-event rejection, and disabled reasons.
-- Fixed-dimension RenderPlan snapshots verify Project, VCS, Review, Bookmarks, status, source, diff, binary, outdated, and error views.
+- Pure command and reducer tests verify modes, Review Diff and Review Threads bindings and transitions, role permissions, thread lifecycle, bookmark behavior, stale-event rejection, and disabled reasons.
+- Fixed-dimension RenderPlan snapshots verify Project, Review Diff, Review Threads, Bookmarks, status, source, diff, binary, outdated, and error views.
 - Shared document and anchor-transition fixtures verify UTF-8 mapping, stored-location retention, line movement, multiline and file threads, diff-to-source bookmarks, Git-group transitions, explicit renames, unrelated paths, exact-unique relocation, ambiguity, missing content, lifecycle restoration, root movement, and Outdated transitions.
 - Git adapter tests verify repository discovery, nested-directory roots, nonzero exits, snapshot consistency, cancellation, linked worktrees, and the mutation boundary.
 - Artifact-format tests verify the common internal JSON envelope, arbitrary Markdown comment bodies, legacy rejection, schema refusal, backup recovery, atomic persistence, current-review pointer validation and authority, public JSON and Markdown projections, bookmark isolation from review output, and persistence-aware exit status.
