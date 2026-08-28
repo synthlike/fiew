@@ -5,6 +5,7 @@
 const std = @import("std");
 const git = @import("../model/git.zig");
 const review_model = @import("../model/review.zig");
+const anchor_model = @import("../model/anchor.zig");
 
 /// One visible sidebar row: a group heading or a change within it.
 pub const Row = union(enum) {
@@ -279,6 +280,7 @@ pub const Review = struct {
         end_line: usize,
         blob: ?[]const u8,
         excerpt: []u8,
+        context: anchor_model.Context,
     };
 
     pub fn captureAnchor(self: Review, allocator: std.mem.Allocator) !?AnchorDraft {
@@ -324,6 +326,27 @@ pub const Review = struct {
             try excerpt.append(allocator, '\n');
         }
 
+        var side_bytes: std.ArrayList(u8) = .empty;
+        defer side_bytes.deinit(allocator);
+        var target_start: ?usize = null;
+        var target_end: usize = 0;
+        var previous_line: ?usize = null;
+        for (diff.lines, 0..) |line, index| {
+            const number = if (side == .new) line.new_line else line.old_line;
+            if (number == null) continue;
+            if (previous_line) |previous| {
+                if (number.? != previous + 1) try side_bytes.append(allocator, 0);
+            }
+            previous_line = number.?;
+            if (index >= selection.start and index <= selection.end and target_start == null)
+                target_start = side_bytes.items.len;
+            try side_bytes.appendSlice(allocator, diff.text[line.text.start..line.text.end]);
+            try side_bytes.append(allocator, '\n');
+            if (index >= selection.start and index <= selection.end) target_end = side_bytes.items.len;
+        }
+        const context = try anchor_model.capture(allocator, side_bytes.items, target_start orelse 0, target_end);
+        errdefer allocator.free(context.bytes);
+
         return .{
             .path = change.path,
             .group = change.group,
@@ -332,6 +355,7 @@ pub const Review = struct {
             .end_line = if (start_line == null) 1 else end_line,
             .blob = change.sideBlob(side == .new),
             .excerpt = try excerpt.toOwnedSlice(allocator),
+            .context = context,
         };
     }
 
@@ -349,6 +373,70 @@ pub const Review = struct {
 };
 
 // --- Tests ---------------------------------------------------------------
+
+pub fn sideDocument(allocator: std.mem.Allocator, diff: git.FileDiff, side: review_model.Side) ![]u8 {
+    var bytes: std.ArrayList(u8) = .empty;
+    errdefer bytes.deinit(allocator);
+    var previous_line: ?usize = null;
+    for (diff.lines) |line| {
+        const number = if (side == .new) line.new_line else line.old_line;
+        if (number == null) continue;
+        if (previous_line) |previous| {
+            if (number.? != previous + 1) try bytes.append(allocator, 0);
+        }
+        previous_line = number.?;
+        try bytes.appendSlice(allocator, diff.text[line.text.start..line.text.end]);
+        try bytes.append(allocator, '\n');
+    }
+    return bytes.toOwnedSlice(allocator);
+}
+
+pub fn sideLineAtOffset(diff: git.FileDiff, side: review_model.Side, offset: usize) ?usize {
+    var cursor: usize = 0;
+    var previous_line: ?usize = null;
+    for (diff.lines) |line| {
+        const number = if (side == .new) line.new_line else line.old_line;
+        if (number == null) continue;
+        if (previous_line) |previous| {
+            if (number.? != previous + 1) cursor += 1;
+        }
+        previous_line = number.?;
+        const length = line.text.end - line.text.start + 1;
+        if (offset < cursor + length) return number;
+        cursor += length;
+    }
+    return null;
+}
+
+pub fn changeFingerprint(allocator: std.mem.Allocator, change: git.Change, diff: git.FileDiff) ![]u8 {
+    return changeFingerprintForPath(allocator, change, diff, change.path);
+}
+
+pub fn changeFingerprintForPath(
+    allocator: std.mem.Allocator,
+    change: git.Change,
+    diff: git.FileDiff,
+    logical_path: []const u8,
+) ![]u8 {
+    const Fingerprint = struct {
+        path: []const u8,
+        content: git.ContentKind,
+        old_mode: u32,
+        new_mode: u32,
+        old_blob: ?[]const u8,
+        new_blob: ?[]const u8,
+        diff: []const u8,
+    };
+    return std.json.Stringify.valueAlloc(allocator, Fingerprint{
+        .path = logical_path,
+        .content = change.content,
+        .old_mode = change.old_mode,
+        .new_mode = change.new_mode,
+        .old_blob = if (change.content == .text) null else change.old_blob,
+        .new_blob = if (change.content == .text) null else change.new_blob,
+        .diff = diff.text,
+    }, .{});
+}
 
 const testing = std.testing;
 
@@ -453,10 +541,13 @@ test "captureAnchor derives side, line range, and excerpt from the selection" {
     review_state.diff_anchor = null;
     const anchor = (try review_state.captureAnchor(testing.allocator)).?;
     defer testing.allocator.free(anchor.excerpt);
+    defer testing.allocator.free(anchor.context.bytes);
     try testing.expectEqualStrings("b.zig", anchor.path);
     // The selection contains an addition, so it anchors to the new side.
     try testing.expectEqual(review_model.Side.new, anchor.side);
     try testing.expectEqual(@as(usize, 2), anchor.start_line);
     try testing.expectEqual(@as(usize, 2), anchor.end_line);
     try testing.expect(anchor.excerpt.len != 0);
+    try testing.expect(anchor.context.bytes.len != 0);
+    try testing.expect(anchor.context.target_end > anchor.context.target_start);
 }

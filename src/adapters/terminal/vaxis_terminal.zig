@@ -85,6 +85,15 @@ const GitLoadState = struct {
                         return;
                     };
                     app.openReview(review);
+                    const accepted = app.review.?.changeset;
+                    if (app.notes) |*state_notes| {
+                        state_notes.reanchor(accepted) catch |err| {
+                            app.feedback = @errorName(err);
+                        };
+                        if (state_notes.hasDirty() and !flushNotes(repository, state_notes))
+                            app.feedback = "review re-anchor persistence failed; changes remain dirty";
+                    }
+                    reanchorBookmarks(repository, app, accepted);
                 }
             },
             .failure => |failure| app.failGitRefresh(box.generation, failure.message()),
@@ -404,16 +413,24 @@ pub fn run(init: std.process.Init, options: Options) !u8 {
         app.bookmarks_available = true;
     }
 
-    // A named review loads only its exact validated file. Ordinary browsing
-    // loads all reviews for the sidebar.
+    // A named review loads exactly that file. Ordinary browsing loads only the
+    // explicit current review, never inferring or mutating historical sessions.
     {
         var loaded: fiew.review_store.Loaded = if (review_name) |name|
             try fiew.review_store.loadOne(allocator, init.io, repository.root_dir, name)
-        else
-            fiew.review_store.loadAll(allocator, init.io, repository.root_dir) catch |err| blk: {
-                app.feedback = @errorName(err);
-                break :blk .{ .allocator = allocator, .entries = &.{} };
+        else current: {
+            const id = fiew.review_store.currentId(allocator, init.io, repository.root_dir) catch |err| {
+                if (err != error.CurrentReviewMissing) app.feedback = @errorName(err);
+                break :current .{ .allocator = allocator, .entries = &.{} };
             };
+            defer allocator.free(id);
+            const filename = try fiew.review_cli.filenameForId(allocator, id);
+            defer allocator.free(filename);
+            break :current fiew.review_store.loadOne(allocator, init.io, repository.root_dir, filename) catch |err| {
+                app.feedback = @errorName(err);
+                break :current .{ .allocator = allocator, .entries = &.{} };
+            };
+        };
         defer loaded.deinit();
         app.notes = if (review_name != null)
             try fiew.notes.Notes.fromLoaded(allocator, loaded)
@@ -692,11 +709,16 @@ fn applyEffect(
                     if (grapheme.visual_column >= composer.target.column) break;
                 }
             }
+            const target_start = fiew.anchor.lineStart(snapshot.bytes, source_offset);
+            const target_end = fiew.anchor.lineEnd(snapshot.bytes, source_offset);
+            const context = try fiew.anchor.capture(repository.allocator, snapshot.bytes, target_start, target_end);
+            defer repository.allocator.free(context.bytes);
             try state_bookmarks.add(
                 composer.target.path,
                 composer.target.line,
                 composer.target.column,
                 source_offset,
+                context,
                 composer.buffer.items,
             );
             app.cancelBookmarkComposer();
@@ -731,11 +753,20 @@ fn applyEffect(
                         .author = .reviewer,
                         .body = try repository.allocator.dupe(u8, composer.buffer.items),
                     };
+                    const anchor_context = anchor.context orelse return error.MissingAnchorContext;
                     const thread: fiew.review.Thread = .{
                         .id = try state_notes.nextId(repository.allocator),
                         .path = try repository.allocator.dupe(u8, anchor.path),
                         .group = anchor.group,
                         .status = .open,
+                        .lifecycle = .open,
+                        .validity = .current,
+                        .context = .{
+                            .bytes = try repository.allocator.dupe(u8, anchor_context.bytes),
+                            .original_start = anchor_context.original_start,
+                            .target_start = anchor_context.target_start,
+                            .target_end = anchor_context.target_end,
+                        },
                         .side = anchor.side,
                         .start_line = anchor.start_line,
                         .end_line = anchor.end_line,
@@ -752,6 +783,12 @@ fn applyEffect(
             if (!flushNotes(repository, state_notes)) app.feedback = "review persistence failed; changes remain dirty";
         },
         .quit => {
+            if (app.notes) |*state_notes| {
+                if (state_notes.hasDirty() and !flushNotes(repository, state_notes)) {
+                    app.feedback = "review persistence failed; quit cancelled";
+                    return false;
+                }
+            }
             if (app.bookmarks) |*state_bookmarks| {
                 if (!persistBookmarks(repository, state_bookmarks)) {
                     app.feedback = "bookmark persistence failed; quit cancelled";
@@ -832,6 +869,42 @@ fn flushNotes(repository: fiew.filesystem.Repository, state_notes: *fiew.notes.N
     return success and !state_notes.hasDirty();
 }
 
+fn reanchorBookmarks(repository: fiew.filesystem.Repository, app: *fiew.app.App, changeset: fiew.git_model.ChangeSet) void {
+    const state_bookmarks = if (app.bookmarks) |*value| value else return;
+    var index: usize = 0;
+    while (index < state_bookmarks.items.items.len) : (index += 1) {
+        const stored_path = repository.allocator.dupe(u8, state_bookmarks.items.items[index].path) catch continue;
+        defer repository.allocator.free(stored_path);
+        var candidate_path: []const u8 = stored_path;
+        var renamed = false;
+        for (changeset.changes) |change| {
+            if (change.kind == .renamed and change.old_path != null and std.mem.eql(u8, change.old_path.?, stored_path)) {
+                candidate_path = change.path;
+                renamed = true;
+                break;
+            }
+        }
+        const bytes = repository.root_dir.readFileAlloc(
+            repository.io,
+            candidate_path,
+            repository.allocator,
+            .limited64(2 << 20),
+        ) catch {
+            state_bookmarks.markPathOutdated(stored_path);
+            continue;
+        };
+        defer repository.allocator.free(bytes);
+        if (renamed)
+            state_bookmarks.reanchorRenamedPath(stored_path, candidate_path, bytes) catch {
+                app.feedback = "bookmark rename re-anchor failed";
+            }
+        else
+            state_bookmarks.reanchorPath(stored_path, bytes);
+    }
+    if (state_bookmarks.dirty and !persistBookmarks(repository, state_bookmarks))
+        app.feedback = "bookmark re-anchor persistence failed; changes remain dirty";
+}
+
 fn persistBookmarks(repository: fiew.filesystem.Repository, state_bookmarks: *fiew.bookmarks.Bookmarks) bool {
     if (!state_bookmarks.dirty) return true;
     fiew.bookmark_store.save(repository.allocator, repository.io, repository.root_dir, state_bookmarks.stored()) catch return false;
@@ -857,15 +930,21 @@ fn openBookmark(
         app.feedback = @errorName(err);
         return;
     };
+    var effective_line = source.line;
+    var effective_column = source.column;
     if (app.bookmarks) |*state_bookmarks| {
-        state_bookmarks.markSelectedCurrent();
+        state_bookmarks.reanchorPath(source.path, snapshot.bytes);
+        if (state_bookmarks.selectedBookmark()) |item| {
+            effective_line = item.line;
+            effective_column = item.column;
+        }
         _ = persistBookmarks(repository, state_bookmarks);
     }
     app.showPreview(snapshot);
-    app.positionPreviewAtLine(source.line, source.column);
+    app.positionPreviewAtLine(effective_line, effective_column);
     if (activate) {
         _ = try app.pinPreview();
-        if (app.activeViewMut()) |view| view.scroll_line = source.line -| 1 -| (document_rows / 2);
+        if (app.activeViewMut()) |view| view.scroll_line = effective_line -| 1 -| (document_rows / 2);
     }
 }
 
@@ -1243,9 +1322,9 @@ fn drawDiff(allocator: std.mem.Allocator, window: vaxis.Window, app: *const fiew
                 if (line_number != anchor_end) continue;
 
                 if (row >= body_rows) break;
-                const resolved = note.status == .resolved;
+                const resolved = note.projectedStatus() == .resolved;
                 _ = window.printSegment(.{
-                    .text = try std.fmt.allocPrint(allocator, "▏ thread · {s}", .{@tagName(note.status)}),
+                    .text = try std.fmt.allocPrint(allocator, "▏ thread · {s}", .{@tagName(note.projectedStatus())}),
                     .style = .{ .fg = .{ .index = 6 }, .bold = true, .dim = resolved },
                 }, .{ .row_offset = @intCast(row + 1), .col_offset = 7, .wrap = .none });
                 row += 1;
@@ -1527,9 +1606,10 @@ fn drawReviewSidebar(allocator: std.mem.Allocator, window: vaxis.Window, app: *c
         const ref = state_notes.refAt(index) orelse break;
         const thread = state_notes.threadAt(ref);
         const selected = index == state_notes.selected;
-        const resolved = thread.status == .resolved;
-        const marker = reviewStatusMarker(thread.status);
-        const color: vaxis.Cell.Color = switch (thread.status) {
+        const status = thread.projectedStatus();
+        const resolved = status == .resolved;
+        const marker = reviewStatusMarker(status);
+        const color: vaxis.Cell.Color = switch (status) {
             .open => .{ .index = 3 },
             .resolved => .{ .index = 2 },
             .outdated => .{ .index = 1 },
@@ -1550,7 +1630,7 @@ fn drawNoteDetail(allocator: std.mem.Allocator, window: vaxis.Window, app: *cons
         return;
     };
     const note = state_notes.threadAt(ref);
-    const header = try std.fmt.allocPrint(allocator, " {s}  {s}", .{ note.status.label(), note.path });
+    const header = try std.fmt.allocPrint(allocator, " {s}  {s}", .{ note.projectedStatus().label(), note.path });
     _ = window.print(&.{
         .{ .text = " Thread", .style = .{ .bold = true, .reverse = app.focus == .main } },
         .{ .text = try sanitizeLine(allocator, header, window.width -| 6) },

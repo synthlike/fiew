@@ -6,6 +6,8 @@ const std = @import("std");
 const review = @import("../model/review.zig");
 const git = @import("../model/git.zig");
 const store = @import("../adapters/storage/review_store.zig");
+const anchor = @import("../model/anchor.zig");
+const git_review = @import("git_review.zig");
 
 pub const ThreadRef = struct { file: usize, thread: usize };
 pub const NoteRef = ThreadRef; // Transitional internal name for render call sites.
@@ -56,6 +58,7 @@ pub const Notes = struct {
             try self.files.append(allocator, file);
         }
         self.recalculateNextId();
+        if (self.files.items.len == 1) self.session = 0;
         return self;
     }
 
@@ -85,7 +88,7 @@ pub const Notes = struct {
         for (self.files.items) |file| {
             if (!std.mem.eql(u8, file.filename, filename)) continue;
             for (file.threads.items) |thread| {
-                if (thread.status.blocksApproval()) count += 1;
+                if (thread.projectedStatus().blocksApproval()) count += 1;
             }
         }
         return count;
@@ -163,13 +166,14 @@ pub const Notes = struct {
         if (actor != .reviewer) return error.PermissionDenied;
         const ref = self.selectedRef() orelse return;
         const thread = self.threadAt(ref);
-        thread.status = if (resolved) .resolved else .open;
+        thread.lifecycle = if (resolved) .resolved else .open;
+        thread.status = thread.projectedStatus();
         self.files.items[ref.file].dirty = true;
     }
 
     pub fn toggleResolved(self: *Notes) void {
         const ref = self.selectedRef() orelse return;
-        const resolved = self.threadAt(ref).status != .resolved;
+        const resolved = self.threadAt(ref).lifecycle != .resolved;
         self.setResolved(.reviewer, resolved) catch {};
     }
 
@@ -218,6 +222,18 @@ pub const Notes = struct {
             }
         };
         return buffer[0..count];
+    }
+
+    pub fn reanchor(self: *Notes, changeset: git.ChangeSet) !void {
+        for (self.files.items) |*file| {
+            for (file.threads.items) |*thread| {
+                const changed = if (thread.scope() == .file)
+                    try reanchorFileThread(self.allocator, thread, changeset)
+                else
+                    try reanchorLineThread(self.allocator, thread, changeset);
+                if (changed) file.dirty = true;
+            }
+        }
     }
 
     pub fn dirtyFiles(self: Notes, buffer: []DirtyFile) []DirtyFile {
@@ -280,6 +296,124 @@ pub const Notes = struct {
     }
 };
 
+const Candidate = struct { index: usize, context_start: usize };
+
+fn pathMatches(thread_path: []const u8, change: git.Change) bool {
+    return std.mem.eql(u8, thread_path, change.path) or
+        (change.kind == .renamed and change.old_path != null and std.mem.eql(u8, thread_path, change.old_path.?));
+}
+
+fn setValidity(thread: *review.Thread, validity: review.Validity) bool {
+    if (thread.validity == validity) return false;
+    thread.validity = validity;
+    thread.status = thread.projectedStatus();
+    return true;
+}
+
+fn applyCandidate(allocator: std.mem.Allocator, thread: *review.Thread, changeset: git.ChangeSet, candidate: Candidate) !bool {
+    const change = changeset.changes[candidate.index];
+    var changed = setValidity(thread, .current);
+    if (!std.mem.eql(u8, thread.path, change.path)) {
+        const path = try allocator.dupe(u8, change.path);
+        allocator.free(thread.path);
+        thread.path = path;
+        changed = true;
+    }
+    if (thread.group != change.group) {
+        thread.group = change.group;
+        changed = true;
+    }
+    if (thread.context.original_start != candidate.context_start) {
+        thread.context.original_start = candidate.context_start;
+        changed = true;
+    }
+    if (thread.scope() == .file) {
+        const fingerprint = try git_review.changeFingerprint(allocator, change, changeset.diffs[candidate.index]);
+        if (!std.mem.eql(u8, fingerprint, thread.context.bytes)) {
+            allocator.free(thread.context.bytes);
+            thread.context.bytes = fingerprint;
+            thread.context.original_start = 0;
+            thread.context.target_start = 0;
+            thread.context.target_end = fingerprint.len;
+            changed = true;
+        } else {
+            allocator.free(fingerprint);
+        }
+    }
+    if (thread.side) |side| {
+        const document = try git_review.sideDocument(allocator, changeset.diffs[candidate.index], side);
+        defer allocator.free(document);
+        const target = thread.context.targetOffset(candidate.context_start);
+        const start_line = git_review.sideLineAtOffset(changeset.diffs[candidate.index], side, target) orelse
+            1 + std.mem.count(u8, document[0..@min(target, document.len)], "\n");
+        const target_bytes = thread.context.bytes[thread.context.target_start..thread.context.target_end];
+        const line_count = @max(std.mem.count(u8, target_bytes, "\n"), 1);
+        if (thread.start_line != start_line or thread.end_line != start_line + line_count - 1) changed = true;
+        thread.start_line = start_line;
+        thread.end_line = start_line + line_count - 1;
+        const blob = change.sideBlob(side == .new);
+        if (!optionalEqual(thread.blob, blob)) {
+            if (thread.blob) |value| allocator.free(value);
+            thread.blob = if (blob) |value| try allocator.dupe(u8, value) else null;
+            changed = true;
+        }
+    }
+    thread.status = thread.projectedStatus();
+    return changed;
+}
+
+fn optionalEqual(a: ?[]const u8, b: ?[]const u8) bool {
+    if (a == null or b == null) return a == null and b == null;
+    return std.mem.eql(u8, a.?, b.?);
+}
+
+fn reanchorLineThread(allocator: std.mem.Allocator, thread: *review.Thread, changeset: git.ChangeSet) !bool {
+    const side = thread.side orelse return setValidity(thread, .outdated);
+    var found: ?Candidate = null;
+    var ambiguous = false;
+    for (changeset.changes, 0..) |change, index| {
+        if (!pathMatches(thread.path, change) or changeset.diffs[index].lines.len == 0) continue;
+        const document = try git_review.sideDocument(allocator, changeset.diffs[index], side);
+        defer allocator.free(document);
+        const result = anchor.match(thread.context, document);
+        if (std.mem.eql(u8, thread.path, change.path) and thread.group == change.group) switch (result) {
+            .retained => |start| return applyCandidate(allocator, thread, changeset, .{ .index = index, .context_start = start }),
+            else => {},
+        };
+        switch (result) {
+            .retained => |start| if (found == null) {
+                found = .{ .index = index, .context_start = start };
+            } else {
+                ambiguous = true;
+            },
+            .relocated => |start| if (found == null) {
+                found = .{ .index = index, .context_start = start };
+            } else {
+                ambiguous = true;
+            },
+            .outdated => {},
+        }
+    }
+    if (!ambiguous) if (found) |candidate| return applyCandidate(allocator, thread, changeset, candidate);
+    return setValidity(thread, .outdated);
+}
+
+fn reanchorFileThread(allocator: std.mem.Allocator, thread: *review.Thread, changeset: git.ChangeSet) !bool {
+    var found: ?Candidate = null;
+    for (changeset.changes, 0..) |change, index| {
+        if (!pathMatches(thread.path, change)) continue;
+        const fingerprint = try git_review.changeFingerprintForPath(allocator, change, changeset.diffs[index], thread.path);
+        defer allocator.free(fingerprint);
+        if (!std.mem.eql(u8, fingerprint, thread.context.bytes)) continue;
+        if (std.mem.eql(u8, thread.path, change.path) and thread.group == change.group)
+            return applyCandidate(allocator, thread, changeset, .{ .index = index, .context_start = 0 });
+        if (found != null) return setValidity(thread, .outdated);
+        found = .{ .index = index, .context_start = 0 };
+    }
+    if (found) |candidate| return applyCandidate(allocator, thread, changeset, candidate);
+    return setValidity(thread, .outdated);
+}
+
 fn dupeThread(allocator: std.mem.Allocator, thread: review.Thread) !review.Thread {
     const id = try allocator.dupe(u8, thread.id);
     errdefer allocator.free(id);
@@ -289,13 +423,15 @@ fn dupeThread(allocator: std.mem.Allocator, thread: review.Thread) !review.Threa
     errdefer if (blob) |value| allocator.free(value);
     const excerpt = if (thread.excerpt) |value| try allocator.dupe(u8, value) else null;
     errdefer if (excerpt) |value| allocator.free(value);
+    const context_bytes = try allocator.dupe(u8, thread.context.bytes);
+    errdefer allocator.free(context_bytes);
     const comments = try allocator.alloc(review.Comment, thread.comments.len);
     errdefer allocator.free(comments);
     for (thread.comments, 0..) |comment, index| comments[index] = .{
         .author = comment.author,
         .body = try allocator.dupe(u8, comment.body),
     };
-    return .{ .id = id, .path = path, .group = thread.group, .status = thread.status, .side = thread.side, .start_line = thread.start_line, .end_line = thread.end_line, .blob = blob, .excerpt = excerpt, .comments = comments };
+    return .{ .id = id, .path = path, .group = thread.group, .status = thread.status, .lifecycle = thread.lifecycle, .validity = thread.validity, .context = .{ .bytes = context_bytes, .original_start = thread.context.original_start, .target_start = thread.context.target_start, .target_end = thread.context.target_end }, .side = thread.side, .start_line = thread.start_line, .end_line = thread.end_line, .blob = blob, .excerpt = excerpt, .comments = comments };
 }
 
 fn freeFile(allocator: std.mem.Allocator, file: *ReviewFile) void {
@@ -312,11 +448,128 @@ const testing = std.testing;
 fn ownedThread(allocator: std.mem.Allocator, id: []const u8, author: review.Author) !review.Thread {
     const comments = try allocator.alloc(review.Comment, 1);
     comments[0] = .{ .author = author, .body = try allocator.dupe(u8, "body") };
-    return .{ .id = try allocator.dupe(u8, id), .path = try allocator.dupe(u8, "a.zig"), .group = .unstaged, .status = .open, .comments = comments };
+    return .{ .id = try allocator.dupe(u8, id), .path = try allocator.dupe(u8, "a.zig"), .group = .unstaged, .status = .open, .lifecycle = .open, .validity = .current, .context = .{ .bytes = try allocator.dupe(u8, "change\n"), .original_start = 0, .target_start = 0, .target_end = 6 }, .comments = comments };
 }
 
 fn sampleSession() SessionInit {
     return .{ .filename = "review.md", .base_ref = "HEAD", .base_sha = "abc", .created = "now" };
+}
+
+fn transitionChangeSet(group: git.Group, path: []const u8, old_path: ?[]const u8) !git.ChangeSet {
+    const changes = try testing.allocator.alloc(git.Change, 1);
+    changes[0] = .{
+        .group = group,
+        .kind = if (old_path != null) .renamed else .modified,
+        .content = .text,
+        .path = try testing.allocator.dupe(u8, path),
+        .old_path = if (old_path) |value| try testing.allocator.dupe(u8, value) else null,
+    };
+    const diffs = try testing.allocator.alloc(git.FileDiff, 1);
+    const text = try testing.allocator.dupe(u8, "beforetargetafter");
+    const lines = try testing.allocator.alloc(git.DiffLine, 3);
+    lines[0] = .{ .kind = .context, .old_line = 1, .new_line = 1, .text = .{ .start = 0, .end = 6 } };
+    lines[1] = .{ .kind = .addition, .old_line = null, .new_line = 2, .text = .{ .start = 6, .end = 12 } };
+    lines[2] = .{ .kind = .context, .old_line = 2, .new_line = 3, .text = .{ .start = 12, .end = 17 } };
+    diffs[0] = .{ .allocator = testing.allocator, .text = text, .hunks = try testing.allocator.alloc(git.Hunk, 0), .lines = lines };
+    return .{ .allocator = testing.allocator, .changes = changes, .diffs = diffs };
+}
+
+test "exact line anchor follows Git group and explicit rename while preserving lifecycle" {
+    var notes: Notes = .{ .allocator = testing.allocator };
+    defer notes.deinit();
+    var thread = try ownedThread(testing.allocator, "t1", .reviewer);
+    testing.allocator.free(thread.context.bytes);
+    thread.side = .new;
+    thread.start_line = 2;
+    thread.end_line = 2;
+    thread.excerpt = try testing.allocator.dupe(u8, "+target\n");
+    thread.context = .{ .bytes = try testing.allocator.dupe(u8, "before\ntarget\nafter\n"), .original_start = 0, .target_start = 7, .target_end = 14 };
+    try notes.addThread(.reviewer, sampleSession(), thread);
+    try notes.setResolved(.reviewer, true);
+    notes.markClean("review.md");
+
+    var moved_group = try transitionChangeSet(.staged, "a.zig", null);
+    defer moved_group.deinit();
+    try notes.reanchor(moved_group);
+    const anchored = notes.threadAt(notes.selectedRef().?);
+    try testing.expectEqual(git.Group.staged, anchored.group);
+    try testing.expectEqual(review.Lifecycle.resolved, anchored.lifecycle);
+    try testing.expectEqual(review.Status.resolved, anchored.projectedStatus());
+
+    var renamed = try transitionChangeSet(.staged, "b.zig", "a.zig");
+    defer renamed.deinit();
+    try notes.reanchor(renamed);
+    try testing.expectEqualStrings("b.zig", anchored.path);
+    try testing.expectEqual(review.Status.resolved, anchored.projectedStatus());
+
+    var missing = try transitionChangeSet(.staged, "other.zig", null);
+    defer missing.deinit();
+    try notes.reanchor(missing);
+    try testing.expectEqual(review.Status.outdated, anchored.projectedStatus());
+    try testing.expectEqual(review.Lifecycle.resolved, anchored.lifecycle);
+    var restored = try transitionChangeSet(.unstaged, "b.zig", null);
+    defer restored.deinit();
+    try notes.reanchor(restored);
+    try testing.expectEqual(review.Status.resolved, anchored.projectedStatus());
+}
+
+test "line anchor becomes Outdated when exact context matches two Git groups" {
+    var notes: Notes = .{ .allocator = testing.allocator };
+    defer notes.deinit();
+    var thread = try ownedThread(testing.allocator, "t1", .reviewer);
+    testing.allocator.free(thread.context.bytes);
+    thread.side = .new;
+    thread.start_line = 2;
+    thread.end_line = 2;
+    thread.excerpt = try testing.allocator.dupe(u8, "+target\n");
+    thread.group = .untracked;
+    thread.context = .{ .bytes = try testing.allocator.dupe(u8, "before\ntarget\nafter\n"), .original_start = 99, .target_start = 7, .target_end = 14 };
+    try notes.addThread(.reviewer, sampleSession(), thread);
+
+    var staged = try transitionChangeSet(.staged, "a.zig", null);
+    var unstaged = try transitionChangeSet(.unstaged, "a.zig", null);
+    const changes = try testing.allocator.alloc(git.Change, 2);
+    const diffs = try testing.allocator.alloc(git.FileDiff, 2);
+    changes[0] = staged.changes[0];
+    changes[1] = unstaged.changes[0];
+    diffs[0] = staged.diffs[0];
+    diffs[1] = unstaged.diffs[0];
+    testing.allocator.free(staged.changes);
+    testing.allocator.free(staged.diffs);
+    testing.allocator.free(unstaged.changes);
+    testing.allocator.free(unstaged.diffs);
+    staged = undefined;
+    unstaged = undefined;
+    var duplicate: git.ChangeSet = .{ .allocator = testing.allocator, .changes = changes, .diffs = diffs };
+    defer duplicate.deinit();
+    try notes.reanchor(duplicate);
+    try testing.expectEqual(review.Status.outdated, notes.threadAt(notes.selectedRef().?).projectedStatus());
+}
+
+test "file thread follows only an exact whole-change fingerprint" {
+    var changeset = try transitionChangeSet(.unstaged, "a.zig", null);
+    defer changeset.deinit();
+    var notes: Notes = .{ .allocator = testing.allocator };
+    defer notes.deinit();
+    var thread = try ownedThread(testing.allocator, "t1", .reviewer);
+    testing.allocator.free(thread.context.bytes);
+    const fingerprint = try git_review.changeFingerprint(testing.allocator, changeset.changes[0], changeset.diffs[0]);
+    thread.context = .{ .bytes = fingerprint, .original_start = 0, .target_start = 0, .target_end = fingerprint.len };
+    try notes.addThread(.reviewer, sampleSession(), thread);
+    notes.markClean("review.md");
+
+    changeset.changes[0].group = .staged;
+    try notes.reanchor(changeset);
+    try testing.expectEqual(git.Group.staged, notes.threadAt(notes.selectedRef().?).group);
+    changeset.changes[0].kind = .renamed;
+    changeset.changes[0].old_path = try testing.allocator.dupe(u8, "a.zig");
+    testing.allocator.free(changeset.changes[0].path);
+    changeset.changes[0].path = try testing.allocator.dupe(u8, "b.zig");
+    try notes.reanchor(changeset);
+    try testing.expectEqualStrings("b.zig", notes.threadAt(notes.selectedRef().?).path);
+    changeset.changes[0].new_mode = 0o100755;
+    try notes.reanchor(changeset);
+    try testing.expectEqual(review.Status.outdated, notes.threadAt(notes.selectedRef().?).projectedStatus());
 }
 
 test "comments append in role order and cannot be replaced" {
@@ -392,8 +645,12 @@ test "open and outdated threads block approval" {
     defer notes.deinit();
     try notes.addThread(.reviewer, sampleSession(), try ownedThread(testing.allocator, "t1", .reviewer));
     try testing.expectEqual(@as(usize, 1), notes.blockingCountInFile("review.md"));
+    notes.threadAt(notes.selectedRef().?).validity = .outdated;
     notes.threadAt(notes.selectedRef().?).status = .outdated;
     try testing.expectEqual(@as(usize, 1), notes.blockingCountInFile("review.md"));
     try notes.setResolved(.reviewer, true);
+    try testing.expectEqual(@as(usize, 1), notes.blockingCountInFile("review.md"));
+    notes.threadAt(notes.selectedRef().?).validity = .current;
+    notes.threadAt(notes.selectedRef().?).status = .resolved;
     try testing.expectEqual(@as(usize, 0), notes.blockingCountInFile("review.md"));
 }

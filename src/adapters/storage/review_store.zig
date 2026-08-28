@@ -298,6 +298,9 @@ fn sampleReview(body: []const u8) review.Review {
         .path = "src/main.zig",
         .group = .staged,
         .status = .open,
+        .lifecycle = .open,
+        .validity = .current,
+        .context = .{ .bytes = "change\n", .original_start = 0, .target_start = 0, .target_end = 6 },
         .comments = &Static.comments,
     };
     return .{ .allocator = testing.allocator, .base_ref = "HEAD", .base_sha = "abc", .created = "now", .threads = &Static.threads };

@@ -126,9 +126,12 @@ agent comments. Canonical reviews are private `fiew.review/v1` JSON under
 reviewer creates, resolves, reopens, or deletes a complete thread; deletion
 requires confirmation. Open and Outdated threads block approval.
 
-Earlier Markdown review files are intentionally unsupported; unknown future
-schemas are refused rather than overwritten. A malformed primary recovers from
-one validated backup. fiew does not manage ignore rules.
+Earlier Markdown and pre-context review files are intentionally unsupported;
+unknown future schemas are refused rather than overwritten. A malformed primary
+recovers from one validated backup. Exact raw-byte anchors validate their stored
+location first, then relocate only on one match within the same or Git-renamed
+path. Outdated validity remains independent from reviewer resolution. fiew does
+not manage ignore rules.
 
 The reviewer and agent interface is:
 
@@ -165,8 +168,8 @@ Bookmarks save source locations in repository-local, schema-versioned private
 state at `.bookmarks/bookmarks.json`. They do not appear in `.reviews/`,
 `review show`, or any other agent-facing output. fiew does not manage ignore rules.
 Creating from a diff maps to the corresponding current source location. Labels
-are optional and limited to 48 UTF-8 bytes; missing or unreadable source entries
-are shown as Outdated.
+are optional and limited to 48 UTF-8 bytes. Exact context is checked after Git
+refresh and before opening; missing or ambiguous entries are shown as Outdated.
 
 | Key | Action |
 | --- | --- |

@@ -354,7 +354,7 @@ pub fn afterInteractive(
 }
 
 pub fn approved(value: review.Review) bool {
-    for (value.threads) |thread| if (thread.status.blocksApproval()) return false;
+    for (value.threads) |thread| if (thread.projectedStatus().blocksApproval()) return false;
     return true;
 }
 
@@ -494,7 +494,7 @@ test "agent reply appends one comment and stable output includes history" {
     const comments = try testing.allocator.alloc(review.Comment, 1);
     comments[0] = .{ .author = .reviewer, .body = try testing.allocator.dupe(u8, "please fix") };
     const threads = try testing.allocator.alloc(review.Thread, 1);
-    threads[0] = .{ .id = try testing.allocator.dupe(u8, "t1"), .path = try testing.allocator.dupe(u8, "a.zig"), .group = .unstaged, .status = .open, .comments = comments };
+    threads[0] = .{ .id = try testing.allocator.dupe(u8, "t1"), .path = try testing.allocator.dupe(u8, "a.zig"), .group = .unstaged, .status = .open, .lifecycle = .open, .validity = .current, .context = .{ .bytes = try testing.allocator.dupe(u8, "change\n"), .original_start = 0, .target_start = 0, .target_end = 6 }, .comments = comments };
     testing.allocator.free(value.threads);
     value.threads = threads;
     try store.save(testing.allocator, testing.io, tmp.dir, created.filename, value.*);

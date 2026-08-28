@@ -4,6 +4,7 @@
 
 const std = @import("std");
 const git = @import("git.zig");
+const anchor = @import("anchor.zig");
 
 pub const schema = "fiew.review/v1";
 
@@ -30,6 +31,8 @@ pub const Status = enum {
     }
 };
 
+pub const Lifecycle = enum { open, resolved };
+pub const Validity = enum { current, outdated };
 pub const Scope = enum { file, line };
 pub const Author = enum { reviewer, agent };
 
@@ -43,6 +46,9 @@ pub const Thread = struct {
     path: []const u8,
     group: git.Group,
     status: Status,
+    lifecycle: Lifecycle,
+    validity: Validity,
+    context: anchor.Context,
     side: ?Side = null,
     start_line: ?usize = null,
     end_line: ?usize = null,
@@ -52,6 +58,13 @@ pub const Thread = struct {
 
     pub fn scope(self: Thread) Scope {
         return if (self.side == null) .file else .line;
+    }
+
+    pub fn projectedStatus(self: Thread) Status {
+        return if (self.validity == .outdated) .outdated else switch (self.lifecycle) {
+            .open => .open,
+            .resolved => .resolved,
+        };
     }
 
     pub fn lastComment(self: Thread) ?Comment {
@@ -98,7 +111,7 @@ pub fn renderMarkdown(allocator: std.mem.Allocator, value: Review) ![]u8 {
         try print(allocator, &out, "- id: {s}\n", .{thread.id});
         try print(allocator, &out, "- path: {s}\n", .{thread.path});
         try print(allocator, &out, "- group: {s}\n", .{@tagName(thread.group)});
-        try print(allocator, &out, "- status: {s}\n", .{@tagName(thread.status)});
+        try print(allocator, &out, "- status: {s}\n", .{@tagName(thread.projectedStatus())});
         if (thread.side) |side| try print(allocator, &out, "- side: {s}\n", .{@tagName(side)});
         if (thread.start_line) |start| {
             const end = thread.end_line orelse start;
@@ -193,7 +206,10 @@ pub fn parse(allocator: std.mem.Allocator, bytes: []const u8) ParseError!Review 
 }
 
 fn cloneValidatedThread(allocator: std.mem.Allocator, thread: Thread) ParseError!Thread {
-    if (thread.id.len == 0 or thread.path.len == 0 or thread.comments.len == 0) return error.MissingField;
+    if (thread.id.len == 0 or thread.path.len == 0 or thread.comments.len == 0 or thread.context.bytes.len == 0)
+        return error.MissingField;
+    if (thread.context.target_start > thread.context.target_end or thread.context.target_end > thread.context.bytes.len or
+        thread.status != thread.projectedStatus()) return error.MalformedReview;
     if (thread.side == null and (thread.start_line != null or thread.end_line != null or thread.excerpt != null))
         return error.MalformedReview;
     if (thread.side != null and (thread.start_line == null or thread.end_line == null or thread.excerpt == null))
@@ -208,6 +224,8 @@ fn cloneValidatedThread(allocator: std.mem.Allocator, thread: Thread) ParseError
     errdefer if (blob) |value| allocator.free(value);
     const excerpt = if (thread.excerpt) |value| try allocator.dupe(u8, value) else null;
     errdefer if (excerpt) |value| allocator.free(value);
+    const context_bytes = try allocator.dupe(u8, thread.context.bytes);
+    errdefer allocator.free(context_bytes);
     const comments = try allocator.alloc(Comment, thread.comments.len);
     var initialized: usize = 0;
     errdefer {
@@ -223,6 +241,14 @@ fn cloneValidatedThread(allocator: std.mem.Allocator, thread: Thread) ParseError
         .path = path,
         .group = thread.group,
         .status = thread.status,
+        .lifecycle = thread.lifecycle,
+        .validity = thread.validity,
+        .context = .{
+            .bytes = context_bytes,
+            .original_start = thread.context.original_start,
+            .target_start = thread.context.target_start,
+            .target_end = thread.context.target_end,
+        },
         .side = thread.side,
         .start_line = thread.start_line,
         .end_line = thread.end_line,
@@ -362,11 +388,16 @@ fn parseThread(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) 
     errdefer if (owned_blob) |value| allocator.free(value);
     const owned_excerpt = if (excerpt) |value| try allocator.dupe(u8, value) else null;
     errdefer if (owned_excerpt) |value| allocator.free(value);
+    const context_bytes = try allocator.dupe(u8, excerpt orelse path);
+    errdefer allocator.free(context_bytes);
     return .{
         .id = owned_id,
         .path = owned_path,
         .group = group.?,
         .status = status.?,
+        .lifecycle = if (status.? == .resolved) .resolved else .open,
+        .validity = if (status.? == .outdated) .outdated else .current,
+        .context = .{ .bytes = context_bytes, .original_start = 0, .target_start = 0, .target_end = context_bytes.len },
         .side = side,
         .start_line = start_line,
         .end_line = end_line,
@@ -381,6 +412,7 @@ pub fn freeThread(allocator: std.mem.Allocator, thread: Thread) void {
     allocator.free(thread.path);
     if (thread.blob) |blob| allocator.free(blob);
     if (thread.excerpt) |excerpt| allocator.free(excerpt);
+    allocator.free(thread.context.bytes);
     for (thread.comments) |comment| allocator.free(comment.body);
     allocator.free(thread.comments);
 }
@@ -446,6 +478,9 @@ fn sampleReview(comments: []Comment) Review {
         .path = "src/main.zig",
         .group = .unstaged,
         .status = .open,
+        .lifecycle = .open,
+        .validity = .current,
+        .context = .{ .bytes = "+one\n+two\n", .original_start = 0, .target_start = 0, .target_end = 10 },
         .side = .new,
         .start_line = 2,
         .end_line = 3,
@@ -497,6 +532,11 @@ test "thread format is v1 and future schemas are refused" {
         "---\nschema: fiew.review/v1\ncreated: now\nbase: { ref: HEAD, sha: x }\n---\n" ++
         "\n## old note\n- id: n1\n- path: a.zig\n- group: unstaged\n- status: open\n\nbody\n";
     try testing.expectError(error.MalformedReview, parse(testing.allocator, superseded_layout));
+}
+
+test "v1 rejects threads without exact context and independent lifecycle" {
+    const missing = "{\"schema\":\"fiew.review/v1\",\"data\":{\"base_ref\":\"HEAD\",\"base_sha\":\"x\",\"created\":\"now\",\"threads\":[{\"id\":\"t1\",\"path\":\"a\",\"group\":\"unstaged\",\"status\":\"open\",\"comments\":[{\"author\":\"reviewer\",\"body\":\"x\"}]}]}}";
+    try testing.expectError(error.MalformedReview, parse(testing.allocator, missing));
 }
 
 test "Markdown rendering is a projection rather than canonical storage" {

@@ -1,5 +1,5 @@
 <!-- agent-workflows-record
-{"archived":false,"created":"2026-08-25T21:48:04Z","id":"fiew-v0-1","modified":"2026-08-28T08:58:45Z","record_type":"specs","title":"fiew v0.1"}
+{"archived":false,"created":"2026-08-25T21:48:04Z","id":"fiew-v0-1","modified":"2026-08-28T09:33:05Z","record_type":"specs","title":"fiew v0.1"}
 -->
 # fiew v0.1
 
@@ -72,12 +72,12 @@ On Apple Silicon macOS in Ghostty, a reviewer can browse immutable source, inspe
 ### 7. Review threads
 
 1. A review contains stable threads. A thread attaches to a changed file or to one contiguous old-side or new-side textual diff selection.
-2. Anchors include repository identity, Git group, path, side, line range, available blob identifiers, and surrounding context sufficient for exact matching.
+2. Line anchors include Git group, repository-relative path, side, line range, available blob identifiers, anchored raw bytes, and up to three complete source-side lines before and after the selection. File anchors include an exact whole-change fingerprint over canonical diff bytes and metadata, or available blob and non-text metadata identity.
 3. Each thread contains ordered, append-only comments. Every comment records the author role `reviewer` or `agent`; individual agent identity is not required.
 4. Neither role edits or deletes a persisted comment. Only the reviewer creates threads, resolves or reopens them, or deletes a complete thread. Deletion requires confirmation.
 5. Agents may read all prior comments and append replies. Agents may not create threads or change thread status.
-6. Thread states are Open, Resolved, and Outdated. Open and Outdated threads block approval. A review is approved only when the reviewer explicitly resolves every thread.
-7. Exact unique anchor matches preserve identity and lifecycle state across Git groups or refreshes. Missing or ambiguous matches become Outdated; fiew never guesses.
+6. Reviewer lifecycle (Open or Resolved) and anchor validity (Current or Outdated) are independent. Open and Outdated threads block approval. A review is approved only when every thread is Current and explicitly reviewer-resolved; temporary anchor loss never discards remembered reviewer lifecycle.
+7. Re-anchoring validates exact raw bytes at the stored location first. Only when that fails may one complete exact context match relocate the anchor across Git groups within the same path or an explicit Git rename target. Zero or multiple matches become Outdated without moving; unrelated paths, normalized similarity, and incomplete or stale snapshots are never used.
 8. The reviewer composer accepts multiline UTF-8 plain text. Saving and cancellation protect modified text.
 9. The Review sidebar supports independent keyboard and mouse selection, preview, scrolling, status visibility, and navigation.
 
@@ -98,18 +98,18 @@ On Apple Silicon macOS in Ghostty, a reviewer can browse immutable source, inspe
 
 1. Bookmarks are private reviewer navigation state and never appear in review output available to agents.
 2. They are stored as repository-local private state in `.bookmarks/bookmarks.json`. fiew does not inspect or modify ignore configuration and does not expose bookmarks through review commands.
-3. A bookmark records a source location and may have a short optional label.
-4. Creating a bookmark from a diff maps it to the corresponding source location; reopening never presents a historical diff as current source.
-5. Bookmarks re-anchor only through an exact unique match. Missing or ambiguous locations become Outdated and never move heuristically.
+3. A bookmark records a source location, the selected byte offset within its anchored line, exact raw bytes for that line, up to three complete source lines before and after it, and an optional short label.
+4. Creating a bookmark from a diff maps it to the corresponding current source location; reopening never presents a historical diff as current source.
+5. Bookmarks validate at the stored location first, then relocate only through one complete exact context match within the same path or an explicit Git rename target. They are evaluated after each accepted complete Git refresh and immediately before opening. Missing or ambiguous locations become Outdated and never move heuristically.
 6. `Space b Enter` shows the Bookmarks sidebar, `Space b n` creates a bookmark through an optional-label composer, and `Space b d` deletes the selected bookmark with confirmation. `[ b` and `] b` navigate previous and next bookmarks.
 
 ### 10. Persistence and diagnostics
 
 1. Canonical reviews and bookmarks are private schema-versioned JSON using the common `{ "schema": "fiew.<artifact>/v<version>", "data": ... }` envelope with no separate version field. Reviews use `fiew.review/v1` in `.reviews/<review-id>.json`; bookmarks use `fiew.bookmark/v1` in `.bookmarks/bookmarks.json`.
 2. Writes use same-directory temporary files, flush, atomic replacement, and one previous validated `.bak` backup. The current-review pointer is atomically replaced and validated before use.
-3. Unknown future schemas are never overwritten. Existing `.reviews/*.md` and unreleased global bookmark data are not migrated or interpreted as current state. Arbitrary Markdown comment bodies remain ordinary JSON strings in canonical reviews.
+3. Unknown future schemas are never overwritten. Existing `.reviews/*.md`, unreleased global bookmark data, and pre-context development artifacts are not migrated or interpreted as current state. Exact context and independent thread lifecycle/validity are mandatory in `fiew.review/v1` and `fiew.bookmark/v1`; missing context is malformed. Arbitrary Markdown comment bodies remain ordinary JSON strings in canonical reviews.
 4. Diagnostic history is bounded. File logging is opt-in and redacts source, comment bodies, environment values, and protocol payloads by default.
-5. Recoverable failures disable only the affected capability and preserve the last valid snapshot. Fatal terminal failures restore terminal state before reporting.
+5. Recoverable failures disable only the affected capability and preserve the last valid snapshot. If an anchor transition cannot persist, the accepted Git snapshot and in-memory transition remain visible but dirty; approval and clean quit are blocked until persistence succeeds. Fatal terminal failures restore terminal state before reporting.
 
 ## Constraints and decisions
 
@@ -125,7 +125,7 @@ On Apple Silicon macOS in Ghostty, a reviewer can browse immutable source, inspe
 
 - Pure command and reducer tests verify modes, context bindings, role permissions, thread lifecycle, bookmark behavior, stale-event rejection, and disabled reasons.
 - Fixed-dimension RenderPlan snapshots verify Project, VCS, Review, Bookmarks, status, source, diff, binary, outdated, and error views.
-- Document and anchor fixtures verify UTF-8 mapping, reload generations, multiline/file threads, diff-to-source bookmarks, exact-unique relocation, ambiguity, and Outdated transitions.
+- Shared document and anchor-transition fixtures verify UTF-8 mapping, stored-location retention, line movement, multiline and file threads, diff-to-source bookmarks, Git-group transitions, explicit renames, unrelated paths, exact-unique relocation, ambiguity, missing content, lifecycle restoration, root movement, and Outdated transitions.
 - Git adapter tests verify repository discovery, nested-directory roots, nonzero exits, snapshot consistency, cancellation, linked worktrees, and the mutation boundary.
 - Artifact-format tests verify the common internal JSON envelope, arbitrary Markdown comment bodies, legacy rejection, schema refusal, backup recovery, atomic persistence, current-review pointer validation and authority, public JSON and Markdown projections, bookmark isolation from review output, and persistence-aware exit status.
 - `zig build test` requires no network or optional executable. Git integration tests remain opt-in.
@@ -163,3 +163,5 @@ On Apple Silicon macOS in Ghostty, a reviewer can browse immutable source, inspe
 - [Use unified internal JSON artifacts for reviews and bookmarks](<docs/rfcs/RFC-0001.md>)
 - [Use an explicit current review for routine agent handoff](<docs/decisions/ARP-0009.md>)
 - [Use an explicit current-review pointer for routine agent handoff](<docs/rfcs/RFC-0002.md>)
+- [Re-anchor local review state through constrained exact context](<docs/decisions/ARP-0010.md>)
+- [Relocate review and bookmark anchors through exact context only](<docs/rfcs/RFC-0003.md>)

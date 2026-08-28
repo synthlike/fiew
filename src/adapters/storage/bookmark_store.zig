@@ -123,7 +123,7 @@ test "bookmark files are isolated to their repository directory" {
     var second_repo = testing.tmpDir(.{ .iterate = true });
     defer second_repo.cleanup();
     try first_repo.dir.writeFile(testing.io, .{ .sub_path = "source.zig", .data = "const value = 1;\n" });
-    const items = [_]bookmark.Bookmark{.{ .id = 1, .path = "source.zig", .line = 1, .column = 0, .source_offset = 0, .label = "private" }};
+    const items = [_]bookmark.Bookmark{.{ .id = 1, .path = "source.zig", .line = 1, .column = 0, .source_offset = 0, .line_offset = 0, .context = .{ .bytes = "const value = 1;\n", .original_start = 0, .target_start = 0, .target_end = 16 }, .label = "private" }};
     try save(testing.allocator, testing.io, first_repo.dir, .{ .next_id = 2, .bookmarks = &items });
     const second = try load(testing.allocator, testing.io, second_repo.dir);
     try testing.expectEqual(std.meta.Tag(LoadResult).absent, std.meta.activeTag(second));
@@ -136,8 +136,8 @@ test "bookmark files are isolated to their repository directory" {
 test "repository-local bookmark state recovers backup and refuses future schema" {
     var tmp = testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
-    const first = [_]bookmark.Bookmark{.{ .id = 1, .path = "a.zig", .line = 1, .column = 0, .source_offset = 0, .label = "first" }};
-    const second = [_]bookmark.Bookmark{.{ .id = 2, .path = "b.zig", .line = 2, .column = 0, .source_offset = 2, .label = "second" }};
+    const first = [_]bookmark.Bookmark{.{ .id = 1, .path = "a.zig", .line = 1, .column = 0, .source_offset = 0, .line_offset = 0, .context = .{ .bytes = "a\n", .original_start = 0, .target_start = 0, .target_end = 1 }, .label = "first" }};
+    const second = [_]bookmark.Bookmark{.{ .id = 2, .path = "b.zig", .line = 2, .column = 0, .source_offset = 2, .line_offset = 0, .context = .{ .bytes = "b\n", .original_start = 2, .target_start = 0, .target_end = 1 }, .label = "second" }};
     try save(testing.allocator, testing.io, tmp.dir, .{ .next_id = 2, .bookmarks = &first });
     try save(testing.allocator, testing.io, tmp.dir, .{ .next_id = 3, .bookmarks = &second });
     var dir = try tmp.dir.openDir(testing.io, directory_name, .{});

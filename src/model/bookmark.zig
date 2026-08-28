@@ -1,6 +1,7 @@
 //! Private repository-local source bookmarks.
 
 const std = @import("std");
+const anchor = @import("anchor.zig");
 
 pub const schema = "fiew.bookmark/v1";
 pub const max_label_bytes: usize = 48;
@@ -13,6 +14,8 @@ pub const Bookmark = struct {
     line: usize,
     column: usize,
     source_offset: usize,
+    line_offset: usize,
+    context: anchor.Context,
     label: []const u8,
     status: Status = .current,
 };
@@ -57,7 +60,10 @@ pub fn parse(allocator: std.mem.Allocator, bytes: []const u8) ParseError!Parsed 
     const parsed = std.json.parseFromSlice(Envelope, allocator, bytes, .{ .allocate = .alloc_always }) catch return error.MalformedBookmarks;
     errdefer parsed.deinit();
     for (parsed.value.data.bookmarks) |item| {
-        if (item.id == 0 or item.path.len == 0 or item.line == 0 or !validLabel(item.label))
+        if (item.id == 0 or item.path.len == 0 or item.line == 0 or item.context.bytes.len == 0 or
+            item.context.target_start > item.context.target_end or item.context.target_end > item.context.bytes.len or
+            item.line_offset > item.context.target_end - item.context.target_start or
+            item.source_offset != item.context.targetOffset(item.context.original_start) + item.line_offset or !validLabel(item.label))
             return error.MalformedBookmarks;
     }
     return .{ .parsed = parsed };
@@ -69,7 +75,7 @@ pub fn validLabel(label: []const u8) bool {
 
 test "bookmark envelope round trips and future schemas are refused" {
     const testing = std.testing;
-    const items = [_]Bookmark{.{ .id = 1, .path = "src/main.zig", .line = 3, .column = 2, .source_offset = 8, .label = "later" }};
+    const items = [_]Bookmark{.{ .id = 1, .path = "src/main.zig", .line = 3, .column = 2, .source_offset = 8, .line_offset = 0, .context = .{ .bytes = "line\n", .original_start = 8, .target_start = 0, .target_end = 4 }, .label = "later" }};
     const bytes = try serialize(testing.allocator, .{ .next_id = 2, .bookmarks = &items });
     defer testing.allocator.free(bytes);
     try testing.expect(std.mem.indexOf(u8, bytes, "\"schema\": \"fiew.bookmark/v1\"") != null);
@@ -77,6 +83,8 @@ test "bookmark envelope round trips and future schemas are refused" {
     defer parsed.deinit();
     try testing.expectEqualStrings("later", parsed.value().bookmarks[0].label);
     try testing.expectError(error.FutureSchema, parse(testing.allocator, "{\"schema\":\"fiew.bookmark/v2\",\"data\":{}}"));
+    const missing_context = "{\"schema\":\"fiew.bookmark/v1\",\"data\":{\"next_id\":2,\"bookmarks\":[{\"id\":1,\"path\":\"a\",\"line\":1,\"column\":0,\"source_offset\":0,\"label\":\"\",\"status\":\"current\"}]}}";
+    try testing.expectError(error.MalformedBookmarks, parse(testing.allocator, missing_context));
 }
 
 test "empty and short UTF-8 labels are valid" {

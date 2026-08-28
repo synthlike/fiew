@@ -9,6 +9,7 @@ const git = @import("../model/git.zig");
 const review = @import("../model/review.zig");
 const bookmark_model = @import("../model/bookmark.zig");
 const bookmarks_state = @import("bookmarks.zig");
+const anchor_model = @import("../model/anchor.zig");
 
 /// Which structural relation to move the selection toward.
 pub const StructuralMove = enum { parent, child, next_sibling, previous_sibling };
@@ -27,11 +28,13 @@ pub const OwnedAnchor = struct {
     end_line: ?usize = null,
     blob: ?[]u8 = null,
     excerpt: ?[]u8 = null,
+    context: ?anchor_model.Context = null,
 
     pub fn deinit(self: *OwnedAnchor, allocator: std.mem.Allocator) void {
         allocator.free(self.path);
         if (self.blob) |blob| allocator.free(blob);
         if (self.excerpt) |excerpt| allocator.free(excerpt);
+        if (self.context) |context| allocator.free(context.bytes);
     }
 };
 
@@ -361,6 +364,7 @@ pub const App = struct {
         const review_state = if (self.review) |*value| value else return false;
         const draft = (try review_state.captureAnchor(self.allocator)) orelse return false;
         errdefer self.allocator.free(draft.excerpt);
+        errdefer self.allocator.free(draft.context.bytes);
         const path = try self.allocator.dupe(u8, draft.path);
         errdefer self.allocator.free(path);
         const blob = if (draft.blob) |value| try self.allocator.dupe(u8, value) else null;
@@ -372,6 +376,7 @@ pub const App = struct {
             .end_line = draft.end_line,
             .blob = blob,
             .excerpt = draft.excerpt,
+            .context = draft.context,
         } });
         return true;
     }
@@ -381,9 +386,12 @@ pub const App = struct {
         const review_state = if (self.review) |*value| value else return false;
         const index = review_state.selectedChange() orelse return false;
         const change = review_state.changeset.changes[index];
+        const fingerprint = try git_review.changeFingerprint(self.allocator, change, review_state.changeset.diffs[index]);
+        errdefer self.allocator.free(fingerprint);
         self.setComposer(.{ .anchor = .{
             .path = try self.allocator.dupe(u8, change.path),
             .group = change.group,
+            .context = .{ .bytes = fingerprint, .original_start = 0, .target_start = 0, .target_end = fingerprint.len },
         } });
         return true;
     }

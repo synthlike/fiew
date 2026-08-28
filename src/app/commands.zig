@@ -1265,7 +1265,7 @@ test "bookmark commands create show navigate and confirm deletion" {
     try std.testing.expectEqual(std.meta.Tag(Effect).save_bookmark, std.meta.activeTag(save));
     app.cancelBookmarkComposer();
 
-    try app.bookmarks.?.add("a.txt", 1, 0, 0, "A");
+    try app.bookmarks.?.add("a.txt", 1, 0, 0, .{ .bytes = "one two", .original_start = 0, .target_start = 0, .target_end = 7 }, "A");
     _ = try session.handle(&app, charKey(' '), dimensions);
     _ = try session.handle(&app, charKey('b'), dimensions);
     _ = try session.handle(&app, .{ .code = .enter }, dimensions);
@@ -1536,6 +1536,9 @@ test "complete thread deletion requires reviewer confirmation" {
         .path = try std.testing.allocator.dupe(u8, "a.zig"),
         .group = .unstaged,
         .status = .open,
+        .lifecycle = .open,
+        .validity = .current,
+        .context = .{ .bytes = try std.testing.allocator.dupe(u8, "a\n"), .original_start = 0, .target_start = 0, .target_end = 1 },
         .comments = comments,
     });
     const comments2 = try std.testing.allocator.alloc(review_model.Comment, 1);
@@ -1545,6 +1548,9 @@ test "complete thread deletion requires reviewer confirmation" {
         .path = try std.testing.allocator.dupe(u8, "b.zig"),
         .group = .unstaged,
         .status = .open,
+        .lifecycle = .open,
+        .validity = .current,
+        .context = .{ .bytes = try std.testing.allocator.dupe(u8, "b\n"), .original_start = 0, .target_start = 0, .target_end = 1 },
         .comments = comments2,
     });
     var session = Session.init(std.testing.allocator);

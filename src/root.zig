@@ -5,6 +5,7 @@ const std = @import("std");
 pub const app = @import("app/state.zig");
 pub const bookmarks = @import("app/bookmarks.zig");
 pub const bookmark = @import("model/bookmark.zig");
+pub const anchor = @import("model/anchor.zig");
 pub const commands = @import("app/commands.zig");
 pub const diagnostics = @import("app/diagnostics.zig");
 pub const document = @import("model/document.zig");
