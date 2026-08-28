@@ -1,5 +1,6 @@
 const std = @import("std");
 const state = @import("state.zig");
+const file_finder = @import("file_finder.zig");
 const HandleError = std.mem.Allocator.Error || error{ PermissionDenied, InvalidComment };
 
 pub const Id = enum {
@@ -31,6 +32,9 @@ pub const Id = enum {
     project_expand,
     project_toggle,
     project_open,
+    file_menu,
+    file_find_all,
+    file_find_git,
     git_open,
     git_refresh,
     review_open,
@@ -113,6 +117,9 @@ pub const definitions = [_]Definition{
     .{ .id = .project_expand, .stable_id = "project-expand", .title = "Expand or child", .binding = "l" },
     .{ .id = .project_toggle, .stable_id = "project-toggle", .title = "Toggle Project directory", .binding = "Enter" },
     .{ .id = .project_open, .stable_id = "project-open", .title = "Open Project sidebar", .binding = "Space p" },
+    .{ .id = .file_menu, .stable_id = "file-menu", .title = "Open file finder commands", .binding = "Space f" },
+    .{ .id = .file_find_all, .stable_id = "file-find-all", .title = "Find all repository files", .binding = "Space f a" },
+    .{ .id = .file_find_git, .stable_id = "file-find-git", .title = "Find Git-visible files", .binding = "Space f g" },
     .{ .id = .git_open, .stable_id = "review-diff-open", .title = "Open Review Diff (Git)", .binding = "Space r d" },
     .{ .id = .git_refresh, .stable_id = "review-diff-refresh", .title = "Refresh Review Diff", .binding = "Space r d r" },
     .{ .id = .diff_file_next, .stable_id = "diff-file-next", .title = "Next changed file", .binding = "] f" },
@@ -234,6 +241,7 @@ pub fn unavailableReason(app: *const state.App, id: Id) ?[]const u8 {
             "Tree-sitter structure is not available"
         else
             null,
+        .file_find_git => if (!app.git_enabled) "not a Git repository" else null,
         .git_open => if (!app.git_enabled) "not a Git repository" else null,
         .git_refresh => if (!app.git_enabled)
             "not a Git repository"
@@ -318,6 +326,9 @@ pub const Effect = union(enum) {
     none,
     preview_selection,
     activate_selection,
+    preview_finder,
+    activate_finder,
+    load_git_finder,
     open_history: state.Location,
     /// Load and show the Git working-tree review for this owner generation.
     open_review: u64,
@@ -340,8 +351,10 @@ pub const Surface = enum {
     review,
     vcs,
     bookmarks,
+    files,
     note_composer,
     bookmark_composer,
+    finder,
     confirm_delete,
     confirm_bookmark_delete,
 };
@@ -362,13 +375,15 @@ pub const Session = struct {
     query: std.ArrayListUnmanaged(u8) = .empty,
     selected_command: usize = 0,
     help_scroll: usize = 0,
+    finder: file_finder.Finder,
 
     pub fn init(allocator: std.mem.Allocator) Session {
-        return .{ .allocator = allocator };
+        return .{ .allocator = allocator, .finder = file_finder.Finder.init(allocator) };
     }
 
     pub fn deinit(self: *Session) void {
         self.query.deinit(self.allocator);
+        self.finder.deinit();
         self.* = undefined;
     }
 
@@ -381,8 +396,10 @@ pub const Session = struct {
                 .review => "LDR r",
                 .vcs => "LDR r d",
                 .bookmarks => "LDR b",
+                .files => "LDR f",
                 .note_composer => "comment",
                 .bookmark_composer => "bookmark label",
+                .finder => "find file",
                 .confirm_delete => "confirm delete",
                 .confirm_bookmark_delete => "confirm bookmark delete",
                 .none => "",
@@ -410,10 +427,12 @@ pub const Session = struct {
         if (self.surface == .bookmark_composer) return self.handleBookmarkComposer(app, key);
         if (self.surface == .confirm_delete) return self.handleDeleteConfirmation(app, key, dimensions);
         if (self.surface == .confirm_bookmark_delete) return self.handleBookmarkDeleteConfirmation(app, key);
+        if (self.surface == .finder) return self.handleFinder(app, key, dimensions);
         if (key.code == .escape) return self.execute(app, .cancel, dimensions);
         if (self.surface == .review) return self.handleReview(app, key, dimensions);
         if (self.surface == .vcs) return self.handleVcs(app, key, dimensions);
         if (self.surface == .bookmarks) return self.handleBookmarks(app, key, dimensions);
+        if (self.surface == .files) return self.handleFiles(app, key, dimensions);
         if (self.surface == .command) return self.handleCommandInput(app, key, dimensions);
         if (self.surface == .help) {
             if (isCharacter(key, 'q')) return self.execute(app, .close_transient, dimensions);
@@ -578,6 +597,18 @@ pub const Session = struct {
                     app.showSidebar();
                 }
             },
+            .file_menu => {
+                self.surface = .files;
+                app.mode = .normal;
+            },
+            .file_find_all => {
+                app.clearPreview();
+                try self.finder.reset(app.browser.tree);
+                self.surface = .finder;
+                app.mode = .command;
+                return .preview_finder;
+            },
+            .file_find_git => return .load_git_finder,
             .leader_menu => {
                 self.surface = .leader;
                 app.mode = .normal;
@@ -752,12 +783,25 @@ pub const Session = struct {
     fn handleLeader(self: *Session, app: *state.App, key: Key, dimensions: Dimensions) !Effect {
         return switch (normalizedCharacter(key)) {
             'p' => self.executeAndClose(app, .project_open, dimensions),
+            'f' => self.executeAndClose(app, .file_menu, dimensions),
             'r' => self.executeAndClose(app, .review_open, dimensions),
             'b' => self.executeAndClose(app, .bookmark_open, dimensions),
             '?' => self.executeAndClose(app, .help, dimensions),
             'q' => self.executeAndClose(app, .quit, dimensions),
             else => blk: {
                 app.feedback = "invalid leader command";
+                self.resetTransient(app);
+                break :blk .none;
+            },
+        };
+    }
+
+    fn handleFiles(self: *Session, app: *state.App, key: Key, dimensions: Dimensions) !Effect {
+        return switch (normalizedCharacter(key)) {
+            'a' => self.executeAndClose(app, .file_find_all, dimensions),
+            'g' => self.executeAndClose(app, .file_find_git, dimensions),
+            else => blk: {
+                app.feedback = "invalid file finder command";
                 self.resetTransient(app);
                 break :blk .none;
             },
@@ -889,6 +933,51 @@ pub const Session = struct {
         }
         if (key.code == .character and !key.ctrl and !key.alt) app.composerInsert(key.character);
         return .none;
+    }
+
+    fn handleFinder(self: *Session, app: *state.App, key: Key, dimensions: Dimensions) !Effect {
+        if (key.code == .escape) {
+            app.clearPreview();
+            self.resetTransient(app);
+            return .none;
+        }
+        if (key.code == .backspace) {
+            try self.finder.backspace(app.browser.tree);
+            return .preview_finder;
+        }
+        if (key.code == .up) {
+            self.finder.move(-1, dimensions.document_rows);
+            return .preview_finder;
+        }
+        if (key.code == .down) {
+            self.finder.move(1, dimensions.document_rows);
+            return .preview_finder;
+        }
+        if (key.code == .enter) {
+            if (self.finder.selectedNode(app.browser.tree) == null) {
+                app.feedback = "no matching repository files";
+                return .none;
+            }
+            self.resetTransient(app);
+            return .activate_finder;
+        }
+        if (key.code == .character and !key.ctrl and !key.alt) {
+            try self.finder.appendCodepoint(app.browser.tree, key.character);
+            return .preview_finder;
+        }
+        return .none;
+    }
+
+    pub fn selectedFinderNode(self: *const Session, app: *const state.App) ?*const @import("../model/project.zig").Node {
+        return self.finder.selectedNode(app.browser.tree);
+    }
+
+    pub fn openGitFinder(self: *Session, app: *state.App, paths: []const []const u8) !Effect {
+        app.clearPreview();
+        try self.finder.resetGitVisible(app.browser.tree, paths);
+        self.surface = .finder;
+        app.mode = .command;
+        return .preview_finder;
     }
 
     fn handleCommandInput(self: *Session, app: *state.App, key: Key, dimensions: Dimensions) !Effect {
@@ -1072,10 +1161,10 @@ test "registry stable identifiers are unique" {
 
 test "required modal bindings are represented by the command registry" {
     const required = [_][]const u8{
-        "h",       "j",         "k",         "l",        "w",   "b",   "e",   "g g",   "g e",
-        "Ctrl-u",  "Ctrl-d",    "PageUp",    "PageDown", "v",   "x",   ";",   "Alt-;", "Enter",
-        "g d",     "Ctrl-o",    "Ctrl-i",    "z c",      "z o", "z a", "z M", "z R",   "Space p",
-        "Space r", "Space r d", "Space r t", "Space ?",  ":",   "q",
+        "h",       "j",         "k",         "l",        "w",         "b",         "e",       "g g",   "g e",
+        "Ctrl-u",  "Ctrl-d",    "PageUp",    "PageDown", "v",         "x",         ";",       "Alt-;", "Enter",
+        "g d",     "Ctrl-o",    "Ctrl-i",    "z c",      "z o",       "z a",       "z M",     "z R",   "Space p",
+        "Space f", "Space f a", "Space f g", "Space r",  "Space r d", "Space r t", "Space ?", ":",     "q",
     };
     for (required) |binding| {
         var found = false;
@@ -1289,19 +1378,50 @@ test "bookmark commands create show navigate and confirm deletion" {
     try std.testing.expect(!app.hasBookmarks());
 }
 
-test "Space f is not a leader command" {
+test "file menu distinguishes all and Git-visible finder commands" {
     var app = try testApp();
     defer app.deinit();
+    const pinned_selection = app.selection();
+    const history_count = app.history.items.len;
     var session = Session.init(std.testing.allocator);
     defer session.deinit();
     const dimensions: Dimensions = .{ .sidebar_rows = 20, .document_rows = 20, .document_columns = 80 };
 
     _ = try session.handle(&app, charKey(' '), dimensions);
-    _ = try session.handle(&app, charKey('f'), dimensions);
+    const menu = try session.handle(&app, charKey('f'), dimensions);
+    try std.testing.expectEqual(Surface.files, session.surface);
+    try std.testing.expectEqual(std.meta.Tag(Effect).none, std.meta.activeTag(menu));
+    const preview = try session.handle(&app, charKey('a'), dimensions);
+    try std.testing.expectEqual(Surface.finder, session.surface);
+    try std.testing.expectEqual(file_finder.Scope.all, session.finder.scope);
+    try std.testing.expectEqual(std.meta.Tag(Effect).preview_finder, std.meta.activeTag(preview));
+    try std.testing.expectEqualStrings("a.txt", session.selectedFinderNode(&app).?.path);
+    try std.testing.expectEqual(history_count, app.history.items.len);
 
+    app.showPreview(try testSnapshot("a.txt", "preview"));
+    _ = try session.handle(&app, .{ .code = .escape }, dimensions);
     try std.testing.expectEqual(Surface.none, session.surface);
-    try std.testing.expectEqualStrings("invalid leader command", app.feedback.?);
-    for (definitions) |item| try std.testing.expect(!std.mem.eql(u8, item.stable_id, "file-commands"));
+    try std.testing.expect(app.preview == null);
+    try std.testing.expectEqual(pinned_selection, app.selection());
+    try std.testing.expectEqual(history_count, app.history.items.len);
+
+    _ = try session.execute(&app, .file_find_all, dimensions);
+    app.showPreview(try testSnapshot("a.txt", "opened"));
+    const activation = try session.handle(&app, .{ .code = .enter }, dimensions);
+    try std.testing.expectEqual(std.meta.Tag(Effect).activate_finder, std.meta.activeTag(activation));
+    try std.testing.expect(try app.pinPreview());
+    try std.testing.expectEqual(history_count + 1, app.history.items.len);
+    try std.testing.expectEqual(state.Focus.main, app.focus);
+
+    try std.testing.expectEqualStrings("not a Git repository", unavailableReason(&app, .file_find_git).?);
+    app.git_enabled = true;
+    _ = try session.handle(&app, charKey(' '), dimensions);
+    _ = try session.handle(&app, charKey('f'), dimensions);
+    const load = try session.handle(&app, charKey('g'), dimensions);
+    try std.testing.expectEqual(std.meta.Tag(Effect).load_git_finder, std.meta.activeTag(load));
+    _ = try session.openGitFinder(&app, &.{"a.txt"});
+    try std.testing.expectEqual(Surface.finder, session.surface);
+    try std.testing.expectEqual(file_finder.Scope.git_visible, session.finder.scope);
 }
 
 test "leader and named command surfaces use the same registry" {

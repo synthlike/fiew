@@ -162,6 +162,8 @@ blocks task completion while waiting for a review.
 | `Space r d r` | Refresh the current Diff snapshot |
 | `Space r t` | Open Review Threads |
 | `Space p` | Open Project |
+| `Space f a` | Find any repository file by path |
+| `Space f g` | Find tracked and non-ignored untracked Git files |
 | `Space b` | Open Bookmarks |
 | `] f` / `[ f` | Next / previous changed file |
 | `] h` / `[ h` | Next / previous hunk |

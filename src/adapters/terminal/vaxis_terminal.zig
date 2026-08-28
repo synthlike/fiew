@@ -635,6 +635,20 @@ fn applyEffect(
                 _ = try app.pinPreview();
             }
         },
+        .preview_finder => _ = try previewFinder(session, app, repository, segmenter, generation),
+        .activate_finder => {
+            if (try previewFinder(session, app, repository, segmenter, generation))
+                _ = try app.pinPreview();
+        },
+        .load_git_finder => {
+            var paths = fiew.git_files.load(repository.allocator, repository.io, repository.root_dir) catch |err| {
+                app.feedback = @errorName(err);
+                return false;
+            };
+            defer paths.deinit();
+            _ = try session.openGitFinder(app, paths.paths);
+            _ = try previewFinder(session, app, repository, segmenter, generation);
+        },
         .open_history => |location| {
             generation.* +%= 1;
             const snapshot = repository.loadDocument(location.path, generation.*, segmenter) catch |err| {
@@ -1019,6 +1033,26 @@ fn handleMouse(
             dimensions.main_width -| 6,
         );
     }
+}
+
+fn previewFinder(
+    session: *const fiew.commands.Session,
+    app: *fiew.app.App,
+    repository: fiew.filesystem.Repository,
+    segmenter: fiew.text_segmentation.Segmenter,
+    generation: *u64,
+) !bool {
+    const node = session.selectedFinderNode(app) orelse {
+        app.clearPreview();
+        return false;
+    };
+    generation.* +%= 1;
+    const snapshot = repository.loadDocument(node.path, generation.*, segmenter) catch |err| {
+        app.feedback = @errorName(err);
+        return false;
+    };
+    app.showPreview(snapshot);
+    return true;
 }
 
 fn previewSelection(
@@ -1840,7 +1874,7 @@ fn drawCommandSurface(
             menu.clear();
             _ = menu.printSegment(.{ .text = " Leader ", .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
             _ = menu.printSegment(.{
-                .text = "p Project  r Review  b Bookmarks  ? help  q quit",
+                .text = "p Project  f Files  r Review  b Bookmarks  ? help  q quit",
             }, .{ .row_offset = 1, .col_offset = 1, .wrap = .none });
         },
         .vcs => {
@@ -1867,8 +1901,48 @@ fn drawCommandSurface(
             _ = menu.printSegment(.{ .text = " Bookmarks ", .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
             _ = menu.printSegment(.{ .text = "n new  d delete  Enter show" }, .{ .row_offset = 1, .col_offset = 1, .wrap = .none });
         },
+        .files => {
+            const menu = window.child(.{ .y_off = window.height -| 2, .height = 2 });
+            menu.clear();
+            _ = menu.printSegment(.{ .text = " Files ", .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
+            const git_reason = fiew.commands.unavailableReason(app, .file_find_git);
+            _ = menu.printSegment(.{
+                .text = if (git_reason == null) "a all files  g Git-visible" else "a all files  g Git-visible (not a Git repository)",
+            }, .{ .row_offset = 1, .col_offset = 1, .wrap = .none });
+        },
         .note_composer => try drawComposer(allocator, window, app),
         .bookmark_composer => try drawBookmarkComposer(allocator, window, app),
+        .finder => {
+            const height: u16 = @min(window.height, 12);
+            const box = window.child(.{ .y_off = window.height - height, .height = height });
+            box.clear();
+            const label = switch (session.finder.scope) {
+                .all => "Find all files",
+                .git_visible => "Find Git-visible files",
+            };
+            const query = try std.fmt.allocPrint(allocator, " {s}  {s}", .{ label, session.finder.query.items });
+            _ = box.printSegment(.{ .text = try sanitizeLine(allocator, query, box.width), .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
+            if (session.finder.matches.items.len == 0) {
+                _ = box.printSegment(.{ .text = "No matching repository files", .style = .{ .dim = true } }, .{ .row_offset = 2, .col_offset = 2, .wrap = .none });
+            } else {
+                const available: usize = height -| 2;
+                var row: usize = 0;
+                while (row < available and session.finder.scroll + row < session.finder.matches.items.len) : (row += 1) {
+                    const index = session.finder.scroll + row;
+                    const match = session.finder.matches.items[index];
+                    const path = app.browser.tree.nodes[match.node_index].path;
+                    _ = box.printSegment(.{
+                        .text = try sanitizeLine(allocator, path, box.width -| 2),
+                        .style = .{ .reverse = index == session.finder.selected, .bold = index == session.finder.selected },
+                    }, .{ .row_offset = @intCast(row + 1), .col_offset = 1, .wrap = .none });
+                }
+            }
+            const hint = if (session.finder.truncated)
+                "Results truncated · ↑/↓ select · Enter open · Esc cancel"
+            else
+                "↑/↓ select · Enter open · Esc cancel";
+            _ = box.printSegment(.{ .text = hint, .style = .{ .dim = true } }, .{ .row_offset = height -| 1, .col_offset = 1, .wrap = .none });
+        },
         .confirm_delete => {
             const menu = window.child(.{ .y_off = window.height -| 2, .height = 2 });
             menu.clear();

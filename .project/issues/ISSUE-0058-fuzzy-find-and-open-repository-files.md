@@ -2,9 +2,9 @@
 id: ISSUE-0058
 title: "Fuzzy-find and open repository files"
 kind: "implementation"
-status: open
+status: resolved
 created: 2026-08-28
-assignee:
+assignee: "agent"
 parent: "ISSUE-0057-implement-fiew-v0-2.md"
 blocked_by:
 labels: []
@@ -36,5 +36,15 @@ Managed by native issue relationships.
 Project-wide content search, regular expressions, multi-select, replace, and source mutation.
 
 ## Comments
-
 ## Resolution
+
+Implemented the transient repository file finder through the command registry (`Space f` and `file-find`). It provides bounded subsequence ranking, typed query and explicit empty/truncation states, selection preview, pin-on-Enter, and cancellation that restores the pinned view without changing history.
+
+Added offline matcher coverage at 10,000 files, reducer coverage for preview/cancel/pin/history transitions, and a fixed-dimension finder RenderPlan snapshot. Updated generated command/help surfaces and README navigation.
+
+Verification:
+- `zig build test`
+- `zig build`
+- `zig build test -Dperformance=true` (10,000-file repository scan completed in approximately 429 ms)
+- `zig fmt --check src build.zig`
+- `git diff --check`
