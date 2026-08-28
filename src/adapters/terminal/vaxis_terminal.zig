@@ -1162,9 +1162,9 @@ fn metadataLine(allocator: std.mem.Allocator, change: fiew.git_model.Change) ![]
 
 fn drawGitSidebar(allocator: std.mem.Allocator, window: vaxis.Window, app: *const fiew.app.App) !void {
     const heading = switch (app.git_status) {
-        .pending => " Review Diff · Git · refreshing ",
-        .stale => " Review Diff · Git · stale ",
-        else => " Review Diff · Git ",
+        .pending => " Review · Diff · Git · refreshing ",
+        .stale => " Review · Diff · Git · stale ",
+        else => " Review · Diff · Git ",
     };
     _ = window.printSegment(.{
         .text = heading,
@@ -1588,7 +1588,7 @@ fn reviewAuthorLabel(author: fiew.review.Author) []const u8 {
 
 fn drawReviewSidebar(allocator: std.mem.Allocator, window: vaxis.Window, app: *const fiew.app.App) !void {
     _ = window.printSegment(.{
-        .text = " Review ",
+        .text = " Review · Threads ",
         .style = .{ .bold = true, .reverse = app.focus == .sidebar },
     }, .{ .wrap = .none });
     const state_notes = if (app.notes) |*value| value else {
@@ -1739,7 +1739,7 @@ fn drawCommandSurface(
         .vcs => {
             const menu = window.child(.{ .y_off = window.height -| 2, .height = 2 });
             menu.clear();
-            _ = menu.printSegment(.{ .text = " Review Diff · Git ", .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
+            _ = menu.printSegment(.{ .text = " Review · Diff · Git ", .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
             _ = menu.printSegment(.{ .text = if (app.git_status == .pending) "r refresh (pending)  Enter close" else "r refresh  Enter close" }, .{
                 .row_offset = 1,
                 .col_offset = 1,
