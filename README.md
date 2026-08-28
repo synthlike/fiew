@@ -129,8 +129,22 @@ Outdated threads block approval.
 Review files use the breaking `fiew.review/v1` thread format. Earlier local
 note files are intentionally unsupported; unknown future schemas are refused
 rather than overwritten. A malformed primary recovers from one validated backup.
-The legacy `fiew --review <name> <repo>` handoff remains until the
-`fiew review` command family replaces it in ISSUE-0034.
+
+The reviewer and agent interface is:
+
+```sh
+fiew review start [--name <slug>] [--repo <path>]
+fiew review open <review-id> [--repo <path>]
+fiew review show <review-id> [--format json|markdown] [--repo <path>]
+fiew review reply <review-id> <thread-id> --body-file <path> [--repo <path>]
+```
+
+Repository selection defaults to the current directory. New IDs include a
+datetime prefix and automatic name; `.md` is never part of the command-line ID.
+`show` emits complete JSON by default. `reply` can only append one `agent`
+comment. Review commands return zero only when every thread is durably resolved;
+Open, Outdated, malformed, or unsaved state is non-success. The legacy
+`--review` flag is not supported.
 
 | Key | Action |
 | --- | --- |

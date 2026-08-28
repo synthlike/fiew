@@ -38,6 +38,20 @@ pub const Loaded = struct {
     }
 };
 
+pub fn loadOne(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    repo_dir: std.Io.Dir,
+    filename: []const u8,
+) Error!Loaded {
+    var dir = repo_dir.openDir(io, directory_name, .{}) catch return error.ReadFailed;
+    defer dir.close(io);
+    const entries = try allocator.alloc(Entry, 1);
+    errdefer allocator.free(entries);
+    entries[0] = try loadEntry(allocator, io, dir, filename);
+    return .{ .allocator = allocator, .entries = entries };
+}
+
 pub fn loadAll(allocator: std.mem.Allocator, io: std.Io, repo_dir: std.Io.Dir) Error!Loaded {
     var dir = repo_dir.openDir(io, directory_name, .{ .iterate = true }) catch |err| switch (err) {
         error.FileNotFound => return .{ .allocator = allocator, .entries = &.{} },
@@ -57,35 +71,43 @@ pub fn loadAll(allocator: std.mem.Allocator, io: std.Io, repo_dir: std.Io.Dir) E
     defer walker.deinit();
     while (walker.next(io) catch return error.ReadFailed) |walked| {
         if (walked.kind != .file or !std.mem.endsWith(u8, walked.basename, ".md")) continue;
-        const bytes = dir.readFileAlloc(io, walked.path, allocator, .limited64(max_review_bytes)) catch
-            return error.ReadFailed;
-        defer allocator.free(bytes);
-        var recovered = false;
-        var parsed = review.parse(allocator, bytes) catch |primary_err| switch (primary_err) {
-            error.FutureSchema => return error.FutureSchema,
-            error.OutOfMemory => return error.OutOfMemory,
-            else => blk: {
-                const backup_name = try std.fmt.allocPrint(allocator, "{s}.bak", .{walked.basename});
-                defer allocator.free(backup_name);
-                const backup = dir.readFileAlloc(io, backup_name, allocator, .limited64(max_review_bytes)) catch
-                    return mapParseError(primary_err);
-                defer allocator.free(backup);
-                var recovered_review = review.parse(allocator, backup) catch |backup_err| return mapParseError(backup_err);
-                errdefer recovered_review.deinit();
-                try atomicWrite(io, dir, walked.basename, backup);
-                recovered = true;
-                break :blk recovered_review;
-            },
+        var entry = try loadEntry(allocator, io, dir, walked.basename);
+        entries.append(allocator, entry) catch |err| {
+            allocator.free(entry.filename);
+            entry.review.deinit();
+            return err;
         };
-        errdefer parsed.deinit();
-        const filename = try allocator.dupe(u8, walked.basename);
-        try entries.append(allocator, .{
-            .filename = filename,
-            .review = parsed,
-            .recovered = recovered,
-        });
     }
     return .{ .allocator = allocator, .entries = try entries.toOwnedSlice(allocator) };
+}
+
+fn loadEntry(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, filename: []const u8) Error!Entry {
+    const bytes = dir.readFileAlloc(io, filename, allocator, .limited64(max_review_bytes)) catch
+        return error.ReadFailed;
+    defer allocator.free(bytes);
+    var recovered = false;
+    var parsed = review.parse(allocator, bytes) catch |primary_err| switch (primary_err) {
+        error.FutureSchema => return error.FutureSchema,
+        error.OutOfMemory => return error.OutOfMemory,
+        else => blk: {
+            const backup_name = try std.fmt.allocPrint(allocator, "{s}.bak", .{filename});
+            defer allocator.free(backup_name);
+            const backup = dir.readFileAlloc(io, backup_name, allocator, .limited64(max_review_bytes)) catch
+                return mapParseError(primary_err);
+            defer allocator.free(backup);
+            var recovered_review = review.parse(allocator, backup) catch |backup_err| return mapParseError(backup_err);
+            errdefer recovered_review.deinit();
+            try atomicWrite(io, dir, filename, backup);
+            recovered = true;
+            break :blk recovered_review;
+        },
+    };
+    errdefer parsed.deinit();
+    return .{
+        .filename = try allocator.dupe(u8, filename),
+        .review = parsed,
+        .recovered = recovered,
+    };
 }
 
 fn mapParseError(err: anyerror) Error {
@@ -97,6 +119,19 @@ fn mapParseError(err: anyerror) Error {
         error.OutOfMemory => error.OutOfMemory,
         else => error.MalformedReview,
     };
+}
+
+pub fn exists(io: std.Io, repo_dir: std.Io.Dir, filename: []const u8) Error!bool {
+    var dir = repo_dir.openDir(io, directory_name, .{}) catch |err| switch (err) {
+        error.FileNotFound => return false,
+        else => return error.ReadFailed,
+    };
+    defer dir.close(io);
+    dir.access(io, filename, .{}) catch |err| switch (err) {
+        error.FileNotFound => return false,
+        else => return error.ReadFailed,
+    };
+    return true;
 }
 
 pub fn save(
@@ -191,6 +226,21 @@ test "save and load v1 review" {
     try testing.expectEqualStrings("first", loaded.entries[0].review.threads[0].comments[0].body);
 }
 
+test "loadOne ignores unrelated review files" {
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try save(testing.allocator, testing.io, tmp.dir, "wanted.md", sampleReview("wanted"));
+    var dir = try tmp.dir.openDir(testing.io, directory_name, .{});
+    defer dir.close(testing.io);
+    try dir.writeFile(testing.io, .{
+        .sub_path = "unrelated.md",
+        .data = "---\nschema: fiew.review/v2\ncreated: now\nbase: { ref: HEAD, sha: x }\n---\n",
+    });
+    var loaded = try loadOne(testing.allocator, testing.io, tmp.dir, "wanted.md");
+    defer loaded.deinit();
+    try testing.expectEqualStrings("wanted", loaded.entries[0].review.threads[0].comments[0].body);
+}
+
 test "one validated backup recovers a malformed primary" {
     var tmp = testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
@@ -217,6 +267,7 @@ test "future schema is refused and not overwritten" {
     const future = "---\nschema: fiew.review/v2\ncreated: now\nbase: { ref: HEAD, sha: x }\n---\n";
     try dir.writeFile(testing.io, .{ .sub_path = "review.md", .data = future });
     try testing.expectError(error.FutureSchema, loadAll(testing.allocator, testing.io, tmp.dir));
+    try testing.expectError(error.FutureSchema, loadOne(testing.allocator, testing.io, tmp.dir, "review.md"));
     try testing.expectError(error.FutureSchema, save(testing.allocator, testing.io, tmp.dir, "review.md", sampleReview("no")));
     const after = try dir.readFileAlloc(testing.io, "review.md", testing.allocator, .unlimited);
     defer testing.allocator.free(after);

@@ -327,25 +327,15 @@ fn parseWorker(
     };
 }
 
-pub fn run(init: std.process.Init) !u8 {
-    const allocator = init.gpa;
-    var args = std.process.Args.Iterator.init(init.minimal.args);
-    _ = args.skip();
+pub const Options = struct {
+    root_path: []const u8 = ".",
+    review_filename: ?[]const u8 = null,
+};
 
-    // Parse `--review <name>` (a bare filename kept within .reviews/) and the
-    // optional repository path.
-    var root_path: []const u8 = ".";
-    var review_name: ?[]const u8 = null;
-    while (args.next()) |arg| {
-        if (std.mem.eql(u8, arg, "--review")) {
-            review_name = args.next();
-        } else {
-            root_path = arg;
-        }
-    }
-    if (review_name) |name| {
-        if (name.len == 0 or std.mem.indexOfScalar(u8, name, '/') != null) review_name = null;
-    }
+pub fn run(init: std.process.Init, options: Options) !u8 {
+    const allocator = init.gpa;
+    const root_path = options.root_path;
+    const review_name = options.review_filename;
 
     // Discover once from the requested path, then make the discovered worktree
     // top level the one root used by Project, Git, source, reviews, and state.
@@ -373,15 +363,21 @@ pub fn run(init: std.process.Init) !u8 {
     const quote_time = std.Io.Timestamp.now(init.io, .real).nanoseconds;
     app.welcome_quote = fiew.welcome.selectSeed(quote_time);
 
-    // Load any existing review notes from .reviews/, routing new notes into the
-    // named review file when `--review` was given.
+    // A named review loads only its exact validated file. Ordinary browsing
+    // loads all reviews for the sidebar.
     {
-        var loaded: fiew.review_store.Loaded = fiew.review_store.loadAll(allocator, init.io, repository.root_dir) catch |err| blk: {
-            app.feedback = @errorName(err);
-            break :blk .{ .allocator = allocator, .entries = &.{} };
-        };
+        var loaded: fiew.review_store.Loaded = if (review_name) |name|
+            try fiew.review_store.loadOne(allocator, init.io, repository.root_dir, name)
+        else
+            fiew.review_store.loadAll(allocator, init.io, repository.root_dir) catch |err| blk: {
+                app.feedback = @errorName(err);
+                break :blk .{ .allocator = allocator, .entries = &.{} };
+            };
         defer loaded.deinit();
-        app.notes = fiew.notes.Notes.fromLoaded(allocator, loaded) catch null;
+        app.notes = if (review_name != null)
+            try fiew.notes.Notes.fromLoaded(allocator, loaded)
+        else
+            fiew.notes.Notes.fromLoaded(allocator, loaded) catch null;
     }
     if (review_name) |name| {
         if (app.notes) |*state_notes| state_notes.useSession(name);
@@ -453,8 +449,8 @@ pub fn run(init: std.process.Init) !u8 {
                         review_name,
                         &git_state,
                     )) {
-                        // Exit code reports whether the named review has open
-                        // notes, so an agent can branch on approval. Cleanup
+                        // Exit code reports whether the named review has blocking
+                        // threads or unsaved state. Cleanup
                         // defers restore the terminal before we return.
                         if (review_name) |name| {
                             if (app.notes) |*state_notes| {

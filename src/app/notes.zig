@@ -180,11 +180,8 @@ pub const Notes = struct {
         const removed_thread = file.threads.orderedRemove(ref.thread);
         review.freeThread(self.allocator, removed_thread);
         file.dirty = true;
-        if (file.threads.items.len == 0) {
-            try self.removed.append(self.allocator, file.filename);
-            file.filename = &.{};
-            self.dropFile(ref.file);
-        }
+        // An empty review is still a durable named review. Deleting its final
+        // thread must not delete the review identity used by `fiew review`.
         if (self.selected >= self.total() and self.selected > 0) self.selected = self.total() -| 1;
         self.ensureVisible(20);
     }
@@ -343,6 +340,19 @@ test "agent cannot create or control thread lifecycle" {
     try notes.addThread(.reviewer, sampleSession(), try ownedThread(testing.allocator, "t2", .reviewer));
     try testing.expectError(error.PermissionDenied, notes.setResolved(.agent, true));
     try testing.expectError(error.PermissionDenied, notes.deleteSelected(.agent));
+}
+
+test "deleting the final thread preserves an empty durable review" {
+    var notes: Notes = .{ .allocator = testing.allocator };
+    defer notes.deinit();
+    try notes.addThread(.reviewer, sampleSession(), try ownedThread(testing.allocator, "t1", .reviewer));
+    try notes.deleteSelected(.reviewer);
+    try testing.expectEqual(@as(usize, 0), notes.total());
+    var dirty: [1]Notes.DirtyFile = undefined;
+    const files = notes.dirtyFiles(&dirty);
+    try testing.expectEqual(@as(usize, 1), files.len);
+    try testing.expectEqual(@as(usize, 0), files[0].review.threads.len);
+    try testing.expectEqual(@as(usize, 0), notes.removedFiles().len);
 }
 
 test "Review sidebar selection and scroll are independent" {

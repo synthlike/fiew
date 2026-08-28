@@ -2,9 +2,9 @@
 id: ISSUE-0034
 title: "Replace the legacy review flag with the agent review interface"
 kind: "implementation"
-status: open
+status: resolved
 created: 2026-08-27
-assignee:
+assignee: "agent"
 parent: "ISSUE-0013-implement-fiew-v0-1.md"
 blocked_by:
   - "ISSUE-0033-evolve-local-review-notes-into-reviewer-owned-threads.md"
@@ -42,6 +42,31 @@ Managed by native issue relationships.
 General file-writing commands, individual agent identity, remote publication, and compatibility aliases for the legacy flag.
 
 ## Comments
-
-
 ## Resolution
+
+**Outcome: Achieved.**
+
+Replaced the legacy `--review` handoff with the command-mediated review interface:
+
+- `fiew review start [--name <slug>] [--repo <path>]` creates a durable empty review and opens it interactively.
+- `fiew review open <review-id> [--repo <path>]` validates and opens exactly one existing review.
+- `fiew review show <review-id> [--format json|markdown] [--repo <path>]` emits stable, complete JSON by default or canonical Markdown.
+- `fiew review reply <review-id> <thread-id> --body-file <path> [--repo <path>]` appends exactly one `agent` comment without changing thread status or granting lifecycle authority.
+
+New IDs use a `YYYYMMDD-HHMMSS-slug` shape. Explicit names are lowercased and sanitized; unnamed starts use bundled adjective-noun combinations; `.md` is internal; collisions receive `-2`, `-3`, and later suffixes. Strict identifier validation prevents separators, extensions, malformed datetime prefixes, and arbitrary review basenames.
+
+Interactive start routes output through an ordering contract that invokes the TUI to completion before printing the canonical ID, so terminal-restoration defers run first. Named interactive sessions load only their exact validated review and propagate load/allocation failures instead of silently falling back. Deleting the final thread persists an empty review rather than deleting its canonical identity.
+
+Exact-file storage loading preserves validated backup recovery while ignoring malformed unrelated review files. Future schemas remain refused without overwrite. Agent reply writes use the existing validated backup and atomic replacement path. Command errors exit 2; approval-sensitive commands exit 0 only when all threads are Resolved, with Open, Outdated, malformed, missing, failed-write, or unsaved state producing non-success.
+
+Verification passed:
+
+- `zig build --system zig-pkg`
+- `zig build test --system zig-pkg`
+- `zig build test --system zig-pkg -Dgit-integration --summary all` — 115/115 tests
+- `zig fmt --check src build.zig`
+- `zig build -Doptimize=ReleaseSafe --system zig-pkg`
+- `zig build -Dtarget=aarch64-macos --system zig-pkg`
+- `git diff --check`
+
+CLI smoke checks exercised default-cwd and `--repo` show, JSON and Markdown output, agent reply persistence, malformed/missing operands, invalid IDs, and legacy-flag refusal. Contract tests cover parsing, naming/sanitization/collisions, reopen, stable complete history, reply role and lifecycle preservation, future-schema refusal, unrelated-file isolation, persistence failure, approval, and output-after-restoration ordering. No manual interactive Ghostty session was performed.

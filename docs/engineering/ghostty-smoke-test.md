@@ -26,7 +26,8 @@ Use this checklist for terminal behavior that deterministic tests cannot verify.
 13. Open the Review sidebar with `Space r Enter`. Confirm keyboard and mouse selection, preview, focus, and scrolling are independent. Append with `Space r a`, resolve/reopen with `Space r x`, and confirm `Space r d` requires `y` before deleting the complete thread.
 14. Open a binary file and confirm only metadata appears. If available, open a file containing invalid UTF-8 and confirm replacement characters appear without changing the file.
 15. Use `Space q`. Confirm fiew exits, the previous terminal contents return, the cursor is visible, and normal line input and echo work.
-16. Run fiew again and press `Ctrl-C`. Confirm the same restoration behavior.
+16. Run `zig build run -- review start --name smoke --repo /path/to/repository`, create a thread, and quit. Confirm the canonical review ID prints only after terminal restoration. Use `review show` from both the repository directory and `--repo`, then use `review reply` with a temporary body file and confirm the complete ordered history appears without lifecycle changes.
+17. Run fiew again and press `Ctrl-C`. Confirm the same restoration behavior.
 
 ## Result
 

@@ -20,6 +20,7 @@ pub const project_browser = @import("app/project_browser.zig");
 pub const render_plan = @import("view/render_plan.zig");
 pub const repository_identity = @import("model/repository_identity.zig");
 pub const review = @import("model/review.zig");
+pub const review_cli = @import("app/review_cli.zig");
 pub const review_store = @import("adapters/storage/review_store.zig");
 pub const state_store = @import("adapters/storage/state_store.zig");
 pub const parse_job = @import("adapters/treesitter/parse_job.zig");
