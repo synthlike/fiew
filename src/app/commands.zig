@@ -86,6 +86,7 @@ pub const Definition = struct {
     stable_id: []const u8,
     title: []const u8,
     binding: []const u8,
+    hint: ?[]const u8 = null,
     disabled_reason: ?[]const u8 = null,
 };
 
@@ -97,8 +98,8 @@ pub const definitions = [_]Definition{
     .{ .id = .word_forward, .stable_id = "word-forward", .title = "Next word", .binding = "w" },
     .{ .id = .word_backward, .stable_id = "word-backward", .title = "Previous word", .binding = "b" },
     .{ .id = .word_end, .stable_id = "word-end", .title = "End of word", .binding = "e" },
-    .{ .id = .document_start, .stable_id = "document-start", .title = "Document start", .binding = "g g" },
-    .{ .id = .document_end, .stable_id = "document-end", .title = "Document end", .binding = "g e" },
+    .{ .id = .document_start, .stable_id = "document-start", .title = "Document start", .binding = "g g", .hint = "start" },
+    .{ .id = .document_end, .stable_id = "document-end", .title = "Document end", .binding = "g e", .hint = "end" },
     .{ .id = .half_page_up, .stable_id = "half-page-up", .title = "Half page up", .binding = "Ctrl-u" },
     .{ .id = .half_page_down, .stable_id = "half-page-down", .title = "Half page down", .binding = "Ctrl-d" },
     .{ .id = .page_up, .stable_id = "page-up", .title = "Page up", .binding = "PageUp" },
@@ -124,12 +125,12 @@ pub const definitions = [_]Definition{
     .{ .id = .document_reload, .stable_id = "file-reload", .title = "Reload active file", .binding = "Space f r" },
     .{ .id = .git_open, .stable_id = "review-diff-open", .title = "Open Review Diff (Git)", .binding = "Space r d" },
     .{ .id = .git_refresh, .stable_id = "review-diff-refresh", .title = "Refresh Review Diff", .binding = "Space r d r" },
-    .{ .id = .diff_file_next, .stable_id = "diff-file-next", .title = "Next changed file", .binding = "] f" },
-    .{ .id = .diff_file_previous, .stable_id = "diff-file-previous", .title = "Previous changed file", .binding = "[ f" },
-    .{ .id = .diff_hunk_next, .stable_id = "diff-hunk-next", .title = "Next hunk", .binding = "] h" },
-    .{ .id = .diff_hunk_previous, .stable_id = "diff-hunk-previous", .title = "Previous hunk", .binding = "[ h" },
-    .{ .id = .diff_line_next, .stable_id = "diff-line-next", .title = "Next changed line", .binding = "] c" },
-    .{ .id = .diff_line_previous, .stable_id = "diff-line-previous", .title = "Previous changed line", .binding = "[ c" },
+    .{ .id = .diff_file_next, .stable_id = "diff-file-next", .title = "Next changed file", .binding = "] f", .hint = "file" },
+    .{ .id = .diff_file_previous, .stable_id = "diff-file-previous", .title = "Previous changed file", .binding = "[ f", .hint = "file" },
+    .{ .id = .diff_hunk_next, .stable_id = "diff-hunk-next", .title = "Next hunk", .binding = "] h", .hint = "hunk" },
+    .{ .id = .diff_hunk_previous, .stable_id = "diff-hunk-previous", .title = "Previous hunk", .binding = "[ h", .hint = "hunk" },
+    .{ .id = .diff_line_next, .stable_id = "diff-line-next", .title = "Next changed line", .binding = "] c", .hint = "change" },
+    .{ .id = .diff_line_previous, .stable_id = "diff-line-previous", .title = "Previous changed line", .binding = "[ c", .hint = "change" },
     .{ .id = .review_open, .stable_id = "review-open", .title = "Open Review commands", .binding = "Space r" },
     .{ .id = .review_show, .stable_id = "review-threads-show", .title = "Show Review Threads", .binding = "Space r t" },
     .{ .id = .note_create, .stable_id = "thread-create-line", .title = "Create thread from diff selection", .binding = "Space r n" },
@@ -137,20 +138,20 @@ pub const definitions = [_]Definition{
     .{ .id = .note_reply, .stable_id = "thread-reply", .title = "Append reviewer comment", .binding = "Space r a" },
     .{ .id = .note_resolve, .stable_id = "thread-resolve", .title = "Resolve or reopen selected thread", .binding = "Space r r" },
     .{ .id = .note_delete, .stable_id = "thread-delete", .title = "Delete selected thread", .binding = "Space r x" },
-    .{ .id = .note_next, .stable_id = "thread-next", .title = "Next thread", .binding = "] n" },
-    .{ .id = .note_previous, .stable_id = "thread-previous", .title = "Previous thread", .binding = "[ n" },
+    .{ .id = .note_next, .stable_id = "thread-next", .title = "Next thread", .binding = "] n", .hint = "thread" },
+    .{ .id = .note_previous, .stable_id = "thread-previous", .title = "Previous thread", .binding = "[ n", .hint = "thread" },
     .{ .id = .bookmark_open, .stable_id = "bookmark-open", .title = "Bookmarks menu", .binding = "Space b" },
     .{ .id = .bookmark_show, .stable_id = "bookmark-show", .title = "Show the Bookmarks sidebar", .binding = "Space b Enter" },
     .{ .id = .bookmark_create, .stable_id = "bookmark-create", .title = "Create source bookmark", .binding = "Space b n" },
     .{ .id = .bookmark_delete, .stable_id = "bookmark-delete", .title = "Delete selected bookmark", .binding = "Space b d" },
-    .{ .id = .bookmark_next, .stable_id = "bookmark-next", .title = "Next bookmark", .binding = "] b" },
-    .{ .id = .bookmark_previous, .stable_id = "bookmark-previous", .title = "Previous bookmark", .binding = "[ b" },
-    .{ .id = .definition, .stable_id = "definition", .title = "Go to definition", .binding = "g d", .disabled_reason = "trusted ZLS is not available" },
-    .{ .id = .fold_close, .stable_id = "fold-close", .title = "Close fold", .binding = "z c" },
-    .{ .id = .fold_open, .stable_id = "fold-open", .title = "Open fold", .binding = "z o" },
-    .{ .id = .fold_toggle, .stable_id = "fold-toggle", .title = "Toggle fold", .binding = "z a" },
-    .{ .id = .fold_close_all, .stable_id = "fold-close-all", .title = "Close all folds", .binding = "z M" },
-    .{ .id = .fold_open_all, .stable_id = "fold-open-all", .title = "Open all folds", .binding = "z R" },
+    .{ .id = .bookmark_next, .stable_id = "bookmark-next", .title = "Next bookmark", .binding = "] b", .hint = "bookmark" },
+    .{ .id = .bookmark_previous, .stable_id = "bookmark-previous", .title = "Previous bookmark", .binding = "[ b", .hint = "bookmark" },
+    .{ .id = .definition, .stable_id = "definition", .title = "Go to definition", .binding = "g d", .hint = "definition", .disabled_reason = "LSP is not available" },
+    .{ .id = .fold_close, .stable_id = "fold-close", .title = "Close fold", .binding = "z c", .hint = "close" },
+    .{ .id = .fold_open, .stable_id = "fold-open", .title = "Open fold", .binding = "z o", .hint = "open" },
+    .{ .id = .fold_toggle, .stable_id = "fold-toggle", .title = "Toggle fold", .binding = "z a", .hint = "toggle" },
+    .{ .id = .fold_close_all, .stable_id = "fold-close-all", .title = "Close all folds", .binding = "z M", .hint = "close all" },
+    .{ .id = .fold_open_all, .stable_id = "fold-open-all", .title = "Open all folds", .binding = "z R", .hint = "open all" },
     .{ .id = .structural_parent, .stable_id = "structural-parent", .title = "Select enclosing node", .binding = "Alt-o" },
     .{ .id = .structural_child, .stable_id = "structural-child", .title = "Select first child node", .binding = "Alt-i" },
     .{ .id = .structural_next, .stable_id = "structural-next", .title = "Select next sibling node", .binding = "Alt-n" },
@@ -399,6 +400,39 @@ pub const Session = struct {
         self.* = undefined;
     }
 
+    pub fn pendingCommandCount(self: Session) usize {
+        var count: usize = 0;
+        for (definitions) |command| if (self.continuationKey(command.id).len != 0) {
+            count += 1;
+        };
+        return count;
+    }
+
+    pub fn pendingCommand(self: Session, requested_index: usize) ?Id {
+        var index: usize = 0;
+        for (definitions) |command| {
+            if (self.continuationKey(command.id).len == 0) continue;
+            if (index == requested_index) return command.id;
+            index += 1;
+        }
+        return null;
+    }
+
+    /// The final key token is read from the registered binding, keeping the
+    /// continuation surface synchronized with command help and dispatch.
+    pub fn continuationKey(self: Session, id: Id) []const u8 {
+        const prefix = switch (self.pending) {
+            .none => return "",
+            else => self.pendingLabel(),
+        };
+        const binding = definition(id).binding;
+        if (binding.len <= prefix.len + 1 or !std.mem.startsWith(u8, binding, prefix) or
+            binding[prefix.len] != ' ') return "";
+        const suffix = binding[prefix.len + 1 ..];
+        if (suffix.len == 0 or std.mem.indexOfScalar(u8, suffix, ' ') != null) return "";
+        return suffix;
+    }
+
     pub fn pendingLabel(self: Session) []const u8 {
         return switch (self.pending) {
             .none => switch (self.surface) {
@@ -426,7 +460,7 @@ pub const Session = struct {
     pub fn tick(self: *Session, app: *state.App) void {
         if (self.pending == .none) return;
         self.pending_ticks +|= 1;
-        if (self.pending_ticks >= 4) {
+        if (self.pending_ticks >= 8) {
             self.pending = .none;
             self.pending_ticks = 0;
             app.mode = .normal;
@@ -1254,13 +1288,38 @@ test "goto and unavailable namespace commands report deterministic outcomes" {
     try std.testing.expectEqual(@as(usize, 2), app.activeView().?.active_grapheme);
     _ = try session.handle(&app, charKey('g'), dimensions);
     _ = try session.handle(&app, charKey('d'), dimensions);
-    try std.testing.expectEqualStrings("trusted ZLS is not available", app.feedback.?);
+    try std.testing.expectEqualStrings("LSP is not available", app.feedback.?);
     _ = try session.handle(&app, charKey('z'), dimensions);
     _ = try session.handle(&app, charKey('c'), dimensions);
     try std.testing.expectEqualStrings("Tree-sitter folds are not available", app.feedback.?);
     const effect = try session.handle(&app, charKey('q'), dimensions);
     try std.testing.expectEqual(std.meta.Tag(Effect).none, effect);
     try std.testing.expectEqualStrings("no transient view to close", app.feedback.?);
+}
+
+test "pending prefixes expose registry-backed continuation commands and keys" {
+    var app = try testApp();
+    defer app.deinit();
+    var session = Session.init(std.testing.allocator);
+    defer session.deinit();
+    const dimensions: Dimensions = .{ .sidebar_rows = 20, .document_rows = 20, .document_columns = 80 };
+
+    const cases = [_]struct { prefix: u21, ids: []const Id, keys: []const []const u8 }{
+        .{ .prefix = 'g', .ids = &.{ .document_start, .document_end, .definition }, .keys = &.{ "g", "e", "d" } },
+        .{ .prefix = 'z', .ids = &.{ .fold_close, .fold_open, .fold_toggle, .fold_close_all, .fold_open_all }, .keys = &.{ "c", "o", "a", "M", "R" } },
+        .{ .prefix = ']', .ids = &.{ .diff_file_next, .diff_hunk_next, .diff_line_next, .note_next, .bookmark_next }, .keys = &.{ "f", "h", "c", "n", "b" } },
+        .{ .prefix = '[', .ids = &.{ .diff_file_previous, .diff_hunk_previous, .diff_line_previous, .note_previous, .bookmark_previous }, .keys = &.{ "f", "h", "c", "n", "b" } },
+    };
+    for (cases) |case| {
+        _ = try session.handle(&app, charKey(case.prefix), dimensions);
+        try std.testing.expectEqual(case.ids.len, session.pendingCommandCount());
+        for (case.ids, case.keys, 0..) |id, key, index| {
+            try std.testing.expectEqual(id, session.pendingCommand(index).?);
+            try std.testing.expectEqualStrings(key, session.continuationKey(id));
+        }
+        _ = try session.handle(&app, .{ .code = .escape }, dimensions);
+        try std.testing.expectEqual(@as(usize, 0), session.pendingCommandCount());
+    }
 }
 
 test "invalid and timed out sequences preserve selection" {
@@ -1275,10 +1334,14 @@ test "invalid and timed out sequences preserve selection" {
     _ = try session.handle(&app, charKey('x'), dimensions);
     try std.testing.expectEqualStrings("invalid key sequence", app.feedback.?);
     try std.testing.expectEqual(before, app.selection());
+    try std.testing.expectEqual(@as(usize, 0), session.pendingCommandCount());
     _ = try session.handle(&app, charKey('z'), dimensions);
-    for (0..4) |_| session.tick(&app);
+    for (0..7) |_| session.tick(&app);
+    try std.testing.expectEqual(@as(usize, 5), session.pendingCommandCount());
+    session.tick(&app);
     try std.testing.expectEqualStrings("key sequence timed out", app.feedback.?);
     try std.testing.expectEqual(before, app.selection());
+    try std.testing.expectEqual(@as(usize, 0), session.pendingCommandCount());
 }
 
 test "Space r d opens Review Diff and exposes a pending refresh state" {

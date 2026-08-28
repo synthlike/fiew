@@ -1864,6 +1864,24 @@ fn drawCommandSurface(
     app: *const fiew.app.App,
     session: *const fiew.commands.Session,
 ) !void {
+    const pending_count = session.pendingCommandCount();
+    if (pending_count != 0) {
+        const height: u16 = @min(window.height, @as(u16, @intCast(pending_count + 1)));
+        const menu = window.child(.{ .y_off = window.height - height, .height = height });
+        menu.clear();
+        const title = try std.fmt.allocPrint(allocator, " Key · {s} ", .{session.pendingLabel()});
+        _ = menu.printSegment(.{ .text = title, .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
+        for (0..height -| 1) |index| {
+            const id = session.pendingCommand(index).?;
+            const reason = fiew.commands.unavailableReason(app, id);
+            _ = menu.printSegment(.{
+                .text = try continuationHintRow(allocator, app, session, id),
+                .style = .{ .dim = reason != null },
+            }, .{ .row_offset = @intCast(index + 1), .col_offset = 1, .wrap = .none });
+        }
+        return;
+    }
+
     switch (session.surface) {
         .none => {},
         .leader => {
@@ -2004,6 +2022,19 @@ fn drawCommandSurface(
             });
         },
     }
+}
+
+fn continuationHintRow(
+    allocator: std.mem.Allocator,
+    app: *const fiew.app.App,
+    session: *const fiew.commands.Session,
+    id: fiew.commands.Id,
+) ![]u8 {
+    const command = fiew.commands.definition(id);
+    const label = command.hint orelse command.title;
+    if (fiew.commands.unavailableReason(app, id)) |reason|
+        return std.fmt.allocPrint(allocator, "{s:<3} {s} — {s}", .{ session.continuationKey(id), label, reason });
+    return std.fmt.allocPrint(allocator, "{s:<3} {s}", .{ session.continuationKey(id), label });
 }
 
 fn drawStatus(
@@ -2154,6 +2185,56 @@ test "Kitty and conventional VT keys translate to the same command input" {
         .mods = .{ .ctrl = true },
     });
     try std.testing.expectEqual(conventional_ctrl_c, kitty_ctrl_c);
+}
+
+test "pending continuation rows render every prefix and disabled reason" {
+    var nodes: [0]fiew.project.Node = .{};
+    const tree: fiew.project.Tree = .{ .allocator = std.testing.allocator, .nodes = &nodes, .file_count = 0 };
+    var app = try fiew.app.App.init(std.testing.allocator, &tree);
+    defer app.deinit();
+    app.focus = .main;
+    var session = fiew.commands.Session.init(std.testing.allocator);
+    defer session.deinit();
+    const dimensions: fiew.commands.Dimensions = .{ .sidebar_rows = 20, .document_rows = 20, .document_columns = 80 };
+    const cases = [_]struct { prefix: u21, rows: []const []const u8 }{
+        .{ .prefix = 'g', .rows = &.{
+            "g   start — no document is open",
+            "e   end — no document is open",
+            "d   definition — LSP is not available",
+        } },
+        .{ .prefix = 'z', .rows = &.{
+            "c   close — Tree-sitter folds are not available",
+            "o   open — Tree-sitter folds are not available",
+            "a   toggle — Tree-sitter folds are not available",
+            "M   close all — Tree-sitter folds are not available",
+            "R   open all — Tree-sitter folds are not available",
+        } },
+        .{ .prefix = ']', .rows = &.{
+            "f   file — open the Git view first",
+            "h   hunk — open the Git view first",
+            "c   change — open the Git view first",
+            "n   thread — no notes yet",
+            "b   bookmark — no bookmarks yet",
+        } },
+        .{ .prefix = '[', .rows = &.{
+            "f   file — open the Git view first",
+            "h   hunk — open the Git view first",
+            "c   change — open the Git view first",
+            "n   thread — no notes yet",
+            "b   bookmark — no bookmarks yet",
+        } },
+    };
+
+    for (cases) |case| {
+        _ = try session.handle(&app, .{ .code = .character, .character = case.prefix }, dimensions);
+        try std.testing.expectEqual(case.rows.len, session.pendingCommandCount());
+        for (case.rows, 0..) |expected, index| {
+            const row = try continuationHintRow(std.testing.allocator, &app, &session, session.pendingCommand(index).?);
+            defer std.testing.allocator.free(row);
+            try std.testing.expectEqualStrings(expected, row);
+        }
+        _ = try session.handle(&app, .{ .code = .escape }, dimensions);
+    }
 }
 
 test "terminal presentation stays usable without optional capabilities" {
