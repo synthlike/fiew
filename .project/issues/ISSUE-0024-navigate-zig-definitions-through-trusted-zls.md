@@ -2,7 +2,7 @@
 id: ISSUE-0024
 title: "Navigate Zig through trusted ZLS"
 kind: "implementation"
-status: open
+status: cancelled
 created: 2026-08-25
 assignee: 
 parent: "ISSUE-0052-hold-deferred-fiew-v0-2-implementation-candidates.md"
@@ -44,5 +44,6 @@ Managed by native issue relationships.
 Other languages, source-writing LSP methods, and a generic language-server framework.
 
 ## Comments
-
 ## Resolution
+
+Cancelled as a deferred candidate after approval of the v0.2 specification and executable plan. Its scope is replaced by vertical slices under [Implement fiew v0.2](<.project/issues/ISSUE-0057-implement-fiew-v0-2.md>); this cancellation does not abandon the approved product behavior.

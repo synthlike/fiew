@@ -2,7 +2,7 @@
 id: ISSUE-0052
 title: "Hold deferred fiew v0.2 implementation candidates"
 kind: "initiative"
-status: open
+status: resolved
 created: 2026-08-27
 assignee:
 parent:
@@ -26,5 +26,6 @@ Retain the implementation detail deferred from v0.1 without treating it as execu
 Resolving product or portability decisions and claiming v0.2 implementation readiness.
 
 ## Comments
-
 ## Resolution
+
+The approved fiew v0.2 specification was decomposed into executable vertical slices under [Implement fiew v0.2](<.project/issues/ISSUE-0057-implement-fiew-v0-2.md>). All deferred candidate children were cancelled as replaced, not abandoned.
