@@ -1232,6 +1232,107 @@ fn lineHasNote(app: *const fiew.app.App, change_notes: []fiew.notes.NoteRef, lin
     return false;
 }
 
+fn wrappedReviewRows(allocator: std.mem.Allocator, text: []const u8, width: u16) ![][]const u8 {
+    var safe: std.ArrayList(u8) = .empty;
+    defer safe.deinit(allocator);
+    var index: usize = 0;
+    while (index < text.len) {
+        const length = std.unicode.utf8ByteSequenceLength(text[index]) catch 1;
+        if (length == 1 and (text[index] < 0x20 or text[index] == 0x7f)) {
+            if (text[index] == '\t')
+                try safe.appendSlice(allocator, "    ")
+            else
+                try safe.appendSlice(allocator, "\u{fffd}");
+            index += 1;
+            continue;
+        }
+        if (index + length > text.len or !std.unicode.utf8ValidateSlice(text[index .. index + length])) {
+            try safe.appendSlice(allocator, "\u{fffd}");
+            index += 1;
+            continue;
+        }
+        try safe.appendSlice(allocator, text[index .. index + length]);
+        index += length;
+    }
+
+    const available: usize = @max(width -| 2, 1);
+    var rows: std.ArrayList([]const u8) = .empty;
+    var iterator = vaxis.unicode.graphemeIterator(safe.items);
+    var row_start: usize = 0;
+    var offset: usize = 0;
+    var columns: usize = 0;
+    while (iterator.next()) |grapheme| {
+        const grapheme_columns: usize = vaxis.gwidth.gwidth(grapheme.bytes(safe.items), .unicode);
+        if (columns != 0 and columns + grapheme_columns > available) {
+            try rows.append(allocator, try std.fmt.allocPrint(allocator, "▏ {s}", .{safe.items[row_start..offset]}));
+            row_start = offset;
+            columns = 0;
+        }
+        offset += grapheme.len;
+        columns += grapheme_columns;
+        if (columns >= available) {
+            try rows.append(allocator, try std.fmt.allocPrint(allocator, "▏ {s}", .{safe.items[row_start..offset]}));
+            row_start = offset;
+            columns = 0;
+        }
+    }
+    if (row_start < safe.items.len or rows.items.len == 0)
+        try rows.append(allocator, try std.fmt.allocPrint(allocator, "▏ {s}", .{safe.items[row_start..]}));
+    return rows.toOwnedSlice(allocator);
+}
+
+fn reviewCommentStyle(author: fiew.review.Author, resolved: bool, bold: bool) vaxis.Cell.Style {
+    const color: vaxis.Cell.Color = switch (author) {
+        .reviewer => .{ .index = 3 },
+        .agent => .{ .index = 6 },
+    };
+    return .{ .fg = color, .bold = bold, .dim = resolved };
+}
+
+fn noteEndsOnLine(note: *const fiew.review.Thread, line: fiew.git_model.DiffLine) bool {
+    const side = note.side orelse return false;
+    const anchor_end = note.end_line orelse return false;
+    const line_number = (if (side == .new) line.new_line else line.old_line) orelse return false;
+    return line_number == anchor_end;
+}
+
+fn diffVisualRowCount(
+    allocator: std.mem.Allocator,
+    window_width: u16,
+    app: *const fiew.app.App,
+    change_notes: []const fiew.notes.NoteRef,
+    diff: *const fiew.git_model.FileDiff,
+    first_line: usize,
+) !usize {
+    var count: usize = 0;
+    for (diff.lines[first_line..], first_line..) |line, line_index| {
+        for (diff.hunks) |hunk| if (hunk.first_line == line_index) {
+            count += 1;
+            break;
+        };
+        count += 1;
+        if (app.notes) |*state_notes| for (change_notes) |ref| {
+            const note = state_notes.noteAt(ref);
+            if (!noteEndsOnLine(note, line)) continue;
+            count += 1;
+            for (note.comments) |comment| {
+                count += 1;
+                var body_lines = std.mem.splitScalar(u8, comment.body, '\n');
+                while (body_lines.next()) |body_line| {
+                    const rows = try wrappedReviewRows(allocator, body_line, window_width -| 7);
+                    count += rows.len;
+                }
+            }
+        };
+    }
+    return count;
+}
+
+fn visibleDiffRow(virtual_row: usize, scroll: usize, body_rows: usize) ?u16 {
+    if (virtual_row < scroll or virtual_row >= scroll + body_rows) return null;
+    return @intCast(virtual_row - scroll + 1);
+}
+
 fn drawDiff(allocator: std.mem.Allocator, window: vaxis.Window, app: *const fiew.app.App) !void {
     const review = if (app.review) |*value| value else {
         _ = window.printSegment(.{ .text = " Diff", .style = .{ .bold = true } }, .{ .wrap = .none });
@@ -1269,24 +1370,28 @@ fn drawDiff(allocator: std.mem.Allocator, window: vaxis.Window, app: *const fiew
         &.{};
 
     const body_rows = window.height -| 1;
-    var row: usize = 0;
+    const total_rows = try diffVisualRowCount(allocator, window.width, app, change_notes, diff, review.diff_scroll);
+    const visual_scroll = @min(review.diff_visual_scroll, total_rows -| body_rows);
+    var virtual_row: usize = 0;
     var line_index = review.diff_scroll;
-    while (row < body_rows and line_index < diff.lines.len) {
+    render: while (line_index < diff.lines.len) : (line_index += 1) {
         for (diff.hunks) |hunk| {
             if (hunk.first_line == line_index) {
-                const heading_text = diff.text[hunk.header.start..hunk.header.end];
-                const header = try std.fmt.allocPrint(allocator, "@@ -{d},{d} +{d},{d} @@ {s}", .{
-                    hunk.old_start, hunk.old_count, hunk.new_start, hunk.new_count, heading_text,
-                });
-                _ = window.printSegment(.{
-                    .text = try sanitizeLine(allocator, header, window.width -| 1),
-                    .style = .{ .fg = .{ .index = 6 }, .dim = true },
-                }, .{ .row_offset = @intCast(row + 1), .wrap = .none });
-                row += 1;
+                if (visibleDiffRow(virtual_row, visual_scroll, body_rows)) |screen_row| {
+                    const heading_text = diff.text[hunk.header.start..hunk.header.end];
+                    const header = try std.fmt.allocPrint(allocator, "@@ -{d},{d} +{d},{d} @@ {s}", .{
+                        hunk.old_start, hunk.old_count, hunk.new_start, hunk.new_count, heading_text,
+                    });
+                    _ = window.printSegment(.{
+                        .text = try sanitizeLine(allocator, header, window.width -| 1),
+                        .style = .{ .fg = .{ .index = 6 }, .dim = true },
+                    }, .{ .row_offset = screen_row, .wrap = .none });
+                }
+                virtual_row += 1;
                 break;
             }
         }
-        if (row >= body_rows) break;
+        if (virtual_row >= visual_scroll + body_rows) break :render;
 
         const line = diff.lines[line_index];
         const cursor = line_index == review.diff_line and app.focus == .main;
@@ -1295,80 +1400,62 @@ fn drawDiff(allocator: std.mem.Allocator, window: vaxis.Window, app: *const fiew
             .deletion => .{ .index = 1 },
             .context => .default,
         };
-        const old_number = if (line.old_line) |number|
-            try std.fmt.allocPrint(allocator, "{d: >4}", .{number})
-        else
-            "    ";
-        const new_number = if (line.new_line) |number|
-            try std.fmt.allocPrint(allocator, "{d: >4}", .{number})
-        else
-            "    ";
-        const symbol: []const u8 = switch (line.kind) {
-            .addition => "+",
-            .deletion => "-",
-            .context => " ",
-        };
-        const noted = lineHasNote(app, change_notes, line);
-        _ = window.print(&.{
-            .{
-                .text = if (noted) "▸" else " ",
-                .style = .{ .fg = .{ .index = 5 }, .bold = true },
-            },
-            .{ .text = old_number, .style = .{ .dim = true } },
-            .{ .text = " " },
-            .{ .text = new_number, .style = .{ .dim = true } },
-            .{ .text = " " },
-            .{ .text = symbol, .style = .{ .fg = color, .bold = true } },
-            .{ .text = " " },
-            .{
-                .text = try sanitizeLine(allocator, diff.text[line.text.start..line.text.end], window.width -| 13),
-                .style = .{ .fg = color, .reverse = cursor },
-            },
-        }, .{ .row_offset = @intCast(row + 1), .wrap = .none });
-        row += 1;
+        if (visibleDiffRow(virtual_row, visual_scroll, body_rows)) |screen_row| {
+            const old_number = if (line.old_line) |number| try std.fmt.allocPrint(allocator, "{d: >4}", .{number}) else "    ";
+            const new_number = if (line.new_line) |number| try std.fmt.allocPrint(allocator, "{d: >4}", .{number}) else "    ";
+            const symbol: []const u8 = switch (line.kind) {
+                .addition => "+",
+                .deletion => "-",
+                .context => " ",
+            };
+            const noted = lineHasNote(app, change_notes, line);
+            _ = window.print(&.{
+                .{ .text = if (noted) "▸" else " ", .style = .{ .fg = .{ .index = 5 }, .bold = true } },
+                .{ .text = old_number, .style = .{ .dim = true } },
+                .{ .text = " " },
+                .{ .text = new_number, .style = .{ .dim = true } },
+                .{ .text = " " },
+                .{ .text = symbol, .style = .{ .fg = color, .bold = true } },
+                .{ .text = " " },
+                .{
+                    .text = try sanitizeLine(allocator, diff.text[line.text.start..line.text.end], window.width -| 13),
+                    .style = .{ .fg = color, .reverse = cursor },
+                },
+            }, .{ .row_offset = screen_row, .wrap = .none });
+        }
+        virtual_row += 1;
 
-        // Inline review comments anchored ending on this line.
-        if (app.notes) |*state_notes| {
-            for (change_notes) |ref| {
-                const note = state_notes.noteAt(ref);
-                const side = note.side orelse continue;
-                const anchor_end = note.end_line orelse continue;
-                const line_number = (if (side == .new) line.new_line else line.old_line) orelse continue;
-                if (line_number != anchor_end) continue;
+        if (app.notes) |*state_notes| for (change_notes) |ref| {
+            const note = state_notes.noteAt(ref);
+            if (!noteEndsOnLine(note, line)) continue;
+            const resolved = note.projectedStatus() == .resolved;
+            if (visibleDiffRow(virtual_row, visual_scroll, body_rows)) |screen_row| _ = window.printSegment(.{
+                .text = try std.fmt.allocPrint(allocator, "▏ thread · {s}", .{@tagName(note.projectedStatus())}),
+                .style = .{ .fg = .{ .index = 5 }, .bold = true, .dim = resolved },
+            }, .{ .row_offset = screen_row, .col_offset = 7, .wrap = .none });
+            virtual_row += 1;
 
-                if (row >= body_rows) break;
-                const resolved = note.projectedStatus() == .resolved;
-                _ = window.printSegment(.{
-                    .text = try std.fmt.allocPrint(allocator, "▏ thread · {s}", .{@tagName(note.projectedStatus())}),
-                    .style = .{ .fg = .{ .index = 5 }, .bold = true, .dim = resolved },
-                }, .{ .row_offset = @intCast(row + 1), .col_offset = 7, .wrap = .none });
-                row += 1;
+            for (note.comments) |comment| {
+                if (visibleDiffRow(virtual_row, visual_scroll, body_rows)) |screen_row| _ = window.printSegment(.{
+                    .text = try std.fmt.allocPrint(allocator, "▏ {s}", .{@tagName(comment.author)}),
+                    .style = reviewCommentStyle(comment.author, resolved, true),
+                }, .{ .row_offset = screen_row, .col_offset = 7, .wrap = .none });
+                virtual_row += 1;
 
-                for (note.comments) |comment| {
-                    if (row >= body_rows) break;
-                    const author_color: vaxis.Cell.Color = switch (comment.author) {
-                        .reviewer => .{ .index = 3 },
-                        .agent => .{ .index = 6 },
-                    };
-                    _ = window.printSegment(.{
-                        .text = try std.fmt.allocPrint(allocator, "▏ {s}", .{@tagName(comment.author)}),
-                        .style = .{ .fg = author_color, .bold = true, .dim = resolved },
-                    }, .{ .row_offset = @intCast(row + 1), .col_offset = 7, .wrap = .none });
-                    row += 1;
-                    var body_lines = std.mem.splitScalar(u8, comment.body, '\n');
-                    const comment_window = window.child(.{ .x_off = 7, .width = window.width -| 7 });
-                    while (body_lines.next()) |body_line| {
-                        if (row >= body_rows) break;
-                        const result = comment_window.printSegment(.{
-                            .text = try std.fmt.allocPrint(allocator, "▏ {s}", .{body_line}),
-                            .style = .{ .fg = author_color, .dim = resolved },
-                        }, .{ .row_offset = @intCast(row + 1), .wrap = .grapheme });
-                        row = @max(row + 1, @as(usize, result.row) + 1);
+                var body_lines = std.mem.splitScalar(u8, comment.body, '\n');
+                while (body_lines.next()) |body_line| {
+                    const rows = try wrappedReviewRows(allocator, body_line, window.width -| 7);
+                    for (rows) |body_row| {
+                        if (visibleDiffRow(virtual_row, visual_scroll, body_rows)) |screen_row| _ = window.printSegment(.{
+                            .text = body_row,
+                            .style = reviewCommentStyle(comment.author, resolved, false),
+                        }, .{ .row_offset = screen_row, .col_offset = 7, .wrap = .none });
+                        virtual_row += 1;
                     }
                 }
             }
-        }
-        line_index += 1;
+        };
+        if (virtual_row >= visual_scroll + body_rows) break :render;
     }
 }
 
@@ -1983,6 +2070,41 @@ test "review render labels distinguish statuses and comment roles" {
     try std.testing.expectEqualStrings("! ", reviewStatusMarker(.outdated));
     try std.testing.expectEqualStrings("reviewer:", reviewAuthorLabel(.reviewer));
     try std.testing.expectEqualStrings("agent:", reviewAuthorLabel(.agent));
+}
+
+test "narrow inline review comments wrap by grapheme for both authors" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const reviewer_rows = try wrappedReviewRows(allocator, "abcdefghij", 8);
+    try std.testing.expectEqual(@as(usize, 2), reviewer_rows.len);
+    try std.testing.expectEqualStrings("▏ abcdef", reviewer_rows[0]);
+    try std.testing.expectEqualStrings("▏ ghij", reviewer_rows[1]);
+
+    const agent_rows = try wrappedReviewRows(allocator, "ab👩‍💻cd", 6);
+    try std.testing.expectEqual(@as(usize, 2), agent_rows.len);
+    try std.testing.expectEqualStrings("▏ ab👩‍💻", agent_rows[0]);
+    try std.testing.expectEqualStrings("▏ cd", agent_rows[1]);
+
+    const reviewer_style = reviewCommentStyle(.reviewer, false, false);
+    const agent_style = reviewCommentStyle(.agent, false, false);
+    try std.testing.expectEqual(vaxis.Cell.Color{ .index = 3 }, reviewer_style.fg);
+    try std.testing.expectEqual(vaxis.Cell.Color{ .index = 6 }, agent_style.fg);
+    try std.testing.expect(reviewCommentStyle(.reviewer, true, true).dim);
+    try std.testing.expect(reviewCommentStyle(.agent, true, true).dim);
+}
+
+test "inline review comment layout reflows and exposes scrolled rows" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    try std.testing.expectEqual(@as(usize, 2), (try wrappedReviewRows(allocator, "abcdefghij", 8)).len);
+    try std.testing.expectEqual(@as(usize, 1), (try wrappedReviewRows(allocator, "abcdefghij", 12)).len);
+    try std.testing.expectEqual(@as(?u16, 1), visibleDiffRow(5, 5, 3));
+    try std.testing.expectEqual(@as(?u16, 3), visibleDiffRow(7, 5, 3));
+    try std.testing.expectEqual(@as(?u16, null), visibleDiffRow(8, 5, 3));
 }
 
 test "bookmark render distinguishes current and Outdated state" {

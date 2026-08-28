@@ -717,6 +717,15 @@ pub const App = struct {
         self.moveVertical(delta, viewport_height, viewport_width);
     }
 
+    /// Page through visual Diff rows so wrapped comments remain reachable.
+    pub fn mainPageMove(self: *App, delta: isize, viewport_height: usize, viewport_width: usize) void {
+        if (self.sidebar_context == .git and !self.viewing_source) {
+            if (self.review) |*review_state| review_state.scrollDiffVisual(delta);
+            return;
+        }
+        self.mainVerticalMove(delta, viewport_height, viewport_width);
+    }
+
     /// Attach syntax analysis to the active view, taking ownership of `data`.
     pub fn installParseData(self: *App, data: syntax.ParseData) void {
         const view = self.activeViewMut() orelse {

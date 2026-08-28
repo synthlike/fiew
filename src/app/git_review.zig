@@ -23,6 +23,9 @@ pub const Review = struct {
     /// Cursor within the selected change's diff (index into its `FileDiff.lines`).
     diff_line: usize = 0,
     diff_scroll: usize = 0,
+    /// Additional visual-row offset from `diff_scroll`, used to page through
+    /// wrapped inline comments without changing the selected diff line.
+    diff_visual_scroll: usize = 0,
     /// Selection anchor in the diff (for a multi-line note); null = single line.
     diff_anchor: ?usize = null,
 
@@ -73,6 +76,7 @@ pub const Review = struct {
                     const diff = &self.changeset.diffs[change_index];
                     self.diff_line = @min(previous.diff_line, diff.lines.len -| 1);
                     self.diff_scroll = @min(previous.diff_scroll, diff.lines.len -| 1);
+                    self.diff_visual_scroll = previous.diff_visual_scroll;
                     return;
                 }
             },
@@ -274,11 +278,21 @@ pub const Review = struct {
         const current: isize = @intCast(self.diff_line);
         const last: isize = @intCast(diff.lines.len - 1);
         self.diff_line = @intCast(std.math.clamp(current + delta, 0, last));
+        self.diff_visual_scroll = 0;
         self.ensureDiffVisible(viewport_rows);
+    }
+
+    pub fn scrollDiffVisual(self: *Review, delta: isize) void {
+        if (delta < 0) {
+            self.diff_visual_scroll -|= @abs(delta);
+        } else {
+            self.diff_visual_scroll +|= @intCast(delta);
+        }
     }
 
     /// Keep the diff cursor within the visible window.
     pub fn ensureDiffVisible(self: *Review, viewport_rows: usize) void {
+        self.diff_visual_scroll = 0;
         if (viewport_rows == 0) return;
         if (self.diff_line < self.diff_scroll) self.diff_scroll = self.diff_line;
         if (self.diff_line >= self.diff_scroll + viewport_rows) {
@@ -396,6 +410,7 @@ pub const Review = struct {
     fn resetDiffCursor(self: *Review) void {
         self.diff_line = 0;
         self.diff_scroll = 0;
+        self.diff_visual_scroll = 0;
         self.diff_anchor = null;
     }
 
@@ -549,6 +564,23 @@ test "hunk and changed-line cursors move through the selected diff" {
     const target = review.sourceTarget().?;
     try testing.expectEqualStrings("b.zig", target.path);
     try testing.expectEqual(@as(usize, 2), target.line); // addition -> new side line 2
+}
+
+test "visual diff paging reaches wrapped rows and cursor movement resets it" {
+    var review = try Review.init(testing.allocator, try buildChangeSet(testing.allocator));
+    defer review.deinit();
+    review.moveSelection(1, 20); // select b.zig
+
+    review.scrollDiffVisual(12);
+    try testing.expectEqual(@as(usize, 12), review.diff_visual_scroll);
+    review.scrollDiffVisual(-5);
+    try testing.expectEqual(@as(usize, 7), review.diff_visual_scroll);
+    review.scrollDiffVisual(-20);
+    try testing.expectEqual(@as(usize, 0), review.diff_visual_scroll);
+
+    review.scrollDiffVisual(4);
+    review.moveDiffLine(1, 20);
+    try testing.expectEqual(@as(usize, 0), review.diff_visual_scroll);
 }
 
 test "bookmark target maps a deletion to current source" {

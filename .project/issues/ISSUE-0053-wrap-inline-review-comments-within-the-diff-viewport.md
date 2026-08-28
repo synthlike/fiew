@@ -2,9 +2,9 @@
 id: ISSUE-0053
 title: "Wrap inline review comments within the Diff viewport"
 kind: "defect"
-status: open
+status: resolved
 created: 2026-08-28
-assignee:
+assignee: "agent"
 parent: "ISSUE-0013-implement-fiew-v0-1.md"
 blocked_by:
 labels: []
@@ -40,6 +40,15 @@ Related to ISSUE-0033, which introduced reviewer-owned review threads, and commi
 None identified. This is required v0.1 presentation work.
 
 ## Comments
-
-
 ## Resolution
+
+Completed the inline review-comment wrapping fix.
+
+- Replaced implicit terminal wrapping with explicit grapheme-aware visual rows that retain the comment gutter and author-specific styling on every continuation row.
+- Sanitized comment body control characters before rendering.
+- Added visual-row Diff paging so PageUp, PageDown, Ctrl-u, and Ctrl-d can reach wrapped content without changing the selected diff line; ordinary line movement resets the visual offset.
+- Kept reviewer and agent colors distinct in labels and bodies and retained resolved-thread dimming.
+- Recomputes wrapped rows from the current viewport width on every draw, so resize reflows content.
+- Added narrow ASCII and Unicode wrapping coverage, author-style coverage, resize/reflow coverage, visual-row clipping coverage, and paging state/command coverage.
+
+Verification passed with `zig fmt --check src build.zig`, `zig build test`, `zig build`, and `git diff --check`.

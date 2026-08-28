@@ -496,10 +496,10 @@ pub const Session = struct {
             .word_end => app.moveWordForward(true, dimensions.document_columns),
             .document_start => app.moveDocumentBoundary(false, dimensions.document_rows, dimensions.document_columns),
             .document_end => app.moveDocumentBoundary(true, dimensions.document_rows, dimensions.document_columns),
-            .half_page_up => app.mainVerticalMove(-@as(isize, @intCast(@max(dimensions.document_rows / 2, 1))), dimensions.document_rows, dimensions.document_columns),
-            .half_page_down => app.mainVerticalMove(@intCast(@max(dimensions.document_rows / 2, 1)), dimensions.document_rows, dimensions.document_columns),
-            .page_up => app.mainVerticalMove(-@as(isize, @intCast(@max(dimensions.document_rows, 1))), dimensions.document_rows, dimensions.document_columns),
-            .page_down => app.mainVerticalMove(@intCast(@max(dimensions.document_rows, 1)), dimensions.document_rows, dimensions.document_columns),
+            .half_page_up => app.mainPageMove(-@as(isize, @intCast(@max(dimensions.document_rows / 2, 1))), dimensions.document_rows, dimensions.document_columns),
+            .half_page_down => app.mainPageMove(@intCast(@max(dimensions.document_rows / 2, 1)), dimensions.document_rows, dimensions.document_columns),
+            .page_up => app.mainPageMove(-@as(isize, @intCast(@max(dimensions.document_rows, 1))), dimensions.document_rows, dimensions.document_columns),
+            .page_down => app.mainPageMove(@intCast(@max(dimensions.document_rows, 1)), dimensions.document_rows, dimensions.document_columns),
             .toggle_extend => {
                 if (app.sidebar_context == .git and !app.viewing_source)
                     app.toggleDiffExtend()
@@ -1641,4 +1641,11 @@ test "diff cursor moves with j/k even when no document view is open" {
     try std.testing.expectEqual(@as(usize, 1), app.review.?.diff_line);
     _ = try session.handle(&app, charKey('j'), dimensions);
     try std.testing.expectEqual(@as(usize, 2), app.review.?.diff_line);
+
+    // Paging scrolls visual rows, including wrapped comments, without moving the cursor.
+    _ = try session.handle(&app, .{ .code = .page_down }, dimensions);
+    try std.testing.expectEqual(@as(usize, 20), app.review.?.diff_visual_scroll);
+    try std.testing.expectEqual(@as(usize, 2), app.review.?.diff_line);
+    _ = try session.handle(&app, .{ .code = .page_up }, dimensions);
+    try std.testing.expectEqual(@as(usize, 0), app.review.?.diff_visual_scroll);
 }
