@@ -532,6 +532,7 @@ pub fn run(init: std.process.Init, options: Options) !u8 {
                 const dimensions = fiew.workspace.layout(winsize.cols, winsize.rows, app.sidebar_visible);
                 const viewport_height = dimensions.content_height -| 2;
                 app.browser.ensureVisible(viewport_height);
+                command_session.finder.ensureVisible(fiew.workspace.finderResultRows(dimensions.content_height));
                 app.ensureCurrentDocumentVisible(viewport_height, dimensions.main_width -| 6);
             },
             .tick => {
@@ -570,6 +571,7 @@ fn commandDimensions(window: vaxis.Window, app: *const fiew.app.App) fiew.comman
         .sidebar_rows = dimensions.content_height -| 2,
         .document_rows = dimensions.content_height -| 2,
         .document_columns = dimensions.main_width -| 6,
+        .finder_rows = fiew.workspace.finderResultRows(dimensions.content_height),
     };
 }
 
@@ -1913,7 +1915,7 @@ fn drawCommandSurface(
         .note_composer => try drawComposer(allocator, window, app),
         .bookmark_composer => try drawBookmarkComposer(allocator, window, app),
         .finder => {
-            const height: u16 = @min(window.height, 12);
+            const height: u16 = @min(window.height, fiew.workspace.finder_max_height);
             const box = window.child(.{ .y_off = window.height - height, .height = height });
             box.clear();
             const label = switch (session.finder.scope) {
@@ -1938,9 +1940,9 @@ fn drawCommandSurface(
                 }
             }
             const hint = if (session.finder.truncated)
-                "Results truncated · ↑/↓ select · Enter open · Esc cancel"
+                "Results truncated · Tab/Shift-Tab or ↑/↓ select · Enter open · Esc cancel"
             else
-                "↑/↓ select · Enter open · Esc cancel";
+                "Tab/Shift-Tab or ↑/↓ select · Enter open · Esc cancel";
             _ = box.printSegment(.{ .text = hint, .style = .{ .dim = true } }, .{ .row_offset = height -| 1, .col_offset = 1, .wrap = .none });
         },
         .confirm_delete => {

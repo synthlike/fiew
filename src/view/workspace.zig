@@ -3,6 +3,11 @@ const std = @import("std");
 pub const minimum_columns: u16 = 60;
 pub const minimum_rows: u16 = 20;
 pub const overlay_breakpoint: u16 = 100;
+pub const finder_max_height: u16 = 12;
+
+pub fn finderResultRows(content_height: u16) usize {
+    return @min(content_height, finder_max_height) -| 2;
+}
 
 pub const SidebarMode = enum {
     hidden,
@@ -63,6 +68,11 @@ pub fn layout(columns: u16, rows: u16, sidebar_visible: bool) Layout {
         .main_width = columns - sidebar_width,
         .content_height = content_height,
     };
+}
+
+test "fixed finder dimensions expose only rendered result rows" {
+    try std.testing.expectEqual(@as(usize, 10), finderResultRows(29));
+    try std.testing.expectEqual(@as(usize, 6), finderResultRows(8));
 }
 
 test "wide workspace clamps the thirty percent sidebar" {

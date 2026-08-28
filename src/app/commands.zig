@@ -317,6 +317,7 @@ pub const Dimensions = struct {
     sidebar_rows: usize,
     document_rows: usize,
     document_columns: usize,
+    finder_rows: usize = 10,
 };
 
 /// A source location to open in context from a diff line.
@@ -525,7 +526,11 @@ pub const Session = struct {
                 else
                     app.toggleExtend();
             },
-            .select_line => app.selectLine(),
+            .select_line => {
+                app.selectLine();
+                if (app.sidebar_context != .review and (app.sidebar_context != .git or app.viewing_source))
+                    app.ensureCurrentDocumentVisible(dimensions.document_rows, dimensions.document_columns);
+            },
             .collapse_selection => app.collapseSelection(),
             .reverse_selection => app.reverseSelection(),
             .activate => return activate(app, dimensions),
@@ -945,12 +950,16 @@ pub const Session = struct {
             try self.finder.backspace(app.browser.tree);
             return .preview_finder;
         }
+        if (key.code == .tab) {
+            self.finder.move(if (key.shift) -1 else 1, dimensions.finder_rows);
+            return .preview_finder;
+        }
         if (key.code == .up) {
-            self.finder.move(-1, dimensions.document_rows);
+            self.finder.move(-1, dimensions.finder_rows);
             return .preview_finder;
         }
         if (key.code == .down) {
-            self.finder.move(1, dimensions.document_rows);
+            self.finder.move(1, dimensions.finder_rows);
             return .preview_finder;
         }
         if (key.code == .enter) {
@@ -1422,6 +1431,58 @@ test "file menu distinguishes all and Git-visible finder commands" {
     _ = try session.openGitFinder(&app, &.{"a.txt"});
     try std.testing.expectEqual(Surface.finder, session.surface);
     try std.testing.expectEqual(file_finder.Scope.git_visible, session.finder.scope);
+}
+
+test "finder Tab movement scrolls by rendered result rows" {
+    const project = @import("../model/project.zig");
+    const Static = struct {
+        var nodes = [_]project.Node{
+            .{ .path = "a.txt", .depth = 1, .kind = .file },
+            .{ .path = "b.txt", .depth = 1, .kind = .file },
+            .{ .path = "c.txt", .depth = 1, .kind = .file },
+            .{ .path = "d.txt", .depth = 1, .kind = .file },
+            .{ .path = "e.txt", .depth = 1, .kind = .file },
+            .{ .path = "f.txt", .depth = 1, .kind = .file },
+        };
+        var tree: project.Tree = .{ .allocator = std.testing.allocator, .nodes = &nodes, .file_count = nodes.len };
+    };
+    var app = try state.App.init(std.testing.allocator, &Static.tree);
+    defer app.deinit();
+    var session = Session.init(std.testing.allocator);
+    defer session.deinit();
+    const dimensions: Dimensions = .{ .sidebar_rows = 20, .document_rows = 20, .document_columns = 80, .finder_rows = 3 };
+
+    _ = try session.execute(&app, .file_find_all, dimensions);
+    for (0..4) |_| {
+        const effect = try session.handle(&app, .{ .code = .tab }, dimensions);
+        try std.testing.expectEqual(std.meta.Tag(Effect).preview_finder, std.meta.activeTag(effect));
+    }
+    try std.testing.expectEqual(@as(usize, 4), session.finder.selected);
+    try std.testing.expectEqual(@as(usize, 2), session.finder.scroll);
+
+    _ = try session.handle(&app, .{ .code = .tab, .shift = true }, dimensions);
+    try std.testing.expectEqual(@as(usize, 3), session.finder.selected);
+    _ = try session.handle(&app, .{ .code = .up }, dimensions);
+    try std.testing.expectEqual(@as(usize, 2), session.finder.selected);
+}
+
+test "repeated whole-line selection keeps the active line visible" {
+    var app = try testApp();
+    defer app.deinit();
+    app.pinned.?.deinit();
+    app.pinned = .{ .snapshot = try testSnapshot("tall.txt", "line\n" ** 20) };
+    app.focus = .main;
+    var session = Session.init(std.testing.allocator);
+    defer session.deinit();
+    const dimensions: Dimensions = .{ .sidebar_rows = 5, .document_rows = 5, .document_columns = 80 };
+
+    for (0..8) |_| _ = try session.handle(&app, charKey('x'), dimensions);
+    const view = app.activeView().?;
+    const active_line = view.snapshot.graphemes[view.active_grapheme].line;
+    try std.testing.expectEqual(@as(usize, 7), active_line);
+    try std.testing.expect(active_line >= view.scroll_line);
+    try std.testing.expect(active_line < view.scroll_line + dimensions.document_rows);
+    try std.testing.expect(view.scroll_line > 0);
 }
 
 test "leader and named command surfaces use the same registry" {
