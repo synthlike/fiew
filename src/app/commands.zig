@@ -35,6 +35,7 @@ pub const Id = enum {
     file_menu,
     file_find_all,
     file_find_git,
+    document_reload,
     git_open,
     git_refresh,
     review_open,
@@ -120,6 +121,7 @@ pub const definitions = [_]Definition{
     .{ .id = .file_menu, .stable_id = "file-menu", .title = "Open file finder commands", .binding = "Space f" },
     .{ .id = .file_find_all, .stable_id = "file-find-all", .title = "Find all repository files", .binding = "Space f a" },
     .{ .id = .file_find_git, .stable_id = "file-find-git", .title = "Find Git-visible files", .binding = "Space f g" },
+    .{ .id = .document_reload, .stable_id = "file-reload", .title = "Reload active file", .binding = "Space f r" },
     .{ .id = .git_open, .stable_id = "review-diff-open", .title = "Open Review Diff (Git)", .binding = "Space r d" },
     .{ .id = .git_refresh, .stable_id = "review-diff-refresh", .title = "Refresh Review Diff", .binding = "Space r d r" },
     .{ .id = .diff_file_next, .stable_id = "diff-file-next", .title = "Next changed file", .binding = "] f" },
@@ -242,6 +244,14 @@ pub fn unavailableReason(app: *const state.App, id: Id) ?[]const u8 {
         else
             null,
         .file_find_git => if (!app.git_enabled) "not a Git repository" else null,
+        .document_reload => if (app.focus != .main)
+            "focus a document to reload"
+        else if (app.sidebar_context == .git and !app.viewing_source)
+            "open source before reloading"
+        else if (app.sidebar_context == .review or app.activeDocument() == null)
+            "no document is open"
+        else
+            null,
         .git_open => if (!app.git_enabled) "not a Git repository" else null,
         .git_refresh => if (!app.git_enabled)
             "not a Git repository"
@@ -330,6 +340,7 @@ pub const Effect = union(enum) {
     preview_finder,
     activate_finder,
     load_git_finder,
+    reload_document: []const u8,
     open_history: state.Location,
     /// Load and show the Git working-tree review for this owner generation.
     open_review: u64,
@@ -614,6 +625,7 @@ pub const Session = struct {
                 return .preview_finder;
             },
             .file_find_git => return .load_git_finder,
+            .document_reload => return .{ .reload_document = app.activeDocument().?.path },
             .leader_menu => {
                 self.surface = .leader;
                 app.mode = .normal;
@@ -805,6 +817,7 @@ pub const Session = struct {
         return switch (normalizedCharacter(key)) {
             'a' => self.executeAndClose(app, .file_find_all, dimensions),
             'g' => self.executeAndClose(app, .file_find_git, dimensions),
+            'r' => self.executeAndClose(app, .document_reload, dimensions),
             else => blk: {
                 app.feedback = "invalid file finder command";
                 self.resetTransient(app);
@@ -1170,10 +1183,11 @@ test "registry stable identifiers are unique" {
 
 test "required modal bindings are represented by the command registry" {
     const required = [_][]const u8{
-        "h",       "j",         "k",         "l",        "w",         "b",         "e",       "g g",   "g e",
-        "Ctrl-u",  "Ctrl-d",    "PageUp",    "PageDown", "v",         "x",         ";",       "Alt-;", "Enter",
-        "g d",     "Ctrl-o",    "Ctrl-i",    "z c",      "z o",       "z a",       "z M",     "z R",   "Space p",
-        "Space f", "Space f a", "Space f g", "Space r",  "Space r d", "Space r t", "Space ?", ":",     "q",
+        "h",       "j",         "k",         "l",         "w",       "b",         "e",         "g g",     "g e",
+        "Ctrl-u",  "Ctrl-d",    "PageUp",    "PageDown",  "v",       "x",         ";",         "Alt-;",   "Enter",
+        "g d",     "Ctrl-o",    "Ctrl-i",    "z c",       "z o",     "z a",       "z M",       "z R",     "Space p",
+        "Space f", "Space f a", "Space f g", "Space f r", "Space r", "Space r d", "Space r t", "Space ?", ":",
+        "q",
     };
     for (required) |binding| {
         var found = false;
@@ -1431,6 +1445,22 @@ test "file menu distinguishes all and Git-visible finder commands" {
     _ = try session.openGitFinder(&app, &.{"a.txt"});
     try std.testing.expectEqual(Surface.finder, session.surface);
     try std.testing.expectEqual(file_finder.Scope.git_visible, session.finder.scope);
+}
+
+test "explicit reload dispatches the active document without changing it" {
+    var app = try testApp();
+    defer app.deinit();
+    var session = Session.init(std.testing.allocator);
+    defer session.deinit();
+    const dimensions: Dimensions = .{ .sidebar_rows = 20, .document_rows = 20, .document_columns = 80 };
+    const before_generation = app.activeDocument().?.generation;
+
+    _ = try session.handle(&app, charKey(' '), dimensions);
+    _ = try session.handle(&app, charKey('f'), dimensions);
+    const effect = try session.handle(&app, charKey('r'), dimensions);
+    try std.testing.expectEqual(std.meta.Tag(Effect).reload_document, std.meta.activeTag(effect));
+    try std.testing.expectEqualStrings("a.txt", effect.reload_document);
+    try std.testing.expectEqual(before_generation, app.activeDocument().?.generation);
 }
 
 test "finder Tab movement scrolls by rendered result rows" {

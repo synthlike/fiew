@@ -331,11 +331,39 @@ pub const StateStore = struct {
     }
 };
 
-/// Build the macOS user-data directory path for fiew from a home directory.
-/// The caller resolves `HOME` from the environment; this keeps environment
-/// values out of the store itself.
+/// Resolve the platform-owned global state path from already-read environment
+/// values. A null result means global persistence is unavailable; callers must
+/// not invent another location.
+pub fn globalStateDirectoryPath(
+    allocator: std.mem.Allocator,
+    os_tag: std.Target.Os.Tag,
+    home: ?[]const u8,
+    xdg_state_home: ?[]const u8,
+) !?[]u8 {
+    return switch (os_tag) {
+        .macos => if (home) |value|
+            if (value.len != 0 and std.fs.path.isAbsolute(value))
+                try std.fs.path.join(allocator, &.{ value, "Library", "Application Support", "fiew" })
+            else
+                null
+        else
+            null,
+        .linux => if (xdg_state_home) |value|
+            if (value.len != 0 and std.fs.path.isAbsolute(value)) try std.fs.path.join(allocator, &.{ value, "fiew" }) else linuxHomePath(allocator, home)
+        else
+            linuxHomePath(allocator, home),
+        else => null,
+    };
+}
+
+fn linuxHomePath(allocator: std.mem.Allocator, home: ?[]const u8) !?[]u8 {
+    const value = home orelse return null;
+    if (value.len == 0 or !std.fs.path.isAbsolute(value)) return null;
+    return try std.fs.path.join(allocator, &.{ value, ".local", "state", "fiew" });
+}
+
 pub fn dataDirectoryPath(allocator: std.mem.Allocator, home: []const u8) ![]u8 {
-    return std.fs.path.join(allocator, &.{ home, "Library", "Application Support", "fiew" });
+    return (try globalStateDirectoryPath(allocator, .macos, home, null)).?;
 }
 
 // --- Tests ---------------------------------------------------------------
@@ -521,6 +549,20 @@ test "diagnostics record recovery without leaking record data" {
         if (std.mem.startsWith(u8, entry.code(), "recovered_from_backup")) saw_recovery = true;
     }
     try std.testing.expect(saw_recovery);
+}
+
+test "platform global state paths follow macOS and Linux contracts" {
+    const xdg = (try globalStateDirectoryPath(std.testing.allocator, .linux, "/home/dev", "/state")).?;
+    defer std.testing.allocator.free(xdg);
+    try std.testing.expectEqualStrings("/state/fiew", xdg);
+
+    const fallback = (try globalStateDirectoryPath(std.testing.allocator, .linux, "/home/dev", "")).?;
+    defer std.testing.allocator.free(fallback);
+    try std.testing.expectEqualStrings("/home/dev/.local/state/fiew", fallback);
+
+    try std.testing.expect((try globalStateDirectoryPath(std.testing.allocator, .linux, null, null)) == null);
+    try std.testing.expect((try globalStateDirectoryPath(std.testing.allocator, .linux, "relative", null)) == null);
+    try std.testing.expect((try globalStateDirectoryPath(std.testing.allocator, .macos, null, null)) == null);
 }
 
 test "data directory path stays under the fiew-owned application support tree" {

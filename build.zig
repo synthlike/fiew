@@ -32,7 +32,12 @@ pub fn build(b: *std.Build) void {
     // pinned revisions under vendor/ and statically compiled into the fiew
     // module. They are reached only through the direct C adapter in
     // src/adapters/treesitter. See each vendor/*/REVISION for the exact commit.
-    const c_flags = &[_][]const u8{ "-std=c11", "-O2" };
+    const c_flags = &[_][]const u8{
+        "-std=c11",
+        "-O2",
+        "-D_POSIX_C_SOURCE=200809L",
+        "-D_DEFAULT_SOURCE",
+    };
     fiew.addCSourceFile(.{ .file = b.path("vendor/tree-sitter/lib/src/lib.c"), .flags = c_flags });
     fiew.addIncludePath(b.path("vendor/tree-sitter/lib/include"));
     fiew.addIncludePath(b.path("vendor/tree-sitter/lib/src"));
@@ -84,4 +89,12 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_core_tests.step);
     test_step.dependOn(&run_executable_tests.step);
+
+    // Emit, but do not run, target test binaries. This supports cross-building
+    // on macOS and executing the exact binaries in a native Linux environment.
+    const install_core_tests = b.addInstallArtifact(core_tests, .{ .dest_sub_path = "fiew-core-tests" });
+    const install_executable_tests = b.addInstallArtifact(executable_tests, .{ .dest_sub_path = "fiew-executable-tests" });
+    const test_binaries_step = b.step("test-binaries", "Install target test binaries without running them");
+    test_binaries_step.dependOn(&install_core_tests.step);
+    test_binaries_step.dependOn(&install_executable_tests.step);
 }

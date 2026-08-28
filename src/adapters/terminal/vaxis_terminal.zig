@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const vaxis = @import("vaxis");
 const fiew = @import("fiew");
 
@@ -369,6 +370,23 @@ pub fn run(init: std.process.Init, options: Options) !u8 {
     defer app.deinit();
     app.git_enabled = git_ready;
     app.git_status = if (git_ready) .idle else .disabled;
+
+    var global_diagnostics: fiew.diagnostics.Diagnostics = .init;
+    const global_path = try fiew.state_store.globalStateDirectoryPath(
+        allocator,
+        builtin.os.tag,
+        init.environ_map.get("HOME"),
+        init.environ_map.get("XDG_STATE_HOME"),
+    );
+    defer if (global_path) |path| allocator.free(path);
+    var global_store: ?fiew.state_store.StateStore = if (global_path) |path|
+        fiew.state_store.StateStore.openPath(allocator, init.io, path, &global_diagnostics) catch null
+    else
+        null;
+    defer if (global_store) |*store| store.deinit();
+    if (global_store == null)
+        app.feedback = "global state unavailable; persistence disabled";
+
     const quote_time = std.Io.Timestamp.now(init.io, .real).nanoseconds;
     app.welcome_quote = fiew.welcome.selectSeed(quote_time);
 
@@ -650,6 +668,15 @@ fn applyEffect(
             defer paths.deinit();
             _ = try session.openGitFinder(app, paths.paths);
             _ = try previewFinder(session, app, repository, segmenter, generation);
+        },
+        .reload_document => |path| {
+            generation.* +%= 1;
+            const snapshot = repository.loadDocument(path, generation.*, segmenter) catch |err| {
+                app.feedback = @errorName(err);
+                return false;
+            };
+            _ = app.replaceActiveSnapshot(snapshot);
+            app.ensureCurrentDocumentVisible(dimensions.document_rows, dimensions.document_columns);
         },
         .open_history => |location| {
             generation.* +%= 1;
@@ -1909,7 +1936,7 @@ fn drawCommandSurface(
             _ = menu.printSegment(.{ .text = " Files ", .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
             const git_reason = fiew.commands.unavailableReason(app, .file_find_git);
             _ = menu.printSegment(.{
-                .text = if (git_reason == null) "a all files  g Git-visible" else "a all files  g Git-visible (not a Git repository)",
+                .text = if (git_reason == null) "a all files  g Git-visible  r reload" else "a all files  g Git-visible (not a Git repository)  r reload",
             }, .{ .row_offset = 1, .col_offset = 1, .wrap = .none });
         },
         .note_composer => try drawComposer(allocator, window, app),

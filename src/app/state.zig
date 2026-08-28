@@ -508,6 +508,35 @@ pub const App = struct {
         self.feedback = null;
     }
 
+    /// Publish a completely loaded replacement while preserving the current
+    /// source position and scroll. The previous immutable snapshot remains
+    /// active until this infallible swap.
+    pub fn replaceActiveSnapshot(self: *App, snapshot: document.Snapshot) bool {
+        const target = if (self.preview) |*view| view else if (self.pinned) |*view| view else {
+            var owned = snapshot;
+            owned.deinit();
+            return false;
+        };
+        const source_start = if (target.snapshot.graphemes.len == 0)
+            0
+        else
+            target.snapshot.graphemes[@min(target.active_grapheme, target.snapshot.graphemes.len - 1)].source.start;
+        var replacement: View = .{
+            .snapshot = snapshot,
+            .scroll_line = target.scroll_line,
+            .scroll_column = target.scroll_column,
+        };
+        replacement.active_grapheme = graphemeAtSource(replacement.snapshot, source_start);
+        replacement.anchor_grapheme = replacement.active_grapheme;
+        if (replacement.snapshot.graphemes.len != 0)
+            replacement.preferred_column = replacement.snapshot.graphemes[replacement.active_grapheme].visual_column;
+        var previous = target.*;
+        target.* = replacement;
+        previous.deinit();
+        self.feedback = null;
+        return true;
+    }
+
     pub fn pinPreview(self: *App) !bool {
         if (self.preview == null) return false;
         try self.syncCurrentHistory();
@@ -1212,6 +1241,17 @@ test "Git refresh preserves the selected changed file and sidebar scroll" {
     try std.testing.expectEqualStrings("b.zig", app.review.?.changeset.changes[app.review.?.selectedChange().?].path);
     try std.testing.expectEqual(@as(usize, 2), app.review.?.scroll);
     try std.testing.expectEqual(Focus.main, app.focus);
+}
+
+test "completed reload replaces the snapshot and preserves source location" {
+    var app = try testApp();
+    defer app.deinit();
+    app.pinned = .{ .snapshot = try testSnapshot("reload.txt", "old text\nsecond"), .active_grapheme = 5, .anchor_grapheme = 5, .scroll_line = 1 };
+
+    try std.testing.expect(app.replaceActiveSnapshot(try testSnapshot("reload.txt", "new text\nsecond")));
+    try std.testing.expectEqualStrings("new text\nsecond", app.activeDocument().?.bytes);
+    try std.testing.expectEqual(@as(usize, 5), app.activeView().?.active_grapheme);
+    try std.testing.expectEqual(@as(usize, 1), app.activeView().?.scroll_line);
 }
 
 test "preview cancellation restores the pinned selection and scroll" {

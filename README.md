@@ -195,6 +195,8 @@ leader path, such as `LDR r d`.
 zig build
 zig build test
 zig fmt --check src build.zig
+zig build -Dtarget=x86_64-linux-musl -Dcpu=baseline
+zig build -Dtarget=aarch64-linux-musl -Dcpu=baseline
 ```
 
 `zig build test` is deterministic and does not need a network connection or an
