@@ -93,6 +93,32 @@ Review state is private repository-local JSON in `.reviews/`. fiew keeps one
 explicit current-review pointer per repository, so routine `show` and `reply`
 commands do not need to guess which review is active.
 
+### Install the agent cooperation skill
+
+The optional `fiew` Agent Skill teaches compatible coding agents to suggest a
+review after a completed repository change and to respond when you explicitly
+hand back a completed review. The `fiew` executable must already be installed
+and available on the agent's `PATH`.
+
+Install the skill for the current project:
+
+```sh
+npx skills add synthlike/fiew --skill fiew
+```
+
+Or install it globally for your user:
+
+```sh
+npx skills add synthlike/fiew --skill fiew --global
+```
+
+After reviewing, tell the agent **“Review done”**. It will use `fiew review
+show` and `fiew review reply` to address Open or Outdated threads while leaving
+thread resolution and approval to you. Skill activation is best-effort and
+depends on the agent; the portable Agent Skills format cannot guarantee a
+post-change hook on every supported agent. The skill never launches fiew or
+blocks task completion while waiting for a review.
+
 ## Everyday navigation
 
 | Key | Action |

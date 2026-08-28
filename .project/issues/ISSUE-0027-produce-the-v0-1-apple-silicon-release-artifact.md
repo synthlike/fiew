@@ -8,6 +8,7 @@ assignee:
 parent: "ISSUE-0013-implement-fiew-v0-1.md"
 blocked_by:
   - "ISSUE-0026-verify-the-integrated-read-first-workflows.md"
+  - "ISSUE-0056-distribute-the-fiew-agent-cooperation-skill.md"
 labels: []
 ---
 # Produce the v0.1 Apple Silicon release artifact
