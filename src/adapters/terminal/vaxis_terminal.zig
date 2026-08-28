@@ -363,6 +363,47 @@ pub fn run(init: std.process.Init, options: Options) !u8 {
     const quote_time = std.Io.Timestamp.now(init.io, .real).nanoseconds;
     app.welcome_quote = fiew.welcome.selectSeed(quote_time);
 
+    bookmark_setup: {
+        var canonical_buffer: [std.fs.max_path_bytes]u8 = undefined;
+        const canonical_length = repository.root_dir.realPath(init.io, &canonical_buffer) catch {
+            app.feedback = "bookmark repository path unavailable";
+            break :bookmark_setup;
+        };
+        var result = fiew.bookmark_store.load(allocator, init.io, repository.root_dir) catch {
+            app.feedback = "bookmark storage unreadable";
+            break :bookmark_setup;
+        };
+        switch (result) {
+            .loaded => |*loaded| {
+                defer loaded.deinit();
+                app.bookmarks = fiew.bookmarks.Bookmarks.fromStored(
+                    allocator,
+                    canonical_buffer[0..canonical_length],
+                    loaded.value().*,
+                ) catch {
+                    app.feedback = "bookmark storage unavailable";
+                    break :bookmark_setup;
+                };
+            },
+            .absent => app.bookmarks = fiew.bookmarks.Bookmarks.init(
+                allocator,
+                canonical_buffer[0..canonical_length],
+            ) catch {
+                app.feedback = "bookmark storage unavailable";
+                break :bookmark_setup;
+            },
+            .future_schema => {
+                app.feedback = "future bookmark schema refused";
+                break :bookmark_setup;
+            },
+            .unrecoverable => {
+                app.feedback = "bookmark state is unrecoverable";
+                break :bookmark_setup;
+            },
+        }
+        app.bookmarks_available = true;
+    }
+
     // A named review loads only its exact validated file. Ordinary browsing
     // loads all reviews for the sidebar.
     {
@@ -605,6 +646,69 @@ fn applyEffect(
             });
             app.viewing_source = true;
         },
+        .preview_bookmark => |source| {
+            try openBookmark(
+                app,
+                repository,
+                segmenter,
+                generation,
+                source,
+                false,
+                dimensions.document_rows,
+            );
+        },
+        .activate_bookmark => |source| {
+            try openBookmark(
+                app,
+                repository,
+                segmenter,
+                generation,
+                source,
+                true,
+                dimensions.document_rows,
+            );
+        },
+        .save_bookmark => {
+            const state_bookmarks = if (app.bookmarks) |*value| value else {
+                app.cancelBookmarkComposer();
+                return false;
+            };
+            const composer = if (app.bookmark_composer) |*value| value else return false;
+            generation.* +%= 1;
+            var snapshot = repository.loadDocument(composer.target.path, generation.*, segmenter) catch |err| {
+                app.feedback = @errorName(err);
+                return false;
+            };
+            defer snapshot.deinit();
+            const line_index = composer.target.line -| 1;
+            var source_offset = if (line_index < snapshot.line_starts.len)
+                snapshot.line_starts[line_index]
+            else
+                composer.target.source_offset;
+            if (line_index < snapshot.lineCount()) {
+                const range = snapshot.graphemeRangeForLine(line_index);
+                for (snapshot.graphemes[range.start..range.end]) |grapheme| {
+                    source_offset = grapheme.source.start;
+                    if (grapheme.visual_column >= composer.target.column) break;
+                }
+            }
+            try state_bookmarks.add(
+                composer.target.path,
+                composer.target.line,
+                composer.target.column,
+                source_offset,
+                composer.buffer.items,
+            );
+            app.cancelBookmarkComposer();
+            if (!persistBookmarks(repository, state_bookmarks))
+                app.feedback = "bookmark persistence failed; changes remain dirty";
+        },
+        .persist_bookmarks => {
+            if (app.bookmarks) |*state_bookmarks| {
+                if (!persistBookmarks(repository, state_bookmarks))
+                    app.feedback = "bookmark persistence failed; changes remain dirty";
+            }
+        },
         .save_note => {
             const state_notes = if (app.notes) |*value| value else {
                 app.cancelComposer();
@@ -647,7 +751,15 @@ fn applyEffect(
             }
             if (!flushNotes(repository, state_notes)) app.feedback = "review persistence failed; changes remain dirty";
         },
-        .quit => return true,
+        .quit => {
+            if (app.bookmarks) |*state_bookmarks| {
+                if (!persistBookmarks(repository, state_bookmarks)) {
+                    app.feedback = "bookmark persistence failed; quit cancelled";
+                    return false;
+                }
+            }
+            return true;
+        },
     }
     return false;
 }
@@ -720,6 +832,43 @@ fn flushNotes(repository: fiew.filesystem.Repository, state_notes: *fiew.notes.N
     return success and !state_notes.hasDirty();
 }
 
+fn persistBookmarks(repository: fiew.filesystem.Repository, state_bookmarks: *fiew.bookmarks.Bookmarks) bool {
+    if (!state_bookmarks.dirty) return true;
+    fiew.bookmark_store.save(repository.allocator, repository.io, repository.root_dir, state_bookmarks.stored()) catch return false;
+    state_bookmarks.markClean();
+    return true;
+}
+
+fn openBookmark(
+    app: *fiew.app.App,
+    repository: fiew.filesystem.Repository,
+    segmenter: fiew.text_segmentation.Segmenter,
+    generation: *u64,
+    source: fiew.commands.SourceLocation,
+    activate: bool,
+    document_rows: usize,
+) !void {
+    generation.* +%= 1;
+    const snapshot = repository.loadDocument(source.path, generation.*, segmenter) catch |err| {
+        if (app.bookmarks) |*state_bookmarks| {
+            state_bookmarks.markSelectedOutdated();
+            _ = persistBookmarks(repository, state_bookmarks);
+        }
+        app.feedback = @errorName(err);
+        return;
+    };
+    if (app.bookmarks) |*state_bookmarks| {
+        state_bookmarks.markSelectedCurrent();
+        _ = persistBookmarks(repository, state_bookmarks);
+    }
+    app.showPreview(snapshot);
+    app.positionPreviewAtLine(source.line, source.column);
+    if (activate) {
+        _ = try app.pinPreview();
+        if (app.activeViewMut()) |view| view.scroll_line = source.line -| 1 -| (document_rows / 2);
+    }
+}
+
 fn handleMouse(
     app: *fiew.app.App,
     repository: fiew.filesystem.Repository,
@@ -739,6 +888,21 @@ fn handleMouse(
         app.focus = .sidebar;
         if (row >= 1 and app.sidebar_context == .review) {
             if (app.notes) |*threads| threads.selectVisible(row - 1, dimensions.content_height -| 1);
+            return;
+        }
+        if (row >= 1 and app.sidebar_context == .bookmarks) {
+            if (app.bookmarks) |*state_bookmarks| {
+                state_bookmarks.selectVisible(row - 1, dimensions.content_height -| 1);
+                if (state_bookmarks.selectedBookmark()) |item| try openBookmark(
+                    app,
+                    repository,
+                    segmenter,
+                    generation,
+                    .{ .path = item.path, .line = item.line, .column = item.column },
+                    false,
+                    dimensions.content_height,
+                );
+            }
             return;
         }
         if (row >= 2) {
@@ -835,6 +999,7 @@ fn drawSidebar(
 ) !void {
     if (app.sidebar_context == .git) return drawGitSidebar(allocator, window, app);
     if (app.sidebar_context == .review) return drawReviewSidebar(allocator, window, app);
+    if (app.sidebar_context == .bookmarks) return drawBookmarksSidebar(allocator, window, app);
     _ = window.printSegment(.{
         .text = " Project ",
         .style = .{ .bold = true, .reverse = app.focus == .sidebar },
@@ -1294,6 +1459,39 @@ fn drawDocument(allocator: std.mem.Allocator, window: vaxis.Window, app: *const 
     }
 }
 
+fn bookmarkStatusMarker(status: fiew.bookmark.Status) []const u8 {
+    return if (status == .outdated) "! " else "• ";
+}
+
+fn drawBookmarksSidebar(allocator: std.mem.Allocator, window: vaxis.Window, app: *const fiew.app.App) !void {
+    _ = window.printSegment(.{
+        .text = " Bookmarks ",
+        .style = .{ .bold = true, .reverse = app.focus == .sidebar },
+    }, .{ .wrap = .none });
+    const state_bookmarks = if (app.bookmarks) |*value| value else {
+        _ = window.printSegment(.{ .text = "Unavailable", .style = .{ .dim = true } }, .{ .row_offset = 2, .col_offset = 1, .wrap = .none });
+        return;
+    };
+    if (state_bookmarks.items.items.len == 0) {
+        _ = window.printSegment(.{ .text = "No bookmarks yet", .style = .{ .dim = true } }, .{ .row_offset = 2, .col_offset = 1, .wrap = .none });
+        return;
+    }
+    const available = window.height -| 1;
+    var row: usize = 0;
+    while (row < available and state_bookmarks.scroll + row < state_bookmarks.items.items.len) : (row += 1) {
+        const index = state_bookmarks.scroll + row;
+        const item = state_bookmarks.items.items[index];
+        const selected = index == state_bookmarks.selected;
+        const outdated = item.status == .outdated;
+        const fallback = try std.fmt.allocPrint(allocator, "{s}:{d}", .{ std.fs.path.basename(item.path), item.line });
+        const text = try sanitizeLine(allocator, if (item.label.len == 0) fallback else item.label, window.width -| 4);
+        _ = window.print(&.{
+            .{ .text = bookmarkStatusMarker(item.status), .style = .{ .fg = if (outdated) .{ .index = 1 } else .{ .index = 6 }, .reverse = selected } },
+            .{ .text = text, .style = .{ .reverse = selected, .bold = selected, .dim = item.label.len == 0 or outdated } },
+        }, .{ .row_offset = @intCast(row + 1), .col_offset = 1, .wrap = .none });
+    }
+}
+
 fn reviewStatusMarker(status: fiew.review.Status) []const u8 {
     return switch (status) {
         .open => "• ",
@@ -1431,6 +1629,17 @@ fn drawComposer(allocator: std.mem.Allocator, window: vaxis.Window, app: *const 
     }, .{ .row_offset = height -| 1, .col_offset = 1, .wrap = .none });
 }
 
+fn drawBookmarkComposer(allocator: std.mem.Allocator, window: vaxis.Window, app: *const fiew.app.App) !void {
+    const composer = if (app.bookmark_composer) |*value| value else return;
+    const height: u16 = @min(window.height, 4);
+    const box = window.child(.{ .y_off = window.height - height, .height = height });
+    box.clear();
+    const title = try std.fmt.allocPrint(allocator, " Bookmark — {s}:{d} ", .{ composer.target.path, composer.target.line });
+    _ = box.printSegment(.{ .text = try sanitizeLine(allocator, title, box.width), .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
+    _ = box.printSegment(.{ .text = try sanitizeLine(allocator, composer.buffer.items, box.width -| 2) }, .{ .row_offset = 1, .col_offset = 1, .wrap = .none });
+    _ = box.printSegment(.{ .text = "Optional label (48 bytes) · Enter save · Esc cancel", .style = .{ .dim = true } }, .{ .row_offset = height -| 1, .col_offset = 1, .wrap = .none });
+}
+
 fn drawCommandSurface(
     allocator: std.mem.Allocator,
     window: vaxis.Window,
@@ -1444,7 +1653,7 @@ fn drawCommandSurface(
             menu.clear();
             _ = menu.printSegment(.{ .text = " Leader ", .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
             _ = menu.printSegment(.{
-                .text = "f files  p Project  v VCS  r Review  ? help  q quit",
+                .text = "f files  p Project  v VCS  r Review  b Bookmarks  ? help  q quit",
             }, .{ .row_offset = 1, .col_offset = 1, .wrap = .none });
         },
         .file => {
@@ -1475,11 +1684,24 @@ fn drawCommandSurface(
                 .text = "n line  f file  a append  x resolve/reopen  d delete  Enter show",
             }, .{ .row_offset = 1, .col_offset = 1, .wrap = .none });
         },
+        .bookmarks => {
+            const menu = window.child(.{ .y_off = window.height -| 2, .height = 2 });
+            menu.clear();
+            _ = menu.printSegment(.{ .text = " Bookmarks ", .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
+            _ = menu.printSegment(.{ .text = "n new  d delete  Enter show" }, .{ .row_offset = 1, .col_offset = 1, .wrap = .none });
+        },
         .note_composer => try drawComposer(allocator, window, app),
+        .bookmark_composer => try drawBookmarkComposer(allocator, window, app),
         .confirm_delete => {
             const menu = window.child(.{ .y_off = window.height -| 2, .height = 2 });
             menu.clear();
             _ = menu.printSegment(.{ .text = " Delete complete thread? ", .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
+            _ = menu.printSegment(.{ .text = "y delete  n/Esc cancel" }, .{ .row_offset = 1, .col_offset = 1, .wrap = .none });
+        },
+        .confirm_bookmark_delete => {
+            const menu = window.child(.{ .y_off = window.height -| 2, .height = 2 });
+            menu.clear();
+            _ = menu.printSegment(.{ .text = " Delete bookmark? ", .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
             _ = menu.printSegment(.{ .text = "y delete  n/Esc cancel" }, .{ .row_offset = 1, .col_offset = 1, .wrap = .none });
         },
         .command => {
@@ -1666,6 +1888,11 @@ test "review render labels distinguish statuses and comment roles" {
     try std.testing.expectEqualStrings("! ", reviewStatusMarker(.outdated));
     try std.testing.expectEqualStrings("reviewer:", reviewAuthorLabel(.reviewer));
     try std.testing.expectEqualStrings("agent:", reviewAuthorLabel(.agent));
+}
+
+test "bookmark render distinguishes current and Outdated state" {
+    try std.testing.expectEqualStrings("• ", bookmarkStatusMarker(.current));
+    try std.testing.expectEqualStrings("! ", bookmarkStatusMarker(.outdated));
 }
 
 test "selected end-of-document newline receives a visible marker" {

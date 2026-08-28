@@ -3,6 +3,8 @@
 const std = @import("std");
 
 pub const app = @import("app/state.zig");
+pub const bookmarks = @import("app/bookmarks.zig");
+pub const bookmark = @import("model/bookmark.zig");
 pub const commands = @import("app/commands.zig");
 pub const diagnostics = @import("app/diagnostics.zig");
 pub const document = @import("model/document.zig");
@@ -22,6 +24,7 @@ pub const repository_identity = @import("model/repository_identity.zig");
 pub const review = @import("model/review.zig");
 pub const review_cli = @import("app/review_cli.zig");
 pub const review_store = @import("adapters/storage/review_store.zig");
+pub const bookmark_store = @import("adapters/storage/bookmark_store.zig");
 pub const state_store = @import("adapters/storage/state_store.zig");
 pub const parse_job = @import("adapters/treesitter/parse_job.zig");
 pub const syntax = @import("model/syntax.zig");

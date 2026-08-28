@@ -24,10 +24,11 @@ Use this checklist for terminal behavior that deterministic tests cannot verify.
 11. Press `Space v` and confirm the VCS context identifies Git and shows loading without freezing input. Change a file externally, confirm the prior snapshot remains visible until refresh completes, then use `Space v r` and confirm its pending state is visible.
 12. In a repository where `.reviews/` is ignored, focus a textual diff, press `v`, extend over multiple lines on one side, then use `Space r n` and save a reviewer comment. Use `Space r f` on another change and confirm both line- and file-anchored threads appear.
 13. Open the Review sidebar with `Space r Enter`. Confirm keyboard and mouse selection, preview, focus, and scrolling are independent. Append with `Space r a`, resolve/reopen with `Space r x`, and confirm `Space r d` requires `y` before deleting the complete thread.
-14. Open a binary file and confirm only metadata appears. If available, open a file containing invalid UTF-8 and confirm replacement characters appear without changing the file.
-15. Use `Space q`. Confirm fiew exits, the previous terminal contents return, the cursor is visible, and normal line input and echo work.
-16. Run `zig build run -- review start --name smoke --repo /path/to/repository`, create a thread, and quit. Confirm the canonical review ID prints only after terminal restoration. Use `review show` from both the repository directory and `--repo`, then use `review reply` with a temporary body file and confirm the complete ordered history appears without lifecycle changes.
-17. Run fiew again and press `Ctrl-C`. Confirm the same restoration behavior.
+14. Create labelled and unlabelled source bookmarks with `Space b n`, then create one from a diff line. Open `Space b Enter`; verify keyboard and mouse preview, `Enter`, `[ b`/`] b`, confirmed deletion, and restart persistence. Confirm `.bookmarks/bookmarks.json` is created without source or Git mutation by fiew.
+15. Open a binary file and confirm only metadata appears. If available, open a file containing invalid UTF-8 and confirm replacement characters appear without changing the file.
+16. Use `Space q`. Confirm fiew exits, the previous terminal contents return, the cursor is visible, and normal line input and echo work.
+17. Run `zig build run -- review start --name smoke --repo /path/to/repository`, create a thread, and quit. Confirm the canonical review ID prints only after terminal restoration and `.reviews/<review-id>.json` exists. Use `review show` from both the repository directory and `--repo`, compare the public JSON and Markdown projections, then use `review reply` with a temporary body file and confirm the complete ordered history appears without lifecycle changes.
+18. Run fiew again and press `Ctrl-C`. Confirm the same restoration behavior.
 
 ## Result
 

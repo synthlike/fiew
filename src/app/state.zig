@@ -7,12 +7,14 @@ const git_review = @import("git_review.zig");
 const notes_state = @import("notes.zig");
 const git = @import("../model/git.zig");
 const review = @import("../model/review.zig");
+const bookmark_model = @import("../model/bookmark.zig");
+const bookmarks_state = @import("bookmarks.zig");
 
 /// Which structural relation to move the selection toward.
 pub const StructuralMove = enum { parent, child, next_sibling, previous_sibling };
 
 /// Which context the collapsible sidebar is showing.
-pub const SidebarContext = enum { project, git, review };
+pub const SidebarContext = enum { project, git, review, bookmarks };
 
 pub const GitStatus = enum { disabled, idle, pending, stale };
 
@@ -34,6 +36,29 @@ pub const OwnedAnchor = struct {
 };
 
 /// The transient Note Composer: a multiline text buffer plus what it will save.
+pub const BookmarkTarget = struct {
+    path: []u8,
+    line: usize,
+    column: usize,
+    source_offset: usize,
+
+    pub fn deinit(self: *BookmarkTarget, allocator: std.mem.Allocator) void {
+        allocator.free(self.path);
+        self.* = undefined;
+    }
+};
+
+pub const BookmarkComposer = struct {
+    buffer: std.ArrayListUnmanaged(u8) = .empty,
+    target: BookmarkTarget,
+
+    pub fn deinit(self: *BookmarkComposer, allocator: std.mem.Allocator) void {
+        self.buffer.deinit(allocator);
+        self.target.deinit(allocator);
+        self.* = undefined;
+    }
+};
+
 pub const Composer = struct {
     buffer: std.ArrayListUnmanaged(u8) = .empty,
     modified: bool = false,
@@ -175,8 +200,12 @@ pub const App = struct {
     viewing_source: bool = false,
     /// Loaded review notes (from `.reviews/`), when a repository is open.
     notes: ?notes_state.Notes = null,
+    /// Private bookmarks for this repository, loaded from fiew-owned state.
+    bookmarks: ?bookmarks_state.Bookmarks = null,
+    bookmarks_available: bool = false,
     /// The active Note Composer, when open.
     composer: ?Composer = null,
+    bookmark_composer: ?BookmarkComposer = null,
 
     pub fn init(allocator: std.mem.Allocator, tree: *const project.Tree) !App {
         return .{
@@ -190,7 +219,9 @@ pub const App = struct {
         if (self.pinned) |*view| view.deinit();
         if (self.review) |*review_state| review_state.deinit();
         if (self.notes) |*state_notes| state_notes.deinit();
+        if (self.bookmarks) |*state_bookmarks| state_bookmarks.deinit();
         if (self.composer) |*composer| composer.deinit(self.allocator);
+        if (self.bookmark_composer) |*composer| composer.deinit(self.allocator);
         for (self.history.items) |location| self.allocator.free(location.path);
         self.history.deinit(self.allocator);
         self.browser.deinit();
@@ -243,6 +274,80 @@ pub const App = struct {
     pub fn showReviewSidebar(self: *App) void {
         self.sidebar_context = .review;
         self.focus = .sidebar;
+    }
+
+    pub fn showBookmarksSidebar(self: *App) void {
+        self.sidebar_context = .bookmarks;
+        self.focus = .sidebar;
+    }
+
+    pub fn hasBookmarks(self: *const App) bool {
+        const state_bookmarks = self.bookmarks orelse return false;
+        return state_bookmarks.items.items.len != 0;
+    }
+
+    pub fn beginBookmark(self: *App) !bool {
+        if (self.sidebar_context == .review) return false;
+        var path: []const u8 = undefined;
+        var line: usize = 1;
+        var column: usize = 0;
+        var source_offset: usize = 0;
+        if (self.sidebar_context == .git and !self.viewing_source) {
+            const review_state = if (self.review) |*value| value else return false;
+            const target = review_state.bookmarkTarget() orelse return false;
+            path = target.path;
+            line = target.line;
+        } else {
+            const view = self.activeView() orelse return false;
+            path = view.snapshot.path;
+            if (view.snapshot.graphemes.len != 0) {
+                const grapheme = view.snapshot.graphemes[@min(view.active_grapheme, view.snapshot.graphemes.len - 1)];
+                line = grapheme.line + 1;
+                column = grapheme.visual_column;
+                source_offset = grapheme.source.start;
+            }
+        }
+        if (self.bookmark_composer) |*previous| previous.deinit(self.allocator);
+        self.bookmark_composer = .{ .target = .{
+            .path = try self.allocator.dupe(u8, path),
+            .line = line,
+            .column = column,
+            .source_offset = source_offset,
+        } };
+        return true;
+    }
+
+    pub fn bookmarkComposerInsert(self: *App, codepoint: u21) void {
+        const composer = if (self.bookmark_composer) |*value| value else return;
+        var buffer: [4]u8 = undefined;
+        const length = std.unicode.utf8Encode(codepoint, &buffer) catch return;
+        if (composer.buffer.items.len + length > bookmark_model.max_label_bytes) {
+            self.feedback = "bookmark label is limited to 48 bytes";
+            return;
+        }
+        composer.buffer.appendSlice(self.allocator, buffer[0..length]) catch return;
+        self.feedback = null;
+    }
+
+    pub fn bookmarkComposerBackspace(self: *App) void {
+        const composer = if (self.bookmark_composer) |*value| value else return;
+        if (composer.buffer.items.len == 0) return;
+        var start = composer.buffer.items.len - 1;
+        while (start > 0 and (composer.buffer.items[start] & 0xc0) == 0x80) start -= 1;
+        composer.buffer.shrinkRetainingCapacity(start);
+    }
+
+    pub fn cancelBookmarkComposer(self: *App) void {
+        if (self.bookmark_composer) |*composer| composer.deinit(self.allocator);
+        self.bookmark_composer = null;
+    }
+
+    pub fn deleteSelectedBookmark(self: *App) void {
+        if (self.bookmarks) |*state_bookmarks| state_bookmarks.deleteSelected();
+    }
+
+    pub fn moveBookmarkSelection(self: *App, delta: isize, viewport_rows: usize) void {
+        if (self.bookmarks) |*state_bookmarks| state_bookmarks.moveSelection(delta, viewport_rows);
     }
 
     pub fn hasNotes(self: *const App) bool {
@@ -360,6 +465,21 @@ pub const App = struct {
         if (self.preview) |*previous| previous.deinit();
         self.preview = .{ .snapshot = snapshot };
         self.feedback = null;
+    }
+
+    pub fn positionPreviewAtLine(self: *App, one_based_line: usize, column: usize) void {
+        const view = if (self.preview) |*value| value else return;
+        const line = one_based_line -| 1;
+        const source_start = if (line < view.snapshot.line_starts.len) view.snapshot.line_starts[line] else 0;
+        view.active_grapheme = graphemeAtSource(view.snapshot, source_start);
+        const range = view.snapshot.graphemeRangeForLine(@min(line, view.snapshot.lineCount() -| 1));
+        for (range.start..range.end) |index| {
+            view.active_grapheme = index;
+            if (view.snapshot.graphemes[index].visual_column >= column) break;
+        }
+        view.anchor_grapheme = view.active_grapheme;
+        view.preferred_column = @intCast(column);
+        view.scroll_line = line -| 3;
     }
 
     pub fn clearPreview(self: *App) void {

@@ -34,6 +34,12 @@ pub const Id = enum {
     git_open,
     git_refresh,
     review_open,
+    bookmark_open,
+    bookmark_show,
+    bookmark_create,
+    bookmark_delete,
+    bookmark_next,
+    bookmark_previous,
     definition,
     fold_close,
     fold_open,
@@ -67,6 +73,8 @@ pub const Id = enum {
     close_transient,
     note_save,
     note_discard,
+    bookmark_save,
+    bookmark_discard,
 };
 
 pub const Definition = struct {
@@ -123,6 +131,12 @@ pub const definitions = [_]Definition{
     .{ .id = .note_delete, .stable_id = "thread-delete", .title = "Delete selected thread", .binding = "Space r d" },
     .{ .id = .note_next, .stable_id = "thread-next", .title = "Next thread", .binding = "] n" },
     .{ .id = .note_previous, .stable_id = "thread-previous", .title = "Previous thread", .binding = "[ n" },
+    .{ .id = .bookmark_open, .stable_id = "bookmark-open", .title = "Bookmarks menu", .binding = "Space b" },
+    .{ .id = .bookmark_show, .stable_id = "bookmark-show", .title = "Show the Bookmarks sidebar", .binding = "Space b Enter" },
+    .{ .id = .bookmark_create, .stable_id = "bookmark-create", .title = "Create source bookmark", .binding = "Space b n" },
+    .{ .id = .bookmark_delete, .stable_id = "bookmark-delete", .title = "Delete selected bookmark", .binding = "Space b d" },
+    .{ .id = .bookmark_next, .stable_id = "bookmark-next", .title = "Next bookmark", .binding = "] b" },
+    .{ .id = .bookmark_previous, .stable_id = "bookmark-previous", .title = "Previous bookmark", .binding = "[ b" },
     .{ .id = .definition, .stable_id = "definition", .title = "Go to definition", .binding = "g d", .disabled_reason = "trusted ZLS is not available" },
     .{ .id = .fold_close, .stable_id = "fold-close", .title = "Close fold", .binding = "z c" },
     .{ .id = .fold_open, .stable_id = "fold-open", .title = "Open fold", .binding = "z o" },
@@ -142,6 +156,8 @@ pub const definitions = [_]Definition{
     .{ .id = .close_transient, .stable_id = "close-transient", .title = "Close transient view", .binding = "q" },
     .{ .id = .note_save, .stable_id = "note-save", .title = "Save note", .binding = "Ctrl-Enter", .disabled_reason = "note composer is not open" },
     .{ .id = .note_discard, .stable_id = "note-discard", .title = "Discard note", .binding = "Esc", .disabled_reason = "note composer is not open" },
+    .{ .id = .bookmark_save, .stable_id = "bookmark-save", .title = "Save bookmark", .binding = "Ctrl-Enter", .disabled_reason = "bookmark composer is not open" },
+    .{ .id = .bookmark_discard, .stable_id = "bookmark-discard", .title = "Discard bookmark", .binding = "Esc", .disabled_reason = "bookmark composer is not open" },
 };
 
 pub fn definition(id: Id) *const Definition {
@@ -253,6 +269,18 @@ pub fn unavailableReason(app: *const state.App, id: Id) ?[]const u8 {
         .note_next,
         .note_previous,
         => if (!app.hasNotes()) "no notes yet" else null,
+        .bookmark_open, .bookmark_show => if (!app.bookmarks_available) "bookmark storage is unavailable" else null,
+        .bookmark_create => if (!app.bookmarks_available)
+            "bookmark storage is unavailable"
+        else if (app.sidebar_context == .git and !app.viewing_source)
+            (if (app.review == null or app.review.?.bookmarkTarget() == null) "select a diff line with a source location" else null)
+        else if (app.sidebar_context == .review)
+            "open source or diff first"
+        else if (app.activeView() == null)
+            "open a source location first"
+        else
+            null,
+        .bookmark_delete, .bookmark_next, .bookmark_previous => if (!app.hasBookmarks()) "no bookmarks yet" else null,
         else => null,
     };
 }
@@ -286,7 +314,7 @@ pub const Dimensions = struct {
 };
 
 /// A source location to open in context from a diff line.
-pub const SourceLocation = struct { path: []const u8, line: usize };
+pub const SourceLocation = struct { path: []const u8, line: usize, column: usize = 0 };
 
 pub const Effect = union(enum) {
     none,
@@ -299,6 +327,10 @@ pub const Effect = union(enum) {
     open_source: SourceLocation,
     /// Save the active Note Composer's content (create or edit) and persist.
     save_note,
+    save_bookmark,
+    persist_bookmarks,
+    preview_bookmark: SourceLocation,
+    activate_bookmark: SourceLocation,
     quit,
 };
 
@@ -310,8 +342,11 @@ pub const Surface = enum {
     help,
     review,
     vcs,
+    bookmarks,
     note_composer,
+    bookmark_composer,
     confirm_delete,
+    confirm_bookmark_delete,
 };
 
 const Pending = enum {
@@ -349,8 +384,11 @@ pub const Session = struct {
                 .help => "help",
                 .review => "Space r",
                 .vcs => "Space v",
+                .bookmarks => "Space b",
                 .note_composer => "comment",
+                .bookmark_composer => "bookmark label",
                 .confirm_delete => "confirm delete",
+                .confirm_bookmark_delete => "confirm bookmark delete",
                 .none => "",
             },
             .goto => "g",
@@ -373,10 +411,13 @@ pub const Session = struct {
 
     pub fn handle(self: *Session, app: *state.App, key: Key, dimensions: Dimensions) HandleError!Effect {
         if (self.surface == .note_composer) return self.handleComposer(app, key, dimensions);
+        if (self.surface == .bookmark_composer) return self.handleBookmarkComposer(app, key);
         if (self.surface == .confirm_delete) return self.handleDeleteConfirmation(app, key, dimensions);
+        if (self.surface == .confirm_bookmark_delete) return self.handleBookmarkDeleteConfirmation(app, key);
         if (key.code == .escape) return self.execute(app, .cancel, dimensions);
         if (self.surface == .review) return self.handleReview(app, key, dimensions);
         if (self.surface == .vcs) return self.handleVcs(app, key, dimensions);
+        if (self.surface == .bookmarks) return self.handleBookmarks(app, key, dimensions);
         if (self.surface == .command) return self.handleCommandInput(app, key, dimensions);
         if (self.surface == .help) {
             if (isCharacter(key, 'q')) return self.execute(app, .close_transient, dimensions);
@@ -489,6 +530,10 @@ pub const Session = struct {
                     app.moveNoteSelection(-1, dimensions.sidebar_rows);
                     return .none;
                 }
+                if (app.sidebar_context == .bookmarks) {
+                    app.moveBookmarkSelection(-1, dimensions.sidebar_rows);
+                    return bookmarkEffect(app, false);
+                }
                 if (app.sidebar_context == .git) {
                     if (app.review) |*review| review.moveSelection(-1, dimensions.sidebar_rows);
                     app.viewing_source = false;
@@ -502,6 +547,10 @@ pub const Session = struct {
                     app.moveNoteSelection(1, dimensions.sidebar_rows);
                     return .none;
                 }
+                if (app.sidebar_context == .bookmarks) {
+                    app.moveBookmarkSelection(1, dimensions.sidebar_rows);
+                    return bookmarkEffect(app, false);
+                }
                 if (app.sidebar_context == .git) {
                     if (app.review) |*review| review.moveSelection(1, dimensions.sidebar_rows);
                     app.viewing_source = false;
@@ -511,12 +560,12 @@ pub const Session = struct {
                 return .preview_selection;
             },
             .project_collapse => {
-                if (app.sidebar_context == .git or app.sidebar_context == .review) return .none;
+                if (app.sidebar_context == .git or app.sidebar_context == .review or app.sidebar_context == .bookmarks) return .none;
                 try app.browser.collapseOrParent(dimensions.sidebar_rows);
                 return .preview_selection;
             },
             .project_expand => {
-                if (app.sidebar_context == .git or app.sidebar_context == .review) return .none;
+                if (app.sidebar_context == .git or app.sidebar_context == .review or app.sidebar_context == .bookmarks) return .none;
                 try app.browser.expandOrChild(dimensions.sidebar_rows);
                 return .preview_selection;
             },
@@ -589,6 +638,29 @@ pub const Session = struct {
                 app.mode = .normal;
             },
             .review_show => app.showReviewSidebar(),
+            .bookmark_open => {
+                self.surface = .bookmarks;
+                app.mode = .normal;
+            },
+            .bookmark_show => app.showBookmarksSidebar(),
+            .bookmark_create => {
+                if (try app.beginBookmark()) {
+                    self.surface = .bookmark_composer;
+                    app.mode = .command;
+                }
+            },
+            .bookmark_delete => {
+                self.surface = .confirm_bookmark_delete;
+                app.mode = .command;
+            },
+            .bookmark_next => {
+                app.moveBookmarkSelection(1, dimensions.sidebar_rows);
+                return bookmarkEffect(app, false);
+            },
+            .bookmark_previous => {
+                app.moveBookmarkSelection(-1, dimensions.sidebar_rows);
+                return bookmarkEffect(app, false);
+            },
             .note_create => {
                 if (app.beginNoteFromDiff() catch false) {
                     self.surface = .note_composer;
@@ -619,7 +691,7 @@ pub const Session = struct {
             },
             .note_next => app.moveNoteSelection(1, dimensions.sidebar_rows),
             .note_previous => app.moveNoteSelection(-1, dimensions.sidebar_rows),
-            .definition, .note_save, .note_discard => unreachable,
+            .definition, .note_save, .note_discard, .bookmark_save, .bookmark_discard => unreachable,
         }
         // Fold and structural commands can move the cursor far from the current
         // scroll position; keep it on screen.
@@ -666,6 +738,7 @@ pub const Session = struct {
                 'h' => .diff_hunk_next,
                 'c' => .diff_line_next,
                 'n' => .note_next,
+                'b' => .bookmark_next,
                 else => null,
             },
             .bracket_previous => switch (character) {
@@ -673,6 +746,7 @@ pub const Session = struct {
                 'h' => .diff_hunk_previous,
                 'c' => .diff_line_previous,
                 'n' => .note_previous,
+                'b' => .bookmark_previous,
                 else => null,
             },
             .none => unreachable,
@@ -698,6 +772,7 @@ pub const Session = struct {
                 break :blk try self.execute(app, .git_open, dimensions);
             },
             'r' => self.executeAndClose(app, .review_open, dimensions),
+            'b' => self.executeAndClose(app, .bookmark_open, dimensions),
             '?' => self.executeAndClose(app, .help, dimensions),
             'q' => self.executeAndClose(app, .quit, dimensions),
             else => blk: {
@@ -719,6 +794,19 @@ pub const Session = struct {
         return self.handle(app, key, dimensions);
     }
 
+    fn handleBookmarks(self: *Session, app: *state.App, key: Key, dimensions: Dimensions) !Effect {
+        return switch (normalizedCharacter(key)) {
+            'n' => self.executeAndClose(app, .bookmark_create, dimensions),
+            'd' => self.executeAndClose(app, .bookmark_delete, dimensions),
+            else => blk: {
+                if (key.code == .enter) break :blk self.executeAndClose(app, .bookmark_show, dimensions);
+                app.feedback = "invalid bookmark command";
+                self.resetTransient(app);
+                break :blk .none;
+            },
+        };
+    }
+
     fn handleReview(self: *Session, app: *state.App, key: Key, dimensions: Dimensions) !Effect {
         return switch (normalizedCharacter(key)) {
             'n' => self.executeAndClose(app, .note_create, dimensions),
@@ -735,6 +823,21 @@ pub const Session = struct {
         };
     }
 
+    fn handleBookmarkDeleteConfirmation(self: *Session, app: *state.App, key: Key) !Effect {
+        if (normalizedCharacter(key) == 'y') {
+            app.deleteSelectedBookmark();
+            self.resetTransient(app);
+            return .persist_bookmarks;
+        }
+        if (normalizedCharacter(key) == 'n' or key.code == .escape) {
+            self.resetTransient(app);
+            app.feedback = "bookmark deletion cancelled";
+            return .none;
+        }
+        app.feedback = "press y to delete the bookmark or n to cancel";
+        return .none;
+    }
+
     fn handleDeleteConfirmation(self: *Session, app: *state.App, key: Key, dimensions: Dimensions) !Effect {
         _ = dimensions;
         if (normalizedCharacter(key) == 'y') {
@@ -748,6 +851,26 @@ pub const Session = struct {
             return .none;
         }
         app.feedback = "press y to delete the complete thread or n to cancel";
+        return .none;
+    }
+
+    fn handleBookmarkComposer(self: *Session, app: *state.App, key: Key) !Effect {
+        if (key.code == .escape) {
+            app.cancelBookmarkComposer();
+            self.resetTransient(app);
+            app.feedback = "bookmark discarded";
+            return .none;
+        }
+        if (key.code == .enter) {
+            self.resetTransient(app);
+            return .save_bookmark;
+        }
+        if (key.code == .backspace) {
+            app.bookmarkComposerBackspace();
+            return .none;
+        }
+        if (key.code == .character and !key.ctrl and !key.alt)
+            app.bookmarkComposerInsert(key.character);
         return .none;
     }
 
@@ -876,12 +999,23 @@ pub const Session = struct {
     }
 };
 
+fn bookmarkEffect(app: *state.App, activate_bookmark: bool) Effect {
+    const state_bookmarks = if (app.bookmarks) |*value| value else return .none;
+    const item = state_bookmarks.selectedBookmark() orelse return .none;
+    const location: SourceLocation = .{ .path = item.path, .line = item.line, .column = item.column };
+    return if (activate_bookmark)
+        .{ .activate_bookmark = location }
+    else
+        .{ .preview_bookmark = location };
+}
+
 fn activate(app: *state.App) Effect {
     if (app.focus == .sidebar) {
         if (app.sidebar_context == .review) {
             if (app.hasNotes()) app.focus = .main;
             return .none;
         }
+        if (app.sidebar_context == .bookmarks) return bookmarkEffect(app, true);
         if (app.sidebar_context == .git) {
             // Focus the diff of the selected change.
             if (app.review != null and app.review.?.selectedChange() != null) {
@@ -1109,6 +1243,46 @@ test "first navigation key after Space v moves the Git selection" {
     _ = try session.handle(&app, charKey('v'), dimensions);
     const refresh = try session.handle(&app, charKey('r'), dimensions);
     try std.testing.expectEqual(std.meta.Tag(Effect).open_review, std.meta.activeTag(refresh));
+}
+
+test "bookmark commands create show navigate and confirm deletion" {
+    const bookmarks_mod = @import("bookmarks.zig");
+    var app = try testApp();
+    defer app.deinit();
+    app.bookmarks = try bookmarks_mod.Bookmarks.init(std.testing.allocator, "/repo");
+    app.bookmarks_available = true;
+    var session = Session.init(std.testing.allocator);
+    defer session.deinit();
+    const dimensions: Dimensions = .{ .sidebar_rows = 20, .document_rows = 20, .document_columns = 80 };
+
+    _ = try session.handle(&app, charKey(' '), dimensions);
+    _ = try session.handle(&app, charKey('b'), dimensions);
+    _ = try session.handle(&app, charKey('n'), dimensions);
+    try std.testing.expectEqual(Surface.bookmark_composer, session.surface);
+    try std.testing.expectEqualStrings("a.txt", app.bookmark_composer.?.target.path);
+    _ = try session.handle(&app, charKey('A'), dimensions);
+    const save = try session.handle(&app, .{ .code = .enter }, dimensions);
+    try std.testing.expectEqual(std.meta.Tag(Effect).save_bookmark, std.meta.activeTag(save));
+    app.cancelBookmarkComposer();
+
+    try app.bookmarks.?.add("a.txt", 1, 0, 0, "A");
+    _ = try session.handle(&app, charKey(' '), dimensions);
+    _ = try session.handle(&app, charKey('b'), dimensions);
+    _ = try session.handle(&app, .{ .code = .enter }, dimensions);
+    try std.testing.expectEqual(state.SidebarContext.bookmarks, app.sidebar_context);
+
+    const navigation = try session.handle(&app, charKey(']'), dimensions);
+    try std.testing.expectEqual(std.meta.Tag(Effect).none, std.meta.activeTag(navigation));
+    const preview = try session.handle(&app, charKey('b'), dimensions);
+    try std.testing.expectEqual(std.meta.Tag(Effect).preview_bookmark, std.meta.activeTag(preview));
+
+    _ = try session.handle(&app, charKey(' '), dimensions);
+    _ = try session.handle(&app, charKey('b'), dimensions);
+    _ = try session.handle(&app, charKey('d'), dimensions);
+    try std.testing.expectEqual(Surface.confirm_bookmark_delete, session.surface);
+    const deleted = try session.handle(&app, charKey('y'), dimensions);
+    try std.testing.expectEqual(std.meta.Tag(Effect).persist_bookmarks, std.meta.activeTag(deleted));
+    try std.testing.expect(!app.hasBookmarks());
 }
 
 test "leader and named command surfaces use the same registry" {

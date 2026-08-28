@@ -2,7 +2,7 @@
 id: ISSUE-0035
 title: "Add private repository bookmarks"
 kind: "implementation"
-status: claimed
+status: resolved
 created: 2026-08-27
 assignee: "agent"
 parent: "ISSUE-0013-implement-fiew-v0-1.md"
@@ -38,6 +38,6 @@ Managed by native issue relationships.
 Shared bookmarks, agent-visible bookmarks, tags, folders, synchronization, ignore-rule management, migration of global bookmark data, and semantic language-server reanchoring.
 
 ## Comments
-
-
 ## Resolution
+
+Delivered repository-local private bookmarks using the accepted `fiew.bookmark/v1` schema-plus-data envelope at `.bookmarks/bookmarks.json`. Added source and diff-to-current-source capture, optional short labels, independent Bookmarks sidebar keyboard/mouse interaction, preview and activation, previous/next navigation, confirmed deletion, Outdated status, persistence-aware quit behavior, atomic writes, validated backup recovery, future-schema refusal, and repository isolation. Bookmark data remains absent from public review JSON and Markdown projections. fiew neither checks nor modifies ignore configuration and performs no global bookmark migration. Verification passes with 126/126 tests, ReleaseSafe, and Apple Silicon macOS builds; the reviewer approved the result.

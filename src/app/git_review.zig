@@ -196,6 +196,29 @@ pub const Review = struct {
     /// opening the file in context. Uses the new side when present, else old.
     pub const SourceTarget = struct { path: []const u8, line: usize };
 
+    /// Map the selected diff line to the current source file. Deletions have no
+    /// new-side line, so use the nearest surviving new-side position rather
+    /// than reopening a historical old path.
+    pub fn bookmarkTarget(self: Review) ?SourceTarget {
+        const change_index = self.selectedChange() orelse return null;
+        const change = self.changeset.changes[change_index];
+        if (change.kind == .deleted) return null;
+        const diff = &self.changeset.diffs[change_index];
+        if (diff.lines.len == 0) return null;
+        const selected = @min(self.diff_line, diff.lines.len - 1);
+        if (diff.lines[selected].new_line) |line| return .{ .path = change.path, .line = line };
+        var forward = selected + 1;
+        while (forward < diff.lines.len) : (forward += 1) {
+            if (diff.lines[forward].new_line) |line| return .{ .path = change.path, .line = line };
+        }
+        var backward = selected;
+        while (backward > 0) {
+            backward -= 1;
+            if (diff.lines[backward].new_line) |line| return .{ .path = change.path, .line = line + 1 };
+        }
+        return .{ .path = change.path, .line = 1 };
+    }
+
     pub fn sourceTarget(self: Review) ?SourceTarget {
         const change_index = self.selectedChange() orelse return null;
         const change = self.changeset.changes[change_index];
@@ -404,6 +427,16 @@ test "hunk and changed-line cursors move through the selected diff" {
     const target = review.sourceTarget().?;
     try testing.expectEqualStrings("b.zig", target.path);
     try testing.expectEqual(@as(usize, 2), target.line); // addition -> new side line 2
+}
+
+test "bookmark target maps a deletion to current source" {
+    var review_state = try Review.init(testing.allocator, try buildChangeSet(testing.allocator));
+    defer review_state.deinit();
+    review_state.moveSelection(1, 20); // b.zig
+    review_state.diff_line = 1; // deletion with no new-side line
+    const target = review_state.bookmarkTarget().?;
+    try testing.expectEqualStrings("b.zig", target.path);
+    try testing.expectEqual(@as(usize, 2), target.line);
 }
 
 test "captureAnchor derives side, line range, and excerpt from the selection" {
