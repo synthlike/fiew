@@ -31,6 +31,7 @@ pub const parse_job = @import("adapters/treesitter/parse_job.zig");
 pub const syntax = @import("model/syntax.zig");
 pub const text_segmentation = @import("ports/text_segmentation.zig");
 pub const zig_syntax = @import("adapters/treesitter/zig_syntax.zig");
+pub const version = @import("version.zig");
 pub const welcome = @import("view/welcome.zig");
 pub const workspace = @import("view/workspace.zig");
 

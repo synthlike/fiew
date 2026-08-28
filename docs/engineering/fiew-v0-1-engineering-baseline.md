@@ -1,5 +1,5 @@
 <!-- agent-workflows-record
-{"archived":false,"created":"2026-08-25T20:21:26Z","id":"fiew-v0-1-engineering-baseline","modified":"2026-08-28T14:45:32Z","record_type":"technical_baselines","title":"fiew v0.1 engineering baseline"}
+{"archived":false,"created":"2026-08-25T20:21:26Z","id":"fiew-v0-1-engineering-baseline","modified":"2026-08-28T14:55:58Z","record_type":"technical_baselines","title":"fiew v0.1 engineering baseline"}
 -->
 # fiew v0.1 engineering baseline
 
@@ -85,7 +85,7 @@ None.
 
 ## Open decisions
 
-- Artifact naming, signing, notarization, and release automation.
+- Signing, notarization, package-manager distribution, and release automation.
 - Replacing the libvaxis commit pin when a compatible tagged release exists.
 
 ## Deferred product questions
@@ -108,7 +108,9 @@ None.
 | Non-interactive review integration and mutation audit | Verified from a nested working directory; approval-sensitive exits, agent reply authority, malformed/dangling current pointers, and unchanged source/Git state passed |
 | `zig fmt --check src build.zig` | Verified |
 | `zig build -Doptimize=ReleaseSafe --system zig-pkg` | Verified as a Mach-O ARM64 executable |
-| Manual Ghostty smoke checklist | Passed all steps on 2026-08-28 with Ghostty 1.3.1 on Apple Silicon macOS 26.5.2 |
+| `python3 tools/package-release.py --version 0.1.0` from a clean checkout | Verified twice with identical SHA-256 output; archive contains one executable named `fiew` |
+| Extracted archive inspection | Verified version and pinned dependency output, Mach-O ARM64 architecture, and only `/usr/lib/libSystem.B.dylib` as a dynamic dependency |
+| Manual Ghostty smoke checklist | Passed all steps on 2026-08-28 with Ghostty 1.3.1 on Apple Silicon macOS 26.5.2; the extracted release archive also passed startup, Project, Review Diff, normal-quit restoration, and `Ctrl-C` restoration |
 
 ## References
 
@@ -120,3 +122,4 @@ None.
 - [Use reviewer-owned local threads with command-mediated agent replies](<docs/decisions/ARP-0007.md>)
 - [Implement fiew v0.1](<.project/issues/ISSUE-0013-implement-fiew-v0-1.md>)
 - [Choose initial platform and terminal compatibility](<.project/issues/ISSUE-0004-choose-initial-platform-and-terminal-compatibility.md>)
+- [v0.1 release checklist](<docs/engineering/v0.1-release-checklist.md>)

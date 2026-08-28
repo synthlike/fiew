@@ -43,7 +43,35 @@ can inspect related source between review passes.
   <img src="docs/images/project-browser-light.png" alt="Light Project sidebar and welcome view" width="49%">
 </p>
 
-## Quick start
+## Install v0.1
+
+fiew v0.1 is an unsigned, unnotarized Apple Silicon macOS binary for Ghostty.
+Git must be installed for Review Diff; non-Git directories remain browsable.
+
+Download and verify the GitHub Release archive:
+
+```sh
+version=0.1.0
+curl -fLO "https://github.com/synthlike/fiew/releases/download/v${version}/fiew-v${version}-darwin-arm64.tar.gz"
+curl -fLO "https://github.com/synthlike/fiew/releases/download/v${version}/fiew-v${version}-darwin-arm64.tar.gz.sha256"
+shasum -a 256 -c "fiew-v${version}-darwin-arm64.tar.gz.sha256"
+tar -xzf "fiew-v${version}-darwin-arm64.tar.gz"
+install -d "$HOME/.local/bin"
+install -m 755 fiew "$HOME/.local/bin/fiew"
+```
+
+Ensure `$HOME/.local/bin` is on `PATH`, then inspect and run it:
+
+```sh
+fiew --version
+fiew /path/to/repository
+```
+
+If macOS blocks the unsigned executable, verify its checksum before deciding
+whether to approve it in **System Settings · Privacy & Security**. v0.1 does not
+provide signing, notarization, a package-manager formula, or automatic updates.
+
+### Build from source
 
 Install Zig 0.16.0, fetch the locked dependencies, and run fiew in Ghostty:
 
@@ -89,9 +117,16 @@ fiew review show
 fiew review reply <thread-id> --body-file response.md
 ```
 
-Review state is private repository-local JSON in `.reviews/`. fiew keeps one
-explicit current-review pointer per repository, so routine `show` and `reply`
-commands do not need to guess which review is active.
+Review state is canonical private repository-local `fiew.review/v1` JSON in
+`.reviews/`. `fiew review show` exposes public JSON or Markdown projections;
+agents never need direct canonical-file access. fiew keeps one explicit
+current-review pointer per repository, so routine `show` and `reply` commands do
+not need to guess which review is active.
+
+Bookmarks are canonical private repository-local `fiew.bookmark/v1` JSON in
+`.bookmarks/bookmarks.json` and never appear in agent review output. Ensure both
+`.reviews/` and `.bookmarks/` are ignored using your repository's preferred Git
+configuration. fiew does not inspect or modify `.gitignore` or Git metadata.
 
 ### Install the agent cooperation skill
 
@@ -166,6 +201,14 @@ installed Git executable. Git integration tests are opt-in:
 ```sh
 zig build test -Dgit-integration
 ```
+
+Release maintainers can produce the deterministic v0.1 archive and checksum:
+
+```sh
+python3 tools/package-release.py --version 0.1.0
+```
+
+See the [v0.1 release checklist](docs/engineering/v0.1-release-checklist.md).
 
 ## Project documentation
 

@@ -20,6 +20,10 @@ fn run(init: std.process.Init) !u8 {
     while (iterator.next()) |arg| try args.append(init.gpa, arg);
 
     if (args.items.len == 0) return terminal.run(init, .{});
+    if (args.items.len == 1 and (std.mem.eql(u8, args.items[0], "version") or std.mem.eql(u8, args.items[0], "--version"))) {
+        try writeVersion(init.io);
+        return 0;
+    }
     if (isHelp(args.items[0])) {
         try writeStdout(init.io, generalHelp);
         return 0;
@@ -49,6 +53,7 @@ fn isHelp(arg: []const u8) bool {
 const generalHelp =
     \\Usage: fiew [<repository>]
     \\       fiew review <command> [options]
+    \\       fiew version | --version
     \\       fiew help | -h | --help
     \\Open a read-first Git review workspace. Use Space r d for Review Diff
     \\and Space r t for Review Threads.
@@ -193,6 +198,13 @@ fn headSha(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir) ![]u8 {
     defer result.deinit();
     if (!result.succeeded()) return allocator.dupe(u8, "");
     return allocator.dupe(u8, std.mem.trimEnd(u8, std.mem.sliceTo(result.stdout, '\n'), "\r"));
+}
+
+fn writeVersion(io: std.Io) !void {
+    var buffer: [4096]u8 = undefined;
+    var writer = std.Io.File.stdout().writer(io, &buffer);
+    try fiew.version.write(&writer.interface);
+    try writer.interface.flush();
 }
 
 fn writeStdout(io: std.Io, bytes: []const u8) !void {
