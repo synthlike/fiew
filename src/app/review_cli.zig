@@ -10,9 +10,9 @@ pub const Format = enum { json, markdown };
 
 pub const Command = union(enum) {
     start: struct { name: ?[]const u8 = null, repo: []const u8 = "." },
-    open: struct { id: []const u8, repo: []const u8 = "." },
-    show: struct { id: []const u8, repo: []const u8 = ".", format: Format = .json },
-    reply: struct { id: []const u8, thread_id: []const u8, body_file: []const u8, repo: []const u8 = "." },
+    open: struct { id: ?[]const u8 = null, repo: []const u8 = "." },
+    show: struct { id: ?[]const u8 = null, repo: []const u8 = ".", format: Format = .json },
+    reply: struct { id: ?[]const u8 = null, thread_id: []const u8, body_file: []const u8, repo: []const u8 = "." },
 };
 
 pub const ParseError = error{
@@ -70,9 +70,8 @@ fn parseOpen(args: []const []const u8) ParseError!Command {
         } else if (id == null) id = arg else return error.UnexpectedOperand;
         index += 1;
     }
-    const value = id orelse return error.MissingOperand;
-    if (!validIdentifier(value)) return error.InvalidIdentifier;
-    return .{ .open = .{ .id = value, .repo = repo orelse "." } };
+    if (id) |value| if (!validIdentifier(value)) return error.InvalidIdentifier;
+    return .{ .open = .{ .id = id, .repo = repo orelse "." } };
 }
 
 fn parseShow(args: []const []const u8) ParseError!Command {
@@ -94,9 +93,8 @@ fn parseShow(args: []const []const u8) ParseError!Command {
         } else if (id == null) id = arg else return error.UnexpectedOperand;
         index += 1;
     }
-    const value = id orelse return error.MissingOperand;
-    if (!validIdentifier(value)) return error.InvalidIdentifier;
-    return .{ .show = .{ .id = value, .repo = repo orelse ".", .format = format orelse .json } };
+    if (id) |value| if (!validIdentifier(value)) return error.InvalidIdentifier;
+    return .{ .show = .{ .id = id, .repo = repo orelse ".", .format = format orelse .json } };
 }
 
 fn parseReply(args: []const []const u8) ParseError!Command {
@@ -122,10 +120,12 @@ fn parseReply(args: []const []const u8) ParseError!Command {
         }
         index += 1;
     }
-    const id = operands[0] orelse return error.MissingOperand;
-    const thread_id = operands[1] orelse return error.MissingOperand;
+    if (operand_count == 0) return error.MissingOperand;
+    const id = if (operand_count == 2) operands[0].? else null;
+    const thread_id = if (operand_count == 2) operands[1].? else operands[0].?;
     const body = body_file orelse return error.MissingOperand;
-    if (!validIdentifier(id) or !validThreadId(thread_id)) return error.InvalidIdentifier;
+    if (id) |value| if (!validIdentifier(value)) return error.InvalidIdentifier;
+    if (!validThreadId(thread_id)) return error.InvalidIdentifier;
     return .{ .reply = .{ .id = id, .thread_id = thread_id, .body_file = body, .repo = repo orelse "." } };
 }
 
@@ -224,6 +224,10 @@ pub fn create(
             .threads = &.{},
         };
         try store.save(allocator, io, repo_dir, filename, empty);
+        store.setCurrent(allocator, io, repo_dir, id) catch |err| {
+            store.remove(io, repo_dir, filename) catch {};
+            return err;
+        };
         return .{ .allocator = allocator, .id = id, .filename = filename };
     }
 }
@@ -251,6 +255,27 @@ fn generatedSlug(allocator: std.mem.Allocator, seed: u64) ![]u8 {
     const adjective = adjectives[mixed % adjectives.len];
     const noun = nouns[(mixed / adjectives.len) % nouns.len];
     return std.fmt.allocPrint(allocator, "{s}-{s}", .{ adjective, noun });
+}
+
+pub fn resolveId(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    repo_dir: std.Io.Dir,
+    explicit_id: ?[]const u8,
+) ![]u8 {
+    if (explicit_id) |id| {
+        if (!validIdentifier(id)) return error.InvalidIdentifier;
+        return allocator.dupe(u8, id);
+    }
+    const id = try store.currentId(allocator, io, repo_dir);
+    errdefer allocator.free(id);
+    if (!validIdentifier(id)) return error.CurrentReviewMalformed;
+    return id;
+}
+
+pub fn makeCurrent(allocator: std.mem.Allocator, io: std.Io, repo_dir: std.Io.Dir, id: []const u8) !void {
+    if (!validIdentifier(id)) return error.InvalidIdentifier;
+    try store.setCurrent(allocator, io, repo_dir, id);
 }
 
 pub fn load(allocator: std.mem.Allocator, io: std.Io, repo_dir: std.Io.Dir, id: []const u8) !store.Loaded {
@@ -391,10 +416,19 @@ test "interactive start publishes ID only after restoration returns" {
 test "command parsing defaults repo and rejects malformed operands" {
     const start = try parse(&.{ "start", "--name", "My Review" });
     try testing.expectEqualStrings(".", start.start.repo);
+    const current_show = try parse(&.{"show"});
+    try testing.expect(current_show.show.id == null);
+    const current_open = try parse(&.{"open"});
+    try testing.expect(current_open.open.id == null);
     const show = try parse(&.{ "show", "20260828-120000-keen-wren", "--repo", "repo", "--format", "markdown" });
     try testing.expectEqual(Format.markdown, show.show.format);
+    try testing.expectEqualStrings("20260828-120000-keen-wren", show.show.id.?);
     const reply = try parse(&.{ "reply", "20260828-120000-keen-wren", "t1", "--body-file", "reply.md" });
     try testing.expectEqualStrings("reply.md", reply.reply.body_file);
+    try testing.expectEqualStrings("20260828-120000-keen-wren", reply.reply.id.?);
+    const current_reply = try parse(&.{ "reply", "t1", "--body-file", "reply.md" });
+    try testing.expect(current_reply.reply.id == null);
+    try testing.expectEqualStrings("t1", current_reply.reply.thread_id);
     try testing.expectError(error.InvalidIdentifier, parse(&.{ "open", "../review" }));
     try testing.expectError(error.InvalidIdentifier, parse(&.{ "open", "review.md" }));
     try testing.expectError(error.MissingOperand, parse(&.{ "reply", "20260828-000000-valid", "t1" }));
@@ -415,6 +449,29 @@ test "new IDs sanitize names and add collision suffixes" {
     defer generated.deinit();
     try testing.expect(std.mem.startsWith(u8, generated.id, "19700101-000001-"));
     try testing.expect(std.mem.endsWith(u8, generated.filename, ".json"));
+    const current = try resolveId(testing.allocator, testing.io, tmp.dir, null);
+    defer testing.allocator.free(current);
+    try testing.expectEqualStrings(generated.id, current);
+    const historical = try resolveId(testing.allocator, testing.io, tmp.dir, first.id);
+    defer testing.allocator.free(historical);
+    try testing.expectEqualStrings(first.id, historical);
+    const still_current = try resolveId(testing.allocator, testing.io, tmp.dir, null);
+    defer testing.allocator.free(still_current);
+    try testing.expectEqualStrings(generated.id, still_current);
+    try makeCurrent(testing.allocator, testing.io, tmp.dir, first.id);
+    const resumed = try resolveId(testing.allocator, testing.io, tmp.dir, null);
+    defer testing.allocator.free(resumed);
+    try testing.expectEqualStrings(first.id, resumed);
+}
+
+test "new review creation rolls back when current pointer cannot be replaced" {
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var dir = try tmp.dir.createDirPathOpen(testing.io, store.directory_name, .{});
+    defer dir.close(testing.io);
+    try dir.createDir(testing.io, store.current_filename, .default_dir);
+    try testing.expectError(error.WriteFailed, create(testing.allocator, testing.io, tmp.dir, 0, "review", "abc"));
+    try testing.expectError(error.FileNotFound, dir.access(testing.io, "19700101-000000-review.json", .{}));
 }
 
 test "new review creation reports persistence failure" {
@@ -442,8 +499,13 @@ test "agent reply appends one comment and stable output includes history" {
     value.threads = threads;
     try store.save(testing.allocator, testing.io, tmp.dir, created.filename, value.*);
     loaded.deinit();
+    var current = try create(testing.allocator, testing.io, tmp.dir, 1, "current", "abc");
+    defer current.deinit();
 
     try appendAgentReply(testing.allocator, testing.io, tmp.dir, created.id, "t1", "done");
+    const unchanged_current = try resolveId(testing.allocator, testing.io, tmp.dir, null);
+    defer testing.allocator.free(unchanged_current);
+    try testing.expectEqualStrings(current.id, unchanged_current);
     var after = try load(testing.allocator, testing.io, tmp.dir, created.id);
     defer after.deinit();
     const thread = after.entries[0].review.threads[0];

@@ -5,6 +5,7 @@ const std = @import("std");
 const review = @import("../../model/review.zig");
 
 pub const directory_name = ".reviews";
+pub const current_filename = "current";
 pub const max_review_bytes: usize = 4 << 20;
 
 pub const Error = std.mem.Allocator.Error || error{
@@ -15,6 +16,9 @@ pub const Error = std.mem.Allocator.Error || error{
     InvalidSchema,
     FutureSchema,
     UnsupportedLegacyReview,
+    CurrentReviewMissing,
+    CurrentReviewMalformed,
+    CurrentReviewDangling,
 };
 
 pub const Entry = struct {
@@ -130,6 +134,73 @@ fn mapParseError(err: anyerror) Error {
         error.OutOfMemory => error.OutOfMemory,
         else => error.MalformedReview,
     };
+}
+
+pub fn setCurrent(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    repo_dir: std.Io.Dir,
+    id: []const u8,
+) Error!void {
+    if (!validCurrentId(id)) return error.CurrentReviewMalformed;
+    var dir = try openOrCreateDir(io, repo_dir);
+    defer dir.close(io);
+    const target = try std.fmt.allocPrint(allocator, "{s}.json", .{id});
+    defer allocator.free(target);
+    dir.access(io, target, .{}) catch |err| switch (err) {
+        error.FileNotFound => return error.CurrentReviewDangling,
+        else => return error.ReadFailed,
+    };
+    const contents = try std.fmt.allocPrint(allocator, "{s}\n", .{id});
+    defer allocator.free(contents);
+    try atomicWrite(io, dir, current_filename, contents);
+}
+
+pub fn currentId(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    repo_dir: std.Io.Dir,
+) Error![]u8 {
+    var dir = repo_dir.openDir(io, directory_name, .{}) catch |err| switch (err) {
+        error.FileNotFound => return error.CurrentReviewMissing,
+        else => return error.ReadFailed,
+    };
+    defer dir.close(io);
+    const bytes = dir.readFileAlloc(io, current_filename, allocator, .limited64(256)) catch |err| switch (err) {
+        error.FileNotFound => return error.CurrentReviewMissing,
+        else => return error.ReadFailed,
+    };
+    defer allocator.free(bytes);
+    if (bytes.len < 2 or bytes[bytes.len - 1] != '\n' or std.mem.indexOfScalar(u8, bytes[0 .. bytes.len - 1], '\n') != null)
+        return error.CurrentReviewMalformed;
+    const id = bytes[0 .. bytes.len - 1];
+    if (!validCurrentId(id)) return error.CurrentReviewMalformed;
+    const target = try std.fmt.allocPrint(allocator, "{s}.json", .{id});
+    defer allocator.free(target);
+    dir.access(io, target, .{}) catch |err| switch (err) {
+        error.FileNotFound => return error.CurrentReviewDangling,
+        else => return error.ReadFailed,
+    };
+    return allocator.dupe(u8, id);
+}
+
+fn validCurrentId(id: []const u8) bool {
+    if (id.len < 17 or id.len > 128 or id[8] != '-' or id[15] != '-' or id[16] == '-' or id[id.len - 1] == '-') return false;
+    for (id[0..8]) |byte| if (!std.ascii.isDigit(byte)) return false;
+    for (id[9..15]) |byte| if (!std.ascii.isDigit(byte)) return false;
+    const month = std.fmt.parseInt(u8, id[4..6], 10) catch return false;
+    const day = std.fmt.parseInt(u8, id[6..8], 10) catch return false;
+    const hour = std.fmt.parseInt(u8, id[9..11], 10) catch return false;
+    const minute = std.fmt.parseInt(u8, id[11..13], 10) catch return false;
+    const second = std.fmt.parseInt(u8, id[13..15], 10) catch return false;
+    if (month == 0 or month > 12 or day == 0 or day > 31 or hour > 23 or minute > 59 or second > 59) return false;
+    var previous_hyphen = false;
+    for (id[16..]) |byte| {
+        if (!std.ascii.isLower(byte) and !std.ascii.isDigit(byte) and byte != '-') return false;
+        if (byte == '-' and previous_hyphen) return false;
+        previous_hyphen = byte == '-';
+    }
+    return true;
 }
 
 pub fn exists(io: std.Io, repo_dir: std.Io.Dir, filename: []const u8) Error!bool {
@@ -255,6 +326,32 @@ test "loadOne ignores unrelated review files" {
     var loaded = try loadOne(testing.allocator, testing.io, tmp.dir, "wanted.json");
     defer loaded.deinit();
     try testing.expectEqualStrings("wanted", loaded.entries[0].review.threads[0].comments[0].body);
+}
+
+test "current review pointer is explicit atomic and validated" {
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try testing.expectError(error.CurrentReviewMissing, currentId(testing.allocator, testing.io, tmp.dir));
+    const first = "20260828-120000-first";
+    const second = "20260828-120001-second";
+    try save(testing.allocator, testing.io, tmp.dir, "20260828-120000-first.json", sampleReview("first"));
+    try save(testing.allocator, testing.io, tmp.dir, "20260828-120001-second.json", sampleReview("second"));
+    try setCurrent(testing.allocator, testing.io, tmp.dir, first);
+    const current_first = try currentId(testing.allocator, testing.io, tmp.dir);
+    defer testing.allocator.free(current_first);
+    try testing.expectEqualStrings(first, current_first);
+    try setCurrent(testing.allocator, testing.io, tmp.dir, second);
+    const current_second = try currentId(testing.allocator, testing.io, tmp.dir);
+    defer testing.allocator.free(current_second);
+    try testing.expectEqualStrings(second, current_second);
+
+    var dir = try tmp.dir.openDir(testing.io, directory_name, .{});
+    defer dir.close(testing.io);
+    try dir.writeFile(testing.io, .{ .sub_path = current_filename, .data = "not-an-id\n" });
+    try testing.expectError(error.CurrentReviewMalformed, currentId(testing.allocator, testing.io, tmp.dir));
+    try dir.writeFile(testing.io, .{ .sub_path = current_filename, .data = "20260828-120002-missing\n" });
+    try testing.expectError(error.CurrentReviewDangling, currentId(testing.allocator, testing.io, tmp.dir));
+    try testing.expectError(error.CurrentReviewDangling, setCurrent(testing.allocator, testing.io, tmp.dir, "20260828-120002-missing"));
 }
 
 test "one validated backup recovers a malformed primary" {

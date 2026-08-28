@@ -1,5 +1,5 @@
 <!-- agent-workflows-record
-{"archived":false,"created":"2026-08-25T21:48:04Z","id":"fiew-v0-1","modified":"2026-08-28T08:27:10Z","record_type":"specs","title":"fiew v0.1"}
+{"archived":false,"created":"2026-08-25T21:48:04Z","id":"fiew-v0-1","modified":"2026-08-28T08:58:45Z","record_type":"specs","title":"fiew v0.1"}
 -->
 # fiew v0.1
 
@@ -83,15 +83,16 @@ On Apple Silicon macOS in Ghostty, a reviewer can browse immutable source, inspe
 
 ### 8. Agent review interface
 
-1. `fiew review start [--name <slug>] [--repo <path>]` creates a new review and opens the interactive reviewer UI.
-2. `fiew review open <review-id> [--repo <path>]` opens an existing review in the reviewer UI.
-3. `fiew review show <review-id> [--repo <path>]` emits a stable machine-readable JSON projection including every public thread, anchor, status, and ordered comment. `--format markdown` emits a human-readable projection of the same public review semantics. Neither output is the canonical stored file, and storage-only metadata may be omitted.
-4. `fiew review reply <review-id> <thread-id> --body-file <path> [--repo <path>]` appends one `agent` comment to an existing thread and performs no other mutation.
-5. Repository selection defaults to the current working directory. The optional `--repo` overrides it.
-6. Every newly created review ID begins with a local datetime prefix. An explicit name contributes a sanitized slug. Without a name, interactive start generates a bundled adjective-noun slug. Canonical reviews use `.json`; a numeric suffix resolves collisions.
-7. Interactive start prints the canonical review ID after terminal restoration.
-8. Invalid identifiers, roles, schemas, paths, or operations fail explicitly. Successful status and approval output must agree with durable state; persistence failure is never reported as approval.
-9. Exit status is zero only when every thread is reviewer-resolved. Open, Outdated, malformed, or unsaved review state produces a non-success result.
+1. `fiew review start [--name <slug>] [--repo <path>]` creates a new review, atomically marks it current, and opens the interactive reviewer UI.
+2. `fiew review open [<review-id>] [--repo <path>]` opens the current review when the ID is omitted. An explicit ID opens that historical review and atomically makes it current.
+3. `fiew review show [<review-id>] [--repo <path>]` emits a stable machine-readable JSON projection of the current review by default, including every public thread, anchor, status, and ordered comment. `--format markdown` emits a human-readable projection of the same public review semantics. An explicit ID accesses history without changing current. Neither output is the canonical stored file, and storage-only metadata may be omitted.
+4. `fiew review reply [<review-id>] <thread-id> --body-file <path> [--repo <path>]` appends one `agent` comment to current when the review ID is omitted, or to the explicit historical review otherwise, and performs no other mutation. Agent operations never change current.
+5. Each repository has at most one explicit current-review pointer. Approval does not clear it; only reviewer `start` or `open` changes it. Missing, malformed, or dangling current state fails explicitly and is never inferred from content, timestamps, filenames, or directory order.
+6. Repository selection defaults to the current working directory. The optional `--repo` overrides it.
+7. Every newly created review ID begins with a local datetime prefix. An explicit name contributes a sanitized slug. Without a name, interactive start generates a bundled adjective-noun slug. Canonical reviews use `.json`; a numeric suffix resolves collisions.
+8. Interactive start prints the canonical review ID after terminal restoration.
+9. Invalid identifiers, roles, schemas, paths, or operations fail explicitly. Successful status and approval output must agree with durable state; persistence failure is never reported as approval.
+10. Exit status is zero only when every thread is reviewer-resolved. Open, Outdated, malformed, or unsaved review state produces a non-success result.
 
 ### 9. Bookmarks
 
@@ -105,7 +106,7 @@ On Apple Silicon macOS in Ghostty, a reviewer can browse immutable source, inspe
 ### 10. Persistence and diagnostics
 
 1. Canonical reviews and bookmarks are private schema-versioned JSON using the common `{ "schema": "fiew.<artifact>/v<version>", "data": ... }` envelope with no separate version field. Reviews use `fiew.review/v1` in `.reviews/<review-id>.json`; bookmarks use `fiew.bookmark/v1` in `.bookmarks/bookmarks.json`.
-2. Writes use same-directory temporary files, flush, atomic replacement, and one previous validated `.bak` backup.
+2. Writes use same-directory temporary files, flush, atomic replacement, and one previous validated `.bak` backup. The current-review pointer is atomically replaced and validated before use.
 3. Unknown future schemas are never overwritten. Existing `.reviews/*.md` and unreleased global bookmark data are not migrated or interpreted as current state. Arbitrary Markdown comment bodies remain ordinary JSON strings in canonical reviews.
 4. Diagnostic history is bounded. File logging is opt-in and redacts source, comment bodies, environment values, and protocol payloads by default.
 5. Recoverable failures disable only the affected capability and preserve the last valid snapshot. Fatal terminal failures restore terminal state before reporting.
@@ -126,7 +127,7 @@ On Apple Silicon macOS in Ghostty, a reviewer can browse immutable source, inspe
 - Fixed-dimension RenderPlan snapshots verify Project, VCS, Review, Bookmarks, status, source, diff, binary, outdated, and error views.
 - Document and anchor fixtures verify UTF-8 mapping, reload generations, multiline/file threads, diff-to-source bookmarks, exact-unique relocation, ambiguity, and Outdated transitions.
 - Git adapter tests verify repository discovery, nested-directory roots, nonzero exits, snapshot consistency, cancellation, linked worktrees, and the mutation boundary.
-- Artifact-format tests verify the common internal JSON envelope, arbitrary Markdown comment bodies, legacy rejection, schema refusal, backup recovery, atomic persistence, public JSON and Markdown projections, bookmark isolation from review output, and persistence-aware exit status.
+- Artifact-format tests verify the common internal JSON envelope, arbitrary Markdown comment bodies, legacy rejection, schema refusal, backup recovery, atomic persistence, current-review pointer validation and authority, public JSON and Markdown projections, bookmark isolation from review output, and persistence-aware exit status.
 - `zig build test` requires no network or optional executable. Git integration tests remain opt-in.
 - Manual Ghostty checks cover startup/restoration, keyboard and mouse interaction, resize, all four sidebar contexts, review conversations, and representative source/diff rendering.
 
@@ -160,3 +161,5 @@ On Apple Silicon macOS in Ghostty, a reviewer can browse immutable source, inspe
 - [Use reviewer-owned local threads with command-mediated agent replies](<docs/decisions/ARP-0007.md>)
 - [Store reviews and bookmarks as private repository-local JSON artifacts](<docs/decisions/ARP-0008.md>)
 - [Use unified internal JSON artifacts for reviews and bookmarks](<docs/rfcs/RFC-0001.md>)
+- [Use an explicit current review for routine agent handoff](<docs/decisions/ARP-0009.md>)
+- [Use an explicit current-review pointer for routine agent handoff](<docs/rfcs/RFC-0002.md>)

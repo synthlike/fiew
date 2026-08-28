@@ -59,12 +59,15 @@ fn runReview(init: std.process.Init, command: fiew.review_cli.Command) !u8 {
             );
         },
         .open => |options| {
-            const filename = try fiew.review_cli.filenameForId(init.gpa, options.id);
-            defer init.gpa.free(filename);
             var repository = try openRepository(init, options.repo);
             defer repository.deinit();
+            const id = try fiew.review_cli.resolveId(init.gpa, init.io, repository.root_dir, options.id);
+            defer init.gpa.free(id);
+            const filename = try fiew.review_cli.filenameForId(init.gpa, id);
+            defer init.gpa.free(filename);
             var checked = try fiew.review_store.loadOne(init.gpa, init.io, repository.root_dir, filename);
             checked.deinit();
+            if (options.id != null) try fiew.review_cli.makeCurrent(init.gpa, init.io, repository.root_dir, id);
             return terminal.run(init, .{
                 .root_path = repository.root_path,
                 .review_filename = filename,
@@ -73,9 +76,11 @@ fn runReview(init: std.process.Init, command: fiew.review_cli.Command) !u8 {
         .show => |options| {
             var repository = try openRepository(init, options.repo);
             defer repository.deinit();
-            var loaded = try fiew.review_cli.load(init.gpa, init.io, repository.root_dir, options.id);
+            const id = try fiew.review_cli.resolveId(init.gpa, init.io, repository.root_dir, options.id);
+            defer init.gpa.free(id);
+            var loaded = try fiew.review_cli.load(init.gpa, init.io, repository.root_dir, id);
             defer loaded.deinit();
-            const output = try fiew.review_cli.render(init.gpa, options.id, loaded.entries[0].review, options.format);
+            const output = try fiew.review_cli.render(init.gpa, id, loaded.entries[0].review, options.format);
             defer init.gpa.free(output);
             try writeStdout(init.io, output);
             if (options.format == .markdown and (output.len == 0 or output[output.len - 1] != '\n'))
@@ -92,15 +97,17 @@ fn runReview(init: std.process.Init, command: fiew.review_cli.Command) !u8 {
             defer init.gpa.free(body);
             var repository = try openRepository(init, options.repo);
             defer repository.deinit();
+            const id = try fiew.review_cli.resolveId(init.gpa, init.io, repository.root_dir, options.id);
+            defer init.gpa.free(id);
             try fiew.review_cli.appendAgentReply(
                 init.gpa,
                 init.io,
                 repository.root_dir,
-                options.id,
+                id,
                 options.thread_id,
                 body,
             );
-            var loaded = try fiew.review_cli.load(init.gpa, init.io, repository.root_dir, options.id);
+            var loaded = try fiew.review_cli.load(init.gpa, init.io, repository.root_dir, id);
             defer loaded.deinit();
             return if (fiew.review_cli.approved(loaded.entries[0].review)) 0 else 1;
         },

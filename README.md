@@ -134,15 +134,17 @@ The reviewer and agent interface is:
 
 ```sh
 fiew review start [--name <slug>] [--repo <path>]
-fiew review open <review-id> [--repo <path>]
-fiew review show <review-id> [--format json|markdown] [--repo <path>]
-fiew review reply <review-id> <thread-id> --body-file <path> [--repo <path>]
+fiew review open [<review-id>] [--repo <path>]
+fiew review show [<review-id>] [--format json|markdown] [--repo <path>]
+fiew review reply [<review-id>] <thread-id> --body-file <path> [--repo <path>]
 ```
 
 Repository selection defaults to the current directory. New IDs include a
 datetime prefix and automatic name; `.json` is never part of the command-line ID.
-`show` emits complete JSON by default. `reply` can only append one `agent`
-comment. Review commands return zero only when every thread is durably resolved;
+`start` and reviewer `open <review-id>` select one current review per repository,
+so routine `open`, `show`, and `reply <thread-id>` need no exchanged ID. Explicit
+IDs still access history. `show` emits complete JSON by default, and `reply` can
+only append one `agent` comment. Review commands return zero only when every thread is durably resolved;
 Open, Outdated, malformed, or unsaved state is non-success. The legacy
 `--review` flag is not supported.
 

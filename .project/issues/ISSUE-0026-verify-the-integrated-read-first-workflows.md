@@ -28,7 +28,8 @@ Exercise immutable browsing, Git-backed VCS review, reviewer-agent thread conver
 ## Acceptance criteria
 
 - [ ] Project, VCS, Review, and Bookmarks workflows pass from clean `.reviews/` and `.bookmarks/` directories and a nested repository working directory.
-- [ ] An agent can read all previous comments and append a reply but cannot create, resolve, reopen, or delete a thread.
+- [ ] An agent can discover the current review without an exchanged ID, read all previous comments, and append a reply but cannot create, resolve, reopen, delete, or change the current review.
+- [ ] Reviewer start/open operations update current atomically; approval preserves it, historical explicit-ID access does not change it, and missing, malformed, or dangling pointers fail without inference.
 - [ ] Exit status reports approval only after every thread is durably reviewer-resolved.
 - [ ] Malformed, legacy, future-schema, failed-write, and backup-recovery cases preserve durable state and the read-only boundary.
 - [ ] Canonical review and bookmark JSON share the accepted schema envelope while public review JSON and Markdown projections retain complete public semantics and omit private bookmark data.
