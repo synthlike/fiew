@@ -25,6 +25,24 @@ fiew also supports bookmarks for source locations you need to revisit while
 reviewing. Zig files receive Tree-sitter-powered syntax highlighting, code
 folding, and basic structural navigation; other files remain plain text.
 
+## Screenshots
+
+**Review Diff** lets you focus on the actual change, with its anchored
+discussion and agent replies alongside it.
+
+<p>
+  <img src="docs/images/review-diff-dark.png" alt="Dark Review Diff showing an inline reviewer-agent thread" width="49%">
+  <img src="docs/images/review-diff-light.png" alt="Light Review Diff showing an inline reviewer-agent thread" width="49%">
+</p>
+
+**Project** provides the read-only repository context around the change, so you
+can inspect related source between review passes.
+
+<p>
+  <img src="docs/images/project-browser-dark.png" alt="Dark Project sidebar and welcome view" width="49%">
+  <img src="docs/images/project-browser-light.png" alt="Light Project sidebar and welcome view" width="49%">
+</p>
+
 ## Quick start
 
 Install Zig 0.16.0, fetch the locked dependencies, and run fiew in Ghostty:

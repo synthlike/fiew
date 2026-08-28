@@ -20,15 +20,51 @@ fn run(init: std.process.Init) !u8 {
     while (iterator.next()) |arg| try args.append(init.gpa, arg);
 
     if (args.items.len == 0) return terminal.run(init, .{});
+    if (isHelp(args.items[0])) {
+        try writeStdout(init.io, generalHelp);
+        return 0;
+    }
+    if (std.mem.eql(u8, args.items[0], "help")) {
+        try writeStdout(init.io, generalHelp);
+        return 0;
+    }
     if (!std.mem.eql(u8, args.items[0], "review")) {
         if (args.items.len != 1 or std.mem.startsWith(u8, args.items[0], "-"))
             return error.InvalidArguments;
         return terminal.run(init, .{ .root_path = args.items[0] });
     }
 
+    if (args.items.len == 2 and (std.mem.eql(u8, args.items[1], "help") or isHelp(args.items[1]))) {
+        try writeStdout(init.io, reviewHelp);
+        return 0;
+    }
     const command = try fiew.review_cli.parse(args.items[1..]);
     return runReview(init, command);
 }
+
+fn isHelp(arg: []const u8) bool {
+    return std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help");
+}
+
+const generalHelp =
+    \\Usage: fiew [<repository>]
+    \\       fiew review <command> [options]
+    \\       fiew help | -h | --help
+    \\Open a read-first Git review workspace. Use Space r d for Review Diff
+    \\and Space r t for Review Threads.
+    \\Run 'fiew review help' for the non-interactive review interface.
+;
+
+const reviewHelp =
+    \\Usage: fiew review <command> [options]
+    \\Commands:
+    \\  start [--name <slug>] [--repo <path>]
+    \\  open [<review-id>] [--repo <path>]
+    \\  show [<review-id>] [--format json|markdown] [--repo <path>]
+    \\  reply [<review-id>] <thread-id> --body-file <path> [--repo <path>]
+    \\Agents may only append replies. Reviewers create, resolve, reopen, and
+    \\delete threads. 'show' and 'reply' use the current review by default.
+;
 
 fn runReview(init: std.process.Init, command: fiew.review_cli.Command) !u8 {
     switch (command) {
