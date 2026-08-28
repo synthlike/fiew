@@ -663,7 +663,7 @@ fn buildNoteSession(
     const nanoseconds = std.Io.Timestamp.now(repository.io, .real).nanoseconds;
     const seconds: u64 = @intCast(@divFloor(nanoseconds, std.time.ns_per_s));
     const created = formatTimestamp(created_buffer, seconds);
-    const filename = override_name orelse (std.fmt.bufPrint(name_buffer, "review-{d}.md", .{seconds}) catch "review.md");
+    const filename = override_name orelse (std.fmt.bufPrint(name_buffer, "review-{d}.json", .{seconds}) catch "review.json");
 
     var sha: []const u8 = "";
     var output = fiew.git_command.run(repository.allocator, repository.io, repository.root_dir, &.{ "rev-parse", "HEAD" }) catch null;

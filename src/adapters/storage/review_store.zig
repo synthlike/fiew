@@ -1,5 +1,5 @@
 //! Durable repository-local review storage. Primary and backup files are
-//! validated `fiew.review/v1` Markdown; writes use same-directory atomic replace.
+//! validated private `fiew.review/v1` JSON; writes use atomic replacement.
 
 const std = @import("std");
 const review = @import("../../model/review.zig");
@@ -14,6 +14,7 @@ pub const Error = std.mem.Allocator.Error || error{
     MissingField,
     InvalidSchema,
     FutureSchema,
+    UnsupportedLegacyReview,
 };
 
 pub const Entry = struct {
@@ -48,7 +49,15 @@ pub fn loadOne(
     defer dir.close(io);
     const entries = try allocator.alloc(Entry, 1);
     errdefer allocator.free(entries);
-    entries[0] = try loadEntry(allocator, io, dir, filename);
+    entries[0] = loadEntry(allocator, io, dir, filename) catch |err| {
+        if (err == error.ReadFailed and std.mem.endsWith(u8, filename, ".json")) {
+            const legacy = try std.fmt.allocPrint(allocator, "{s}.md", .{filename[0 .. filename.len - ".json".len]});
+            defer allocator.free(legacy);
+            dir.access(io, legacy, .{}) catch return err;
+            return error.UnsupportedLegacyReview;
+        }
+        return err;
+    };
     return .{ .allocator = allocator, .entries = entries };
 }
 
@@ -70,7 +79,9 @@ pub fn loadAll(allocator: std.mem.Allocator, io: std.Io, repo_dir: std.Io.Dir) E
     var walker = dir.walk(allocator) catch return error.ReadFailed;
     defer walker.deinit();
     while (walker.next(io) catch return error.ReadFailed) |walked| {
-        if (walked.kind != .file or !std.mem.endsWith(u8, walked.basename, ".md")) continue;
+        if (walked.kind != .file) continue;
+        if (std.mem.endsWith(u8, walked.basename, ".md")) return error.UnsupportedLegacyReview;
+        if (!std.mem.endsWith(u8, walked.basename, ".json")) continue;
         var entry = try loadEntry(allocator, io, dir, walked.basename);
         entries.append(allocator, entry) catch |err| {
             allocator.free(entry.filename);
@@ -90,7 +101,7 @@ fn loadEntry(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, filename
         error.FutureSchema => return error.FutureSchema,
         error.OutOfMemory => return error.OutOfMemory,
         else => blk: {
-            const backup_name = try std.fmt.allocPrint(allocator, "{s}.bak", .{filename});
+            const backup_name = try backupFilenameAlloc(allocator, filename);
             defer allocator.free(backup_name);
             const backup = dir.readFileAlloc(io, backup_name, allocator, .limited64(max_review_bytes)) catch
                 return mapParseError(primary_err);
@@ -154,7 +165,7 @@ pub fn save(
     if (previous) |bytes| {
         var validated = review.parse(allocator, bytes) catch |err| return mapParseError(err);
         validated.deinit();
-        const backup_name = try std.fmt.allocPrint(allocator, "{s}.bak", .{filename});
+        const backup_name = try backupFilenameAlloc(allocator, filename);
         defer allocator.free(backup_name);
         try atomicWrite(io, dir, backup_name, bytes);
     }
@@ -188,9 +199,14 @@ pub fn remove(io: std.Io, repo_dir: std.Io.Dir, filename: []const u8) Error!void
         error.FileNotFound => {},
         else => return error.WriteFailed,
     };
-    var buffer: [std.fs.max_name_bytes]u8 = undefined;
-    const backup = std.fmt.bufPrint(&buffer, "{s}.bak", .{filename}) catch return;
+    const backup = backupFilenameAlloc(std.heap.page_allocator, filename) catch return;
+    defer std.heap.page_allocator.free(backup);
     dir.deleteFile(io, backup) catch {};
+}
+
+fn backupFilenameAlloc(allocator: std.mem.Allocator, filename: []const u8) ![]u8 {
+    const base = if (std.mem.endsWith(u8, filename, ".json")) filename[0 .. filename.len - ".json".len] else filename;
+    return std.fmt.allocPrint(allocator, "{s}.bak", .{base});
 }
 
 fn openOrCreateDir(io: std.Io, repo_dir: std.Io.Dir) Error!std.Io.Dir {
@@ -219,7 +235,7 @@ fn sampleReview(body: []const u8) review.Review {
 test "save and load v1 review" {
     var tmp = testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
-    try save(testing.allocator, testing.io, tmp.dir, "review.md", sampleReview("first"));
+    try save(testing.allocator, testing.io, tmp.dir, "review.json", sampleReview("first"));
     var loaded = try loadAll(testing.allocator, testing.io, tmp.dir);
     defer loaded.deinit();
     try testing.expectEqual(@as(usize, 1), loaded.entries.len);
@@ -229,14 +245,14 @@ test "save and load v1 review" {
 test "loadOne ignores unrelated review files" {
     var tmp = testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
-    try save(testing.allocator, testing.io, tmp.dir, "wanted.md", sampleReview("wanted"));
+    try save(testing.allocator, testing.io, tmp.dir, "wanted.json", sampleReview("wanted"));
     var dir = try tmp.dir.openDir(testing.io, directory_name, .{});
     defer dir.close(testing.io);
     try dir.writeFile(testing.io, .{
-        .sub_path = "unrelated.md",
-        .data = "---\nschema: fiew.review/v2\ncreated: now\nbase: { ref: HEAD, sha: x }\n---\n",
+        .sub_path = "unrelated.json",
+        .data = "{\"schema\":\"fiew.review/v2\",\"data\":{}}",
     });
-    var loaded = try loadOne(testing.allocator, testing.io, tmp.dir, "wanted.md");
+    var loaded = try loadOne(testing.allocator, testing.io, tmp.dir, "wanted.json");
     defer loaded.deinit();
     try testing.expectEqualStrings("wanted", loaded.entries[0].review.threads[0].comments[0].body);
 }
@@ -244,19 +260,29 @@ test "loadOne ignores unrelated review files" {
 test "one validated backup recovers a malformed primary" {
     var tmp = testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
-    try save(testing.allocator, testing.io, tmp.dir, "review.md", sampleReview("first"));
-    try save(testing.allocator, testing.io, tmp.dir, "review.md", sampleReview("second"));
+    try save(testing.allocator, testing.io, tmp.dir, "review.json", sampleReview("first"));
+    try save(testing.allocator, testing.io, tmp.dir, "review.json", sampleReview("second"));
     var dir = try tmp.dir.openDir(testing.io, directory_name, .{});
     defer dir.close(testing.io);
-    try dir.writeFile(testing.io, .{ .sub_path = "review.md", .data = "broken" });
+    try dir.writeFile(testing.io, .{ .sub_path = "review.json", .data = "broken" });
     var loaded = try loadAll(testing.allocator, testing.io, tmp.dir);
     defer loaded.deinit();
     try testing.expectEqualStrings("first", loaded.entries[0].review.threads[0].comments[0].body);
     try testing.expect(loaded.entries[0].recovered);
-    const repaired = try dir.readFileAlloc(testing.io, "review.md", testing.allocator, .unlimited);
+    const repaired = try dir.readFileAlloc(testing.io, "review.json", testing.allocator, .unlimited);
     defer testing.allocator.free(repaired);
     var validated = try review.parse(testing.allocator, repaired);
     validated.deinit();
+}
+
+test "legacy Markdown reviews are rejected" {
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var dir = try tmp.dir.createDirPathOpen(testing.io, directory_name, .{});
+    defer dir.close(testing.io);
+    try dir.writeFile(testing.io, .{ .sub_path = "legacy.md", .data = "---\nschema: fiew.review/v1\n---\n" });
+    try testing.expectError(error.UnsupportedLegacyReview, loadAll(testing.allocator, testing.io, tmp.dir));
+    try testing.expectError(error.UnsupportedLegacyReview, loadOne(testing.allocator, testing.io, tmp.dir, "legacy.json"));
 }
 
 test "future schema is refused and not overwritten" {
@@ -264,12 +290,12 @@ test "future schema is refused and not overwritten" {
     defer tmp.cleanup();
     var dir = try tmp.dir.createDirPathOpen(testing.io, directory_name, .{});
     defer dir.close(testing.io);
-    const future = "---\nschema: fiew.review/v2\ncreated: now\nbase: { ref: HEAD, sha: x }\n---\n";
-    try dir.writeFile(testing.io, .{ .sub_path = "review.md", .data = future });
+    const future = "{\"schema\":\"fiew.review/v2\",\"data\":{}}";
+    try dir.writeFile(testing.io, .{ .sub_path = "review.json", .data = future });
     try testing.expectError(error.FutureSchema, loadAll(testing.allocator, testing.io, tmp.dir));
-    try testing.expectError(error.FutureSchema, loadOne(testing.allocator, testing.io, tmp.dir, "review.md"));
-    try testing.expectError(error.FutureSchema, save(testing.allocator, testing.io, tmp.dir, "review.md", sampleReview("no")));
-    const after = try dir.readFileAlloc(testing.io, "review.md", testing.allocator, .unlimited);
+    try testing.expectError(error.FutureSchema, loadOne(testing.allocator, testing.io, tmp.dir, "review.json"));
+    try testing.expectError(error.FutureSchema, save(testing.allocator, testing.io, tmp.dir, "review.json", sampleReview("no")));
+    const after = try dir.readFileAlloc(testing.io, "review.json", testing.allocator, .unlimited);
     defer testing.allocator.free(after);
     try testing.expectEqualStrings(future, after);
 }

@@ -1,6 +1,6 @@
-//! Reviewer-owned review threads and the public `fiew.review/v1` Markdown
-//! format. Structural metadata is line-oriented; comment bodies are byte-counted
-//! so arbitrary Markdown headings remain ordinary comment content.
+//! Reviewer-owned review threads. Canonical storage is private JSON using the
+//! `fiew.review/v1` envelope; JSON and Markdown command renderings are public
+//! projections rather than canonical files.
 
 const std = @import("std");
 const git = @import("git.zig");
@@ -84,7 +84,7 @@ pub const ParseError = error{
     FutureSchema,
 } || std.mem.Allocator.Error;
 
-pub fn serialize(allocator: std.mem.Allocator, value: Review) ![]u8 {
+pub fn renderMarkdown(allocator: std.mem.Allocator, value: Review) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
     try out.appendSlice(allocator, "---\n");
@@ -125,7 +125,114 @@ pub fn serialize(allocator: std.mem.Allocator, value: Review) ![]u8 {
     return out.toOwnedSlice(allocator);
 }
 
+const StoredReview = struct {
+    base_ref: []const u8,
+    base_sha: []const u8,
+    created: []const u8,
+    threads: []const Thread,
+};
+
+const Envelope = struct {
+    schema: []const u8,
+    data: StoredReview,
+};
+
+pub fn serialize(allocator: std.mem.Allocator, value: Review) ![]u8 {
+    const envelope: Envelope = .{
+        .schema = schema,
+        .data = .{
+            .base_ref = value.base_ref,
+            .base_sha = value.base_sha,
+            .created = value.created,
+            .threads = value.threads,
+        },
+    };
+    const bytes = try std.json.Stringify.valueAlloc(allocator, envelope, .{ .whitespace = .indent_2 });
+    errdefer allocator.free(bytes);
+    return bytes;
+}
+
 pub fn parse(allocator: std.mem.Allocator, bytes: []const u8) ParseError!Review {
+    const Probe = struct { schema: []const u8 };
+    const probe = std.json.parseFromSlice(Probe, allocator, bytes, .{ .ignore_unknown_fields = true }) catch
+        return error.MalformedReview;
+    defer probe.deinit();
+    if (!std.mem.eql(u8, probe.value.schema, schema)) {
+        if (std.mem.startsWith(u8, probe.value.schema, "fiew.review/v")) return error.FutureSchema;
+        return error.InvalidSchema;
+    }
+
+    const parsed = std.json.parseFromSlice(Envelope, allocator, bytes, .{}) catch return error.MalformedReview;
+    defer parsed.deinit();
+    const stored = parsed.value.data;
+    if (stored.created.len == 0 or stored.base_ref.len == 0) return error.MissingField;
+
+    const owned_ref = try allocator.dupe(u8, stored.base_ref);
+    errdefer allocator.free(owned_ref);
+    const owned_sha = try allocator.dupe(u8, stored.base_sha);
+    errdefer allocator.free(owned_sha);
+    const owned_created = try allocator.dupe(u8, stored.created);
+    errdefer allocator.free(owned_created);
+    const threads = try allocator.alloc(Thread, stored.threads.len);
+    var initialized: usize = 0;
+    errdefer {
+        for (threads[0..initialized]) |thread| freeThread(allocator, thread);
+        allocator.free(threads);
+    }
+    for (stored.threads, 0..) |thread, index| {
+        threads[index] = try cloneValidatedThread(allocator, thread);
+        initialized += 1;
+    }
+    return .{
+        .allocator = allocator,
+        .base_ref = owned_ref,
+        .base_sha = owned_sha,
+        .created = owned_created,
+        .threads = threads,
+    };
+}
+
+fn cloneValidatedThread(allocator: std.mem.Allocator, thread: Thread) ParseError!Thread {
+    if (thread.id.len == 0 or thread.path.len == 0 or thread.comments.len == 0) return error.MissingField;
+    if (thread.side == null and (thread.start_line != null or thread.end_line != null or thread.excerpt != null))
+        return error.MalformedReview;
+    if (thread.side != null and (thread.start_line == null or thread.end_line == null or thread.excerpt == null))
+        return error.MalformedReview;
+    if (thread.start_line) |start| if (start == 0 or (thread.end_line orelse 0) < start) return error.MalformedReview;
+
+    const id = try allocator.dupe(u8, thread.id);
+    errdefer allocator.free(id);
+    const path = try allocator.dupe(u8, thread.path);
+    errdefer allocator.free(path);
+    const blob = if (thread.blob) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (blob) |value| allocator.free(value);
+    const excerpt = if (thread.excerpt) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (excerpt) |value| allocator.free(value);
+    const comments = try allocator.alloc(Comment, thread.comments.len);
+    var initialized: usize = 0;
+    errdefer {
+        for (comments[0..initialized]) |comment| allocator.free(comment.body);
+        allocator.free(comments);
+    }
+    for (thread.comments, 0..) |comment, index| {
+        comments[index] = .{ .author = comment.author, .body = try allocator.dupe(u8, comment.body) };
+        initialized += 1;
+    }
+    return .{
+        .id = id,
+        .path = path,
+        .group = thread.group,
+        .status = thread.status,
+        .side = thread.side,
+        .start_line = thread.start_line,
+        .end_line = thread.end_line,
+        .blob = blob,
+        .excerpt = excerpt,
+        .comments = comments,
+    };
+}
+
+fn parseMarkdownLegacy(allocator: std.mem.Allocator, bytes: []const u8) ParseError!Review {
     var cursor: usize = 0;
     if (!take(bytes, &cursor, "---\n")) return error.MalformedReview;
     const front_end = std.mem.indexOfPos(u8, bytes, cursor, "\n---\n") orelse return error.MalformedReview;
@@ -382,12 +489,20 @@ test "thread format is v1 and future schemas are refused" {
     var comments = [_]Comment{.{ .author = .reviewer, .body = "body" }};
     const text = try serialize(testing.allocator, sampleReview(&comments));
     defer testing.allocator.free(text);
-    try testing.expect(std.mem.indexOf(u8, text, "schema: fiew.review/v1") != null);
+    try testing.expect(std.mem.indexOf(u8, text, "\"schema\": \"fiew.review/v1\"") != null);
 
-    const future = "---\nschema: fiew.review/v2\ncreated: now\nbase: { ref: HEAD, sha: x }\n---\n";
+    const future = "{\"schema\":\"fiew.review/v2\",\"data\":{}}";
     try testing.expectError(error.FutureSchema, parse(testing.allocator, future));
     const superseded_layout =
         "---\nschema: fiew.review/v1\ncreated: now\nbase: { ref: HEAD, sha: x }\n---\n" ++
         "\n## old note\n- id: n1\n- path: a.zig\n- group: unstaged\n- status: open\n\nbody\n";
     try testing.expectError(error.MalformedReview, parse(testing.allocator, superseded_layout));
+}
+
+test "Markdown rendering is a projection rather than canonical storage" {
+    var comments = [_]Comment{.{ .author = .reviewer, .body = "## body Markdown" }};
+    const markdown = try renderMarkdown(testing.allocator, sampleReview(&comments));
+    defer testing.allocator.free(markdown);
+    try testing.expect(std.mem.startsWith(u8, markdown, "---\n"));
+    try testing.expectError(error.MalformedReview, parse(testing.allocator, markdown));
 }

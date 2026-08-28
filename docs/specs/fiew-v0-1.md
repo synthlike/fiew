@@ -1,5 +1,5 @@
 <!-- agent-workflows-record
-{"archived":false,"created":"2026-08-25T21:48:04Z","id":"fiew-v0-1","modified":"2026-08-27T19:06:54Z","record_type":"specs","title":"fiew v0.1"}
+{"archived":false,"created":"2026-08-25T21:48:04Z","id":"fiew-v0-1","modified":"2026-08-28T08:27:10Z","record_type":"specs","title":"fiew v0.1"}
 -->
 # fiew v0.1
 
@@ -17,7 +17,7 @@ On Apple Silicon macOS in Ghostty, a reviewer can browse immutable source, inspe
 
 1. fiew must never modify source files, tracked files, `.gitignore`, Git metadata, the index, branches, commits, or other Git state.
 2. fiew must not invoke mutating Git commands, apply workspace edits, execute language-server commands, or expose general file-writing operations.
-3. fiew may write only fiew-owned global state, bounded diagnostics when explicitly enabled, disposable caches, and versioned review files within the repository's gitignored `.reviews/` directory.
+3. fiew may write only fiew-owned global state, bounded diagnostics when explicitly enabled, disposable caches, canonical review files within `.reviews/`, and canonical bookmark files within `.bookmarks/`. fiew neither checks nor modifies Git ignore configuration.
 4. Agent review commands may mutate only the operation explicitly granted by that command. In v0.1, the only agent mutation is appending a reply to an existing thread.
 5. Integration failures, cancellation, malformed input, and persistence errors must preserve this boundary.
 
@@ -85,10 +85,10 @@ On Apple Silicon macOS in Ghostty, a reviewer can browse immutable source, inspe
 
 1. `fiew review start [--name <slug>] [--repo <path>]` creates a new review and opens the interactive reviewer UI.
 2. `fiew review open <review-id> [--repo <path>]` opens an existing review in the reviewer UI.
-3. `fiew review show <review-id> [--repo <path>]` emits a stable machine-readable JSON representation including every thread, anchor, status, and ordered comment. `--format markdown` emits the human-readable representation.
+3. `fiew review show <review-id> [--repo <path>]` emits a stable machine-readable JSON projection including every public thread, anchor, status, and ordered comment. `--format markdown` emits a human-readable projection of the same public review semantics. Neither output is the canonical stored file, and storage-only metadata may be omitted.
 4. `fiew review reply <review-id> <thread-id> --body-file <path> [--repo <path>]` appends one `agent` comment to an existing thread and performs no other mutation.
 5. Repository selection defaults to the current working directory. The optional `--repo` overrides it.
-6. Every newly created review ID begins with a local datetime prefix. An explicit name contributes a sanitized slug. Without a name, interactive start generates a bundled adjective-noun slug. `.md` is automatic; a numeric suffix resolves collisions.
+6. Every newly created review ID begins with a local datetime prefix. An explicit name contributes a sanitized slug. Without a name, interactive start generates a bundled adjective-noun slug. Canonical reviews use `.json`; a numeric suffix resolves collisions.
 7. Interactive start prints the canonical review ID after terminal restoration.
 8. Invalid identifiers, roles, schemas, paths, or operations fail explicitly. Successful status and approval output must agree with durable state; persistence failure is never reported as approval.
 9. Exit status is zero only when every thread is reviewer-resolved. Open, Outdated, malformed, or unsaved review state produces a non-success result.
@@ -96,7 +96,7 @@ On Apple Silicon macOS in Ghostty, a reviewer can browse immutable source, inspe
 ### 9. Bookmarks
 
 1. Bookmarks are private reviewer navigation state and never appear in review output available to agents.
-2. They are stored in fiew-owned global state outside the repository and keyed by repository identity.
+2. They are stored as repository-local private state in `.bookmarks/bookmarks.json`. fiew does not inspect or modify ignore configuration and does not expose bookmarks through review commands.
 3. A bookmark records a source location and may have a short optional label.
 4. Creating a bookmark from a diff maps it to the corresponding source location; reopening never presents a historical diff as current source.
 5. Bookmarks re-anchor only through an exact unique match. Missing or ambiguous locations become Outdated and never move heuristically.
@@ -104,9 +104,9 @@ On Apple Silicon macOS in Ghostty, a reviewer can browse immutable source, inspe
 
 ### 10. Persistence and diagnostics
 
-1. Global state uses schema-versioned storage. Reviews use a public versioned Markdown schema in `.reviews/`.
-2. Writes use same-directory temporary files, flush, atomic replacement, and one previous validated backup.
-3. Unknown future schemas are never overwritten. Review Markdown bodies may contain ordinary Markdown headings without corrupting structural parsing.
+1. Canonical reviews and bookmarks are private schema-versioned JSON using the common `{ "schema": "fiew.<artifact>/v<version>", "data": ... }` envelope with no separate version field. Reviews use `fiew.review/v1` in `.reviews/<review-id>.json`; bookmarks use `fiew.bookmark/v1` in `.bookmarks/bookmarks.json`.
+2. Writes use same-directory temporary files, flush, atomic replacement, and one previous validated `.bak` backup.
+3. Unknown future schemas are never overwritten. Existing `.reviews/*.md` and unreleased global bookmark data are not migrated or interpreted as current state. Arbitrary Markdown comment bodies remain ordinary JSON strings in canonical reviews.
 4. Diagnostic history is bounded. File logging is opt-in and redacts source, comment bodies, environment values, and protocol payloads by default.
 5. Recoverable failures disable only the affected capability and preserve the last valid snapshot. Fatal terminal failures restore terminal state before reporting.
 
@@ -126,7 +126,7 @@ On Apple Silicon macOS in Ghostty, a reviewer can browse immutable source, inspe
 - Fixed-dimension RenderPlan snapshots verify Project, VCS, Review, Bookmarks, status, source, diff, binary, outdated, and error views.
 - Document and anchor fixtures verify UTF-8 mapping, reload generations, multiline/file threads, diff-to-source bookmarks, exact-unique relocation, ambiguity, and Outdated transitions.
 - Git adapter tests verify repository discovery, nested-directory roots, nonzero exits, snapshot consistency, cancellation, linked worktrees, and the mutation boundary.
-- Review-format tests verify arbitrary Markdown comment bodies, schema refusal, backup recovery, atomic persistence, stable JSON output, and persistence-aware exit status.
+- Artifact-format tests verify the common internal JSON envelope, arbitrary Markdown comment bodies, legacy rejection, schema refusal, backup recovery, atomic persistence, public JSON and Markdown projections, bookmark isolation from review output, and persistence-aware exit status.
 - `zig build test` requires no network or optional executable. Git integration tests remain opt-in.
 - Manual Ghostty checks cover startup/restoration, keyboard and mouse interaction, resize, all four sidebar contexts, review conversations, and representative source/diff rendering.
 
@@ -158,3 +158,5 @@ On Apple Silicon macOS in Ghostty, a reviewer can browse immutable source, inspe
 - [Structure fiew as a single-owner event-driven application](<docs/decisions/ARP-0005.md>)
 - [Store review notes as gitignored `.reviews/` Markdown for agent retrieval](<docs/decisions/ARP-0006.md>)
 - [Use reviewer-owned local threads with command-mediated agent replies](<docs/decisions/ARP-0007.md>)
+- [Store reviews and bookmarks as private repository-local JSON artifacts](<docs/decisions/ARP-0008.md>)
+- [Use unified internal JSON artifacts for reviews and bookmarks](<docs/rfcs/RFC-0001.md>)

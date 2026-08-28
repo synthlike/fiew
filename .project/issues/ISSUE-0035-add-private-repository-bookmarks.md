@@ -2,9 +2,9 @@
 id: ISSUE-0035
 title: "Add private repository bookmarks"
 kind: "implementation"
-status: open
+status: claimed
 created: 2026-08-27
-assignee:
+assignee: "agent"
 parent: "ISSUE-0013-implement-fiew-v0-1.md"
 blocked_by:
 labels: []
@@ -17,16 +17,17 @@ labels: []
 
 ## What to build
 
-Let a reviewer save source locations for later inspection without exposing them to agents or writing them into the repository. Bookmarks may originate in source or a diff and may carry a short optional label.
+Let a reviewer save repository-local source locations for later inspection without exposing them through agent-facing review commands or modifying source and Git state. Bookmarks may originate in source or a diff and may carry a short optional label. Persist them as private canonical JSON in `.bookmarks/bookmarks.json` according to ARP-0008 and the v0.1 specification.
 
 ## Acceptance criteria
 
 - [ ] `Space b Enter` opens the Bookmarks sidebar; `Space b n` creates a bookmark with an optional short label; `Space b d` deletes with confirmation; `[ b` and `] b` navigate.
-- [ ] Bookmarks live in schema-versioned global fiew-owned state outside repositories and are keyed by repository identity.
+- [ ] Bookmarks use the `{ "schema": "fiew.bookmark/v1", "data": ... }` envelope in repository-local `.bookmarks/bookmarks.json`; fiew neither checks nor modifies Git ignore configuration.
 - [ ] A source bookmark records the selected source location; a diff bookmark maps to its source location and reopens source rather than a historical diff.
 - [ ] Empty labels are accepted, labels remain short, and the sidebar distinguishes labelled, unlabelled, and Outdated entries.
-- [ ] Bookmarks are absent from review Markdown and all agent-facing review output.
-- [ ] Atomic persistence, backup recovery, future-schema refusal, repository-key isolation, and source/Git non-mutation are verified.
+- [ ] Bookmarks are absent from public JSON and Markdown review projections and all other agent-facing review output.
+- [ ] Same-directory atomic persistence, validated `.bookmarks/bookmarks.bak` recovery, future-schema refusal, repository-local isolation, and source/Git non-mutation are verified.
+- [ ] Unreleased global bookmark data is not migrated or interpreted as current bookmark state.
 
 ## Blocked by
 
@@ -34,7 +35,7 @@ Managed by native issue relationships.
 
 ## Out of scope
 
-Shared bookmarks, agent-visible bookmarks, tags, folders, synchronization, and semantic language-server reanchoring.
+Shared bookmarks, agent-visible bookmarks, tags, folders, synchronization, ignore-rule management, migration of global bookmark data, and semantic language-server reanchoring.
 
 ## Comments
 

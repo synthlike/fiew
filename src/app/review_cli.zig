@@ -164,7 +164,7 @@ fn validThreadId(id: []const u8) bool {
 
 pub fn filenameForId(allocator: std.mem.Allocator, id: []const u8) (std.mem.Allocator.Error || error{InvalidIdentifier})![]u8 {
     if (!validIdentifier(id)) return error.InvalidIdentifier;
-    return std.fmt.allocPrint(allocator, "{s}.md", .{id});
+    return std.fmt.allocPrint(allocator, "{s}.json", .{id});
 }
 
 pub const Created = struct {
@@ -261,7 +261,7 @@ pub fn load(allocator: std.mem.Allocator, io: std.Io, repo_dir: std.Io.Dir, id: 
 
 pub fn render(allocator: std.mem.Allocator, id: []const u8, value: review.Review, format: Format) ![]u8 {
     return switch (format) {
-        .markdown => review.serialize(allocator, value),
+        .markdown => review.renderMarkdown(allocator, value),
         .json => blk: {
             const JsonReview = struct {
                 id: []const u8,
@@ -414,7 +414,7 @@ test "new IDs sanitize names and add collision suffixes" {
     var generated = try create(testing.allocator, testing.io, tmp.dir, 1, null, "abc");
     defer generated.deinit();
     try testing.expect(std.mem.startsWith(u8, generated.id, "19700101-000001-"));
-    try testing.expect(std.mem.endsWith(u8, generated.filename, ".md"));
+    try testing.expect(std.mem.endsWith(u8, generated.filename, ".json"));
 }
 
 test "new review creation reports persistence failure" {
@@ -460,6 +460,14 @@ test "agent reply appends one comment and stable output includes history" {
     try testing.expect(std.mem.indexOf(u8, json, created.id) != null);
     try testing.expect(std.mem.indexOf(u8, json, "please fix") != null);
     try testing.expect(std.mem.indexOf(u8, json, "done") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "bookmark") == null);
+    var review_dir = try tmp.dir.openDir(testing.io, store.directory_name, .{});
+    defer review_dir.close(testing.io);
+    const canonical = try review_dir.readFileAlloc(testing.io, created.filename, testing.allocator, .unlimited);
+    defer testing.allocator.free(canonical);
+    try testing.expect(std.mem.indexOf(u8, canonical, "\"data\"") != null);
+    try testing.expect(std.mem.indexOf(u8, canonical, "\"id\": \"19700101") == null);
+    try testing.expect(!std.mem.eql(u8, canonical, json));
     const markdown = try render(testing.allocator, created.id, after.entries[0].review, .markdown);
     defer testing.allocator.free(markdown);
     try testing.expect(std.mem.indexOf(u8, markdown, "fiew-comment agent 4") != null);

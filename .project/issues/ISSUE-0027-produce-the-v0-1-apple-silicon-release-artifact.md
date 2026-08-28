@@ -22,15 +22,15 @@ labels: []
 
 ## What to build
 
-Produce a `ReleaseSafe` Apple Silicon binary archive from a clean checkout and document manual GitHub Release installation, the Git prerequisite, review storage behavior, and the v0.1 compatibility boundary.
+Produce a `ReleaseSafe` Apple Silicon binary archive from a clean checkout and document manual GitHub Release installation, the Git prerequisite, repository-local review and bookmark storage behavior, and the v0.1 compatibility boundary.
 
 ## Acceptance criteria
 
 - [ ] A clean checkout produces the documented archive reproducibly.
 - [ ] The artifact runs in Ghostty on supported macOS.
 - [ ] Version and linked-dependency information are inspectable.
-- [ ] Installation, Git requirements, `.reviews/` behavior, and global bookmark storage are documented.
-- [ ] Documentation does not claim Markdown, Mermaid, fuzzy finding, ZLS, Linux, or non-Ghostty support in v0.1.
+- [ ] Installation, Git requirements, `.reviews/` canonical JSON and public projections, and `.bookmarks/` storage are documented.
+- [ ] Documentation does not claim Markdown source syntax, Mermaid, fuzzy finding, ZLS, Linux, or non-Ghostty support in v0.1.
 - [ ] The release checklist does not claim signing, notarization, package-manager support, or automatic publication.
 
 ## Blocked by

@@ -121,14 +121,14 @@ changes with unified diffs. It never modifies the repository.
 ### Review threads
 
 Reviewer-owned file or diff threads contain ordered, append-only reviewer and
-agent comments. They are stored as versioned Markdown in the repository's
-expected-gitignored `.reviews/` directory. Only the reviewer creates, resolves,
-reopens, or deletes a complete thread; deletion requires confirmation. Open and
-Outdated threads block approval.
+agent comments. Canonical reviews are private `fiew.review/v1` JSON under
+`.reviews/`; `review show` projects them as public JSON or Markdown. Only the
+reviewer creates, resolves, reopens, or deletes a complete thread; deletion
+requires confirmation. Open and Outdated threads block approval.
 
-Review files use the breaking `fiew.review/v1` thread format. Earlier local
-note files are intentionally unsupported; unknown future schemas are refused
-rather than overwritten. A malformed primary recovers from one validated backup.
+Earlier Markdown review files are intentionally unsupported; unknown future
+schemas are refused rather than overwritten. A malformed primary recovers from
+one validated backup. fiew does not manage ignore rules.
 
 The reviewer and agent interface is:
 
@@ -140,7 +140,7 @@ fiew review reply <review-id> <thread-id> --body-file <path> [--repo <path>]
 ```
 
 Repository selection defaults to the current directory. New IDs include a
-datetime prefix and automatic name; `.md` is never part of the command-line ID.
+datetime prefix and automatic name; `.json` is never part of the command-line ID.
 `show` emits complete JSON by default. `reply` can only append one `agent`
 comment. Review commands return zero only when every thread is durably resolved;
 Open, Outdated, malformed, or unsaved state is non-success. The legacy
@@ -156,6 +156,22 @@ Open, Outdated, malformed, or unsaved state is non-success. The legacy
 | `Space r` `Enter` | Show the Review sidebar |
 | `] n` / `[ n` | Next / previous thread |
 | `Ctrl-Enter` / `Esc` | In the composer: save / cancel (Esc confirms if modified) |
+
+### Private bookmarks
+
+Bookmarks save source locations in repository-local, schema-versioned private
+state at `.bookmarks/bookmarks.json`. They do not appear in `.reviews/`,
+`review show`, or any other agent-facing output. fiew does not manage ignore rules.
+Creating from a diff maps to the corresponding current source location. Labels
+are optional and limited to 48 UTF-8 bytes; missing or unreadable source entries
+are shown as Outdated.
+
+| Key | Action |
+| --- | --- |
+| `Space b Enter` | Show the Bookmarks sidebar |
+| `Space b n` | Create a bookmark with an optional label |
+| `Space b d` | Delete the selected bookmark with confirmation |
+| `] b` / `[ b` | Next / previous bookmark |
 
 ### Planned
 

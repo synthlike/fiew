@@ -23,14 +23,15 @@ labels: []
 
 ## What to build
 
-Exercise immutable browsing, Git-backed VCS review, reviewer-agent thread conversations, strict approval, private bookmarks, refresh, and recovery end to end. Harden queues and cancellation, profile the 10,000-file target, and complete the Ghostty smoke checklist.
+Exercise immutable browsing, Git-backed VCS review, reviewer-agent thread conversations, strict approval, private repository-local bookmarks, refresh, and recovery end to end. Harden queues and cancellation, profile the 10,000-file target, and complete the Ghostty smoke checklist.
 
 ## Acceptance criteria
 
-- [ ] Project, VCS, Review, and Bookmarks workflows pass from a clean user-data directory and a nested repository working directory.
+- [ ] Project, VCS, Review, and Bookmarks workflows pass from clean `.reviews/` and `.bookmarks/` directories and a nested repository working directory.
 - [ ] An agent can read all previous comments and append a reply but cannot create, resolve, reopen, or delete a thread.
 - [ ] Exit status reports approval only after every thread is durably reviewer-resolved.
-- [ ] Malformed, future-schema, failed-write, and backup-recovery cases preserve durable state and the read-only boundary.
+- [ ] Malformed, legacy, future-schema, failed-write, and backup-recovery cases preserve durable state and the read-only boundary.
+- [ ] Canonical review and bookmark JSON share the accepted schema envelope while public review JSON and Markdown projections retain complete public semantics and omit private bookmark data.
 - [ ] Mutation audits confirm source and Git state remain unchanged.
 - [ ] Shutdown cleans workers and subprocesses and restores Ghostty.
 - [ ] Accepted performance limits are measured and documented honestly.
