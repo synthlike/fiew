@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const vaxis = @import("vaxis");
 const fiew = @import("fiew");
+const ShutdownSignals = @import("shutdown_signals.zig").ShutdownSignals;
 
 const Event = union(enum) {
     key_press: vaxis.Key,
@@ -12,17 +13,12 @@ const Event = union(enum) {
     /// owns and frees the boxed completion.
     parse_done: *fiew.parse_job.Completion,
     git_done: *fiew.git_job.Completion,
-    git_probe_done: *GitProbeCompletion,
+    shutdown: u8,
 };
 
 const Completion = fiew.parse_job.Completion;
 const ParseFuture = std.Io.Future(void);
 const GitFuture = std.Io.Future(void);
-
-const GitProbeCompletion = union(enum) {
-    success: fiew.git.Fingerprint,
-    failure: fiew.git_job.Failure,
-};
 
 /// Owns the single bounded Git worker slot. New requests supersede old
 /// generations; obsolete completions are destroyed without publishing.
@@ -33,16 +29,16 @@ const GitLoadState = struct {
     future: ?GitFuture = null,
     running_generation: ?u64 = null,
     queued_generation: ?u64 = null,
-    probing: bool = false,
-    last_fingerprint: ?fiew.git.Fingerprint = null,
-    probe_ticks: u8 = 0,
 
     fn init(io: std.Io, allocator: std.mem.Allocator, loop: *vaxis.Loop(Event)) GitLoadState {
         return .{ .io = io, .allocator = allocator, .loop = loop };
     }
 
     fn deinit(self: *GitLoadState) void {
-        if (self.future) |*future| _ = future.await(self.io);
+        // Canceling the task interrupts std.process.run at its next I/O point;
+        // its process defer then terminates and reaps the child before this
+        // call returns.
+        if (self.future) |*future| _ = future.cancel(self.io);
         self.* = undefined;
     }
 
@@ -51,7 +47,6 @@ const GitLoadState = struct {
             self.queued_generation = generation;
             return;
         }
-        self.probing = false;
         self.future = self.io.concurrent(gitWorker, .{
             self.loop, self.allocator, repository.io, repository.root_dir, generation,
         }) catch {
@@ -76,7 +71,6 @@ const GitLoadState = struct {
         if (box.generation == app.git_generation) switch (box.result) {
             .success => {
                 if (fiew.git_job.accept(box, app.git_generation)) |snapshot| {
-                    self.last_fingerprint = snapshot.fingerprint;
                     const review = fiew.git_review.Review.init(self.allocator, snapshot.changeset) catch |err| {
                         var owned = snapshot.changeset;
                         owned.deinit();
@@ -107,57 +101,6 @@ const GitLoadState = struct {
             if (generation == app.git_generation) self.submit(repository, generation);
         }
     }
-
-    /// Poll a cheap Git fingerprint once per second. A changed fingerprint is
-    /// debounced into one generation-gated full refresh.
-    fn onTick(self: *GitLoadState, app: *fiew.app.App, repository: fiew.filesystem.Repository) void {
-        if (!app.git_enabled or app.review == null or app.git_status == .pending or self.future != null) {
-            self.probe_ticks = 0;
-            return;
-        }
-        self.probe_ticks +|= 1;
-        if (self.probe_ticks < 4) return;
-        self.probe_ticks = 0;
-        self.probing = true;
-        self.future = self.io.concurrent(gitProbeWorker, .{
-            self.loop, self.allocator, repository.io, repository.root_dir,
-        }) catch {
-            self.probing = false;
-            return;
-        };
-    }
-
-    fn onProbeCompletion(
-        self: *GitLoadState,
-        app: *fiew.app.App,
-        repository: fiew.filesystem.Repository,
-        box: *GitProbeCompletion,
-    ) void {
-        if (self.probing) {
-            if (self.future) |*future| _ = future.await(self.io);
-            self.future = null;
-            self.probing = false;
-        }
-        const changed = switch (box.*) {
-            .success => |fingerprint| if (self.last_fingerprint) |last|
-                !std.mem.eql(u8, &last, &fingerprint)
-            else
-                true,
-            .failure => |failure| blk: {
-                app.git_status = .stale;
-                app.feedback = failure.message();
-                break :blk false;
-            },
-        };
-        self.allocator.destroy(box);
-
-        if (self.queued_generation) |generation| {
-            self.queued_generation = null;
-            if (generation == app.git_generation) self.submit(repository, generation);
-        } else if (changed) {
-            self.submit(repository, app.beginGitRefresh());
-        }
-    }
 };
 
 fn gitWorker(
@@ -181,21 +124,6 @@ fn gitWorker(
         box.deinit();
         allocator.destroy(box);
     };
-}
-
-fn gitProbeWorker(
-    loop: *vaxis.Loop(Event),
-    allocator: std.mem.Allocator,
-    io: std.Io,
-    root_dir: std.Io.Dir,
-) void {
-    const result: GitProbeCompletion = if (fiew.git.fingerprint(allocator, io, root_dir)) |value|
-        .{ .success = value }
-    else |err|
-        .{ .failure = fiew.git_job.failureFromError(err) };
-    const box = allocator.create(GitProbeCompletion) catch return;
-    box.* = result;
-    loop.postEvent(.{ .git_probe_done = box }) catch allocator.destroy(box);
 }
 
 /// Drives off-render-loop Zig parsing for the active document: one worker at a
@@ -470,6 +398,10 @@ pub fn run(init: std.process.Init, options: Options) !u8 {
 
     var read_buffer: [1024]u8 = undefined;
     var tty: vaxis.Tty = try .init(init.io, &read_buffer);
+    // Keep handled shutdown installed until after Vaxis and the TTY have
+    // restored terminal modes; a repeated signal during cleanup stays graceful.
+    var shutdown_signals = try ShutdownSignals.install();
+    defer shutdown_signals.deinit();
     defer tty.deinit();
 
     var vx = try vaxis.init(init.io, allocator, init.environ_map, .{
@@ -480,6 +412,8 @@ pub fn run(init: std.process.Init, options: Options) !u8 {
     var loop: vaxis.Loop(Event) = .init(init.io, &tty, &vx);
     try loop.start();
     defer loop.stop();
+    try shutdown_signals.arm(&loop, postShutdown);
+    defer shutdown_signals.disarm();
 
     var timer_stop: std.atomic.Value(bool) = .init(false);
     var timer_task = try init.io.concurrent(timerRun, .{ init.io, &loop, &timer_stop });
@@ -503,6 +437,9 @@ pub fn run(init: std.process.Init, options: Options) !u8 {
     defer frame_arena.deinit();
     while (true) {
         const event = try loop.nextEvent();
+        // The signal pipe watcher wakes this loop without invoking terminal or
+        // allocator code from the async signal handler.
+        if (ShutdownSignals.requestedExitCode()) |code| return code;
         switch (event) {
             .key_press => |key| {
                 // The Kitty keyboard protocol reports lone modifier presses
@@ -556,11 +493,10 @@ pub fn run(init: std.process.Init, options: Options) !u8 {
             .tick => {
                 command_session.tick(&app);
                 parse_state.onTick();
-                git_state.onTick(&app, repository);
             },
             .parse_done => |box| parse_state.onCompletion(&app, box),
             .git_done => |box| git_state.onCompletion(&app, repository, box),
-            .git_probe_done => |box| git_state.onProbeCompletion(&app, repository, box),
+            .shutdown => |code| return code,
         }
 
         parse_state.drive(&app);
@@ -571,13 +507,24 @@ pub fn run(init: std.process.Init, options: Options) !u8 {
     }
 }
 
+fn postShutdown(context: *anyopaque, exit_code: u8) void {
+    const loop: *vaxis.Loop(Event) = @ptrCast(@alignCast(context));
+    loop.postEvent(.{ .shutdown = exit_code }) catch {};
+}
+
 fn timerRun(
     io: std.Io,
     loop: *vaxis.Loop(Event),
     stop: *std.atomic.Value(bool),
 ) void {
     while (!stop.load(.acquire)) {
-        io.sleep(.fromMilliseconds(250), .real) catch return;
+        io.sleep(.fromMilliseconds(250), .real) catch {
+            // A handled shutdown signal may interrupt the sleep. Wake the main
+            // loop once so it can observe the atomic request and unwind.
+            if (ShutdownSignals.requestedExitCode() != null)
+                loop.postEvent(.tick) catch {};
+            return;
+        };
         if (stop.load(.acquire)) return;
         loop.postEvent(.tick) catch return;
     }
@@ -609,7 +556,13 @@ fn translateKey(key: vaxis.Key) fiew.commands.Key {
     };
     return .{
         .code = code,
-        .character = if (code == .character) producedCharacter(key) else 0,
+        // Shortcut identity follows the physical codepoint. Kitty `text` may
+        // contain a control byte (for example ETX for Ctrl-C), while ordinary
+        // text input uses the produced shifted glyph.
+        .character = if (code == .character)
+            if (key.mods.ctrl or key.mods.alt) key.codepoint else producedCharacter(key)
+        else
+            0,
         .shift = key.mods.shift,
         .alt = key.mods.alt,
         .ctrl = key.mods.ctrl,
@@ -2165,6 +2118,37 @@ fn nextGrapheme(_: ?*const anyopaque, text: []const u8, start: usize) usize {
 
 fn graphemeWidth(_: ?*const anyopaque, grapheme: []const u8) u16 {
     return vaxis.gwidth.gwidth(grapheme, .unicode);
+}
+
+test "Kitty and conventional VT keys translate to the same command input" {
+    const conventional = translateKey(.{ .codepoint = '?', .mods = .{ .shift = true } });
+    const kitty = translateKey(.{
+        .codepoint = '/',
+        .text = "?",
+        .shifted_codepoint = '?',
+        .mods = .{ .shift = true },
+    });
+    try std.testing.expectEqual(conventional, kitty);
+    try std.testing.expectEqual(fiew.commands.Code.character, kitty.code);
+    try std.testing.expectEqual(@as(u21, '?'), kitty.character);
+
+    const conventional_ctrl_c = translateKey(.{ .codepoint = 'c', .mods = .{ .ctrl = true } });
+    const kitty_ctrl_c = translateKey(.{
+        .codepoint = 'c',
+        .text = "\x03",
+        .mods = .{ .ctrl = true },
+    });
+    try std.testing.expectEqual(conventional_ctrl_c, kitty_ctrl_c);
+}
+
+test "terminal presentation stays usable without optional capabilities" {
+    // Fiew emits palette indexes rather than requiring RGB, and every mouse
+    // action is an enhancement over command-registry keyboard actions.
+    try std.testing.expectEqual(vaxis.Cell.Color{ .index = 5 }, highlightColor(.keyword));
+    try std.testing.expectEqual(vaxis.Cell.Color.default, highlightColor(.variable));
+    try std.testing.expect(fiew.commands.definition(.quit).binding.len != 0);
+    try std.testing.expect(fiew.commands.definition(.focus_next).binding.len != 0);
+    try std.testing.expect(fiew.commands.definition(.activate).binding.len != 0);
 }
 
 test "review render labels distinguish statuses and comment roles" {
