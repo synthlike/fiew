@@ -612,10 +612,23 @@ pub const App = struct {
         };
     }
 
-    pub fn toggleDiffExtend(self: *App) void {
-        const review_state = if (self.review) |*value| value else return;
-        review_state.toggleDiffSelection();
-        self.mode = if (review_state.diff_anchor == null) .normal else .extend;
+    pub fn toggleActiveExtend(self: *App) void {
+        if (self.sidebar_context == .git and !self.viewing_source) {
+            const review_state = if (self.review) |*value| value else return;
+            self.mode = switch (self.mode) {
+                .normal => mode: {
+                    if (review_state.diff_anchor == null) review_state.diff_anchor = review_state.diff_line;
+                    break :mode .extend;
+                },
+                .extend => mode: {
+                    _ = review_state.clearDiffSelection();
+                    break :mode .normal;
+                },
+                .command => .command,
+            };
+            return;
+        }
+        self.toggleExtend();
     }
 
     pub fn toggleExtend(self: *App) void {
@@ -630,12 +643,22 @@ pub const App = struct {
     pub fn leaveExtend(self: *App) void {
         if (self.mode != .extend) return;
         self.mode = .normal;
+        if (self.clearActiveSelection()) return;
         self.collapseSelection();
+    }
+
+    /// Clear an explicit selection while retaining the active cursor. Document
+    /// views are selection-first and therefore always retain a collapsed range.
+    pub fn clearActiveSelection(self: *App) bool {
+        if (self.sidebar_context == .git and !self.viewing_source) {
+            if (self.review) |*review_state| return review_state.clearDiffSelection();
+        }
+        return false;
     }
 
     pub fn collapseSelection(self: *App) void {
         if (self.sidebar_context == .git and !self.viewing_source) {
-            if (self.review) |*review_state| review_state.diff_anchor = null;
+            if (self.review) |*review_state| review_state.collapseDiffSelection();
             return;
         }
         const view = self.activeViewMut() orelse return;
@@ -643,11 +666,23 @@ pub const App = struct {
     }
 
     pub fn reverseSelection(self: *App) void {
+        if (self.sidebar_context == .git and !self.viewing_source) {
+            if (self.review) |*review_state| review_state.reverseDiffSelection();
+            return;
+        }
         const view = self.activeViewMut() orelse return;
         std.mem.swap(usize, &view.anchor_grapheme, &view.active_grapheme);
         if (view.snapshot.graphemes.len != 0) {
             view.preferred_column = view.snapshot.graphemes[view.active_grapheme].visual_column;
         }
+    }
+
+    pub fn selectActiveLine(self: *App, viewport_rows: usize) void {
+        if (self.sidebar_context == .git and !self.viewing_source) {
+            if (self.review) |*review_state| review_state.selectDiffLine(viewport_rows);
+            return;
+        }
+        self.selectLine();
     }
 
     pub fn selectLine(self: *App) void {
@@ -736,7 +771,10 @@ pub const App = struct {
     /// Git review is showing a diff rather than a source document.
     pub fn mainVerticalMove(self: *App, delta: isize, viewport_height: usize, viewport_width: usize) void {
         if (self.sidebar_context == .git and !self.viewing_source) {
-            if (self.review) |*review_state| review_state.moveDiffLine(delta, viewport_height);
+            if (self.review) |*review_state| {
+                review_state.moveDiffLine(delta, viewport_height);
+                if (self.mode != .extend) _ = review_state.clearDiffSelection();
+            }
             return;
         }
         if (self.sidebar_context == .review) {

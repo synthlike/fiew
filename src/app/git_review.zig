@@ -307,9 +307,40 @@ pub const Review = struct {
         return null;
     }
 
-    /// Toggle a diff selection anchored at the current line (for a range note).
-    pub fn toggleDiffSelection(self: *Review) void {
-        self.diff_anchor = if (self.diff_anchor == null) self.diff_line else null;
+    /// Select the active diff line linewise. Repeating the operation extends
+    /// the active end down by one line, matching document `x` behavior.
+    pub fn selectDiffLine(self: *Review, viewport_rows: usize) void {
+        const diff = self.selectedDiff() orelse return;
+        if (diff.lines.len == 0) return;
+        if (self.diff_anchor == null) {
+            self.diff_anchor = self.diff_line;
+        } else {
+            self.moveDiffLine(1, viewport_rows);
+        }
+    }
+
+    pub fn collapseDiffSelection(self: *Review) void {
+        const diff = self.selectedDiff() orelse return;
+        if (diff.lines.len != 0) self.diff_anchor = self.diff_line;
+    }
+
+    pub fn clearDiffSelection(self: *Review) bool {
+        if (self.diff_anchor == null) return false;
+        self.diff_anchor = null;
+        return true;
+    }
+
+    pub fn reverseDiffSelection(self: *Review) void {
+        if (self.diff_anchor) |anchor| {
+            self.diff_anchor = self.diff_line;
+            self.diff_line = anchor;
+        }
+    }
+
+    pub fn diffLineSelected(self: Review, index: usize) bool {
+        if (self.diff_anchor == null) return false;
+        const selection = self.diffSelection();
+        return index >= selection.start and index <= selection.end;
     }
 
     /// The inclusive diff-line range currently selected.
@@ -583,6 +614,31 @@ test "visual diff paging reaches wrapped rows and cursor movement resets it" {
     try testing.expectEqual(@as(usize, 0), review.diff_visual_scroll);
 }
 
+test "linewise diff selection extends collapses reverses and projects its range" {
+    var review = try Review.init(testing.allocator, try buildChangeSet(testing.allocator));
+    defer review.deinit();
+    review.moveSelection(1, 20); // select b.zig
+
+    review.selectDiffLine(20);
+    try testing.expect(review.diffLineSelected(0));
+    try testing.expect(!review.diffLineSelected(1));
+    review.selectDiffLine(20);
+    try testing.expectEqual(@as(usize, 1), review.diff_line);
+    try testing.expect(review.diffLineSelected(0));
+    try testing.expect(review.diffLineSelected(1));
+
+    review.reverseDiffSelection();
+    try testing.expectEqual(@as(usize, 0), review.diff_line);
+    try testing.expectEqual(@as(usize, 1), review.diff_anchor.?);
+    review.collapseDiffSelection();
+    try testing.expectEqual(review.diff_line, review.diff_anchor.?);
+    try testing.expect(review.diffLineSelected(0));
+    try testing.expect(!review.diffLineSelected(1));
+    try testing.expect(review.clearDiffSelection());
+    try testing.expect(!review.diffLineSelected(0));
+    try testing.expect(!review.clearDiffSelection());
+}
+
 test "bookmark target maps a deletion to current source" {
     var review_state = try Review.init(testing.allocator, try buildChangeSet(testing.allocator));
     defer review_state.deinit();
@@ -599,7 +655,7 @@ test "captureAnchor derives side, line range, and excerpt from the selection" {
     review_state.moveSelection(1, 20); // select b.zig, which has a diff
 
     // A mixed deletion/addition selection is refused because it spans sides.
-    review_state.toggleDiffSelection();
+    review_state.diff_anchor = review_state.diff_line;
     review_state.diff_line = 2;
     try testing.expect((try review_state.captureAnchor(testing.allocator)) == null);
 

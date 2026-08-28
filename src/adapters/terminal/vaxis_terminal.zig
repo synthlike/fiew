@@ -1364,6 +1364,15 @@ fn visibleDiffRow(virtual_row: usize, scroll: usize, body_rows: usize) ?u16 {
     return @intCast(virtual_row - scroll + 1);
 }
 
+fn diffLineStyle(color: vaxis.Cell.Color, selected: bool, cursor: bool) vaxis.Cell.Style {
+    return .{
+        .fg = color,
+        .reverse = selected or cursor,
+        .bold = cursor,
+        .ul_style = if (cursor) .single else .off,
+    };
+}
+
 fn drawDiff(allocator: std.mem.Allocator, window: vaxis.Window, app: *const fiew.app.App) !void {
     const review = if (app.review) |*value| value else {
         _ = window.printSegment(.{ .text = " Diff", .style = .{ .bold = true } }, .{ .wrap = .none });
@@ -1426,6 +1435,7 @@ fn drawDiff(allocator: std.mem.Allocator, window: vaxis.Window, app: *const fiew
 
         const line = diff.lines[line_index];
         const cursor = line_index == review.diff_line and app.focus == .main;
+        const selected = review.diffLineSelected(line_index);
         const color: vaxis.Cell.Color = switch (line.kind) {
             .addition => .{ .index = 2 },
             .deletion => .{ .index = 1 },
@@ -1450,7 +1460,7 @@ fn drawDiff(allocator: std.mem.Allocator, window: vaxis.Window, app: *const fiew
                 .{ .text = " " },
                 .{
                     .text = try sanitizeLine(allocator, diff.text[line.text.start..line.text.end], window.width -| 13),
-                    .style = .{ .fg = color, .reverse = cursor },
+                    .style = diffLineStyle(color, selected, cursor),
                 },
             }, .{ .row_offset = screen_row, .wrap = .none });
         }
@@ -2259,6 +2269,25 @@ test "Markdown and injected Zig highlights reach the cell-style seam" {
     const number = std.mem.indexOf(u8, source, "42").?;
     try std.testing.expectEqual(fiew.syntax.HighlightKind.number, highlightKindAt(data.highlights, number).?);
     try std.testing.expectEqual(vaxis.Cell.Color{ .index = 6 }, highlightColor(highlightKindAt(data.highlights, number).?));
+}
+
+test "Review Diff selection and active cursor styles remain distinct" {
+    const color: vaxis.Cell.Color = .{ .index = 2 };
+    const selected = diffLineStyle(color, true, false);
+    try std.testing.expectEqual(color, selected.fg);
+    try std.testing.expect(selected.reverse);
+    try std.testing.expect(!selected.bold);
+    try std.testing.expectEqual(vaxis.Cell.Style.Underline.off, selected.ul_style);
+
+    const active = diffLineStyle(color, true, true);
+    try std.testing.expectEqual(color, active.fg);
+    try std.testing.expect(active.reverse);
+    try std.testing.expect(active.bold);
+    try std.testing.expectEqual(vaxis.Cell.Style.Underline.single, active.ul_style);
+
+    const idle = diffLineStyle(color, false, false);
+    try std.testing.expect(!idle.reverse);
+    try std.testing.expect(!idle.bold);
 }
 
 test "review render labels distinguish statuses and comment roles" {

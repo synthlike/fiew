@@ -565,14 +565,9 @@ pub const Session = struct {
             .half_page_down => app.mainPageMove(@intCast(@max(dimensions.document_rows / 2, 1)), dimensions.document_rows, dimensions.document_columns),
             .page_up => app.mainPageMove(-@as(isize, @intCast(@max(dimensions.document_rows, 1))), dimensions.document_rows, dimensions.document_columns),
             .page_down => app.mainPageMove(@intCast(@max(dimensions.document_rows, 1)), dimensions.document_rows, dimensions.document_columns),
-            .toggle_extend => {
-                if (app.sidebar_context == .git and !app.viewing_source)
-                    app.toggleDiffExtend()
-                else
-                    app.toggleExtend();
-            },
+            .toggle_extend => app.toggleActiveExtend(),
             .select_line => {
-                app.selectLine();
+                app.selectActiveLine(dimensions.document_rows);
                 if (app.sidebar_context != .review and (app.sidebar_context != .git or app.viewing_source))
                     app.ensureCurrentDocumentVisible(dimensions.document_rows, dimensions.document_columns);
             },
@@ -679,6 +674,8 @@ pub const Session = struct {
                     self.resetTransient(app);
                 } else if (app.mode == .extend) {
                     app.leaveExtend();
+                } else if (app.clearActiveSelection()) {
+                    // The active cursor remains; only the explicit range closes.
                 } else if (app.preview != null) {
                     app.clearPreview();
                 }
@@ -1812,13 +1809,36 @@ test "review note composer opens from a diff and cancels with confirmation" {
     defer session.deinit();
     const dimensions: Dimensions = .{ .sidebar_rows = 20, .document_rows = 20, .document_columns = 80 };
 
-    // Enter focuses the diff; v then j creates a contiguous multiline
-    // one-side selection through production commands.
+    // Enter focuses the diff. Repeated x selects lines, Alt-; reverses the
+    // active end, and ; collapses back to that active line.
     _ = try session.handle(&app, .{ .code = .enter }, dimensions);
+    _ = try session.handle(&app, charKey('x'), dimensions);
+    _ = try session.handle(&app, charKey('x'), dimensions);
+    try std.testing.expectEqual(@as(usize, 0), app.review.?.diffSelection().start);
+    try std.testing.expectEqual(@as(usize, 1), app.review.?.diffSelection().end);
+
+    // Normal movement exits an x selection, matching document selection.
+    _ = try session.handle(&app, charKey('j'), dimensions);
+    try std.testing.expect(app.review.?.diff_anchor == null);
+    _ = try session.handle(&app, charKey('k'), dimensions);
+    _ = try session.handle(&app, charKey('x'), dimensions);
+    _ = try session.handle(&app, charKey('x'), dimensions);
+    _ = try session.handle(&app, .{ .code = .character, .character = ';', .alt = true }, dimensions);
+    try std.testing.expectEqual(@as(usize, 0), app.review.?.diff_line);
+    try std.testing.expectEqual(@as(usize, 1), app.review.?.diff_anchor.?);
+    _ = try session.handle(&app, charKey(';'), dimensions);
+    try std.testing.expectEqual(app.review.?.diff_line, app.review.?.diff_anchor.?);
+    _ = try session.handle(&app, .{ .code = .escape }, dimensions);
+    try std.testing.expect(app.review.?.diff_anchor == null);
+
+    // x selects the active line again; v enters Extend while retaining it, then
+    // movement creates a contiguous range through the same App boundary.
+    _ = try session.handle(&app, charKey('x'), dimensions);
     _ = try session.handle(&app, charKey('v'), dimensions);
+    try std.testing.expectEqual(state.Mode.extend, app.mode);
     _ = try session.handle(&app, charKey('j'), dimensions);
 
-    // Space r n opens the composer with the captured multiline anchor.
+    // Space r n opens the composer with the captured visible range.
     _ = try session.handle(&app, charKey(' '), dimensions);
     _ = try session.handle(&app, charKey('r'), dimensions);
     _ = try session.handle(&app, charKey('n'), dimensions);
