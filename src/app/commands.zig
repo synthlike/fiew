@@ -65,7 +65,6 @@ pub const Id = enum {
     note_next,
     note_previous,
     leader_menu,
-    file_commands,
     help,
     command_prompt,
     quit,
@@ -148,7 +147,6 @@ pub const definitions = [_]Definition{
     .{ .id = .structural_next, .stable_id = "structural-next", .title = "Select next sibling node", .binding = "Alt-n" },
     .{ .id = .structural_previous, .stable_id = "structural-previous", .title = "Select previous sibling node", .binding = "Alt-p" },
     .{ .id = .leader_menu, .stable_id = "leader-menu", .title = "Open leader menu", .binding = "Space" },
-    .{ .id = .file_commands, .stable_id = "file-commands", .title = "Open file commands", .binding = "Space f" },
     .{ .id = .help, .stable_id = "help", .title = "Show key help", .binding = "Space ?" },
     .{ .id = .command_prompt, .stable_id = "command-prompt", .title = "Search named commands", .binding = ":" },
     .{ .id = .quit, .stable_id = "quit", .title = "Quit fiew", .binding = "Space q / :quit" },
@@ -337,7 +335,6 @@ pub const Effect = union(enum) {
 pub const Surface = enum {
     none,
     leader,
-    file,
     command,
     help,
     review,
@@ -379,7 +376,6 @@ pub const Session = struct {
         return switch (self.pending) {
             .none => switch (self.surface) {
                 .leader => "Space",
-                .file => "Space f",
                 .command => ":",
                 .help => "help",
                 .review => "Space r",
@@ -427,7 +423,7 @@ pub const Session = struct {
             if (key.code == .page_up) self.help_scroll -|= dimensions.document_rows;
             return .none;
         }
-        if (self.surface == .leader or self.surface == .file) {
+        if (self.surface == .leader) {
             return self.handleLeader(app, key, dimensions);
         }
         if (self.pending != .none) return self.handlePending(app, key, dimensions);
@@ -584,10 +580,6 @@ pub const Session = struct {
             },
             .leader_menu => {
                 self.surface = .leader;
-                app.mode = .normal;
-            },
-            .file_commands => {
-                self.surface = .file;
                 app.mode = .normal;
             },
             .help => {
@@ -758,14 +750,7 @@ pub const Session = struct {
     }
 
     fn handleLeader(self: *Session, app: *state.App, key: Key, dimensions: Dimensions) !Effect {
-        if (self.surface == .file) {
-            if (key.code == .enter) return self.execute(app, .activate, dimensions);
-            app.feedback = "invalid file command";
-            self.resetTransient(app);
-            return .none;
-        }
         return switch (normalizedCharacter(key)) {
-            'f' => self.executeAndClose(app, .file_commands, dimensions),
             'p' => self.executeAndClose(app, .project_open, dimensions),
             'v' => blk: {
                 self.surface = .vcs;
@@ -1283,6 +1268,21 @@ test "bookmark commands create show navigate and confirm deletion" {
     const deleted = try session.handle(&app, charKey('y'), dimensions);
     try std.testing.expectEqual(std.meta.Tag(Effect).persist_bookmarks, std.meta.activeTag(deleted));
     try std.testing.expect(!app.hasBookmarks());
+}
+
+test "Space f is not a leader command" {
+    var app = try testApp();
+    defer app.deinit();
+    var session = Session.init(std.testing.allocator);
+    defer session.deinit();
+    const dimensions: Dimensions = .{ .sidebar_rows = 20, .document_rows = 20, .document_columns = 80 };
+
+    _ = try session.handle(&app, charKey(' '), dimensions);
+    _ = try session.handle(&app, charKey('f'), dimensions);
+
+    try std.testing.expectEqual(Surface.none, session.surface);
+    try std.testing.expectEqualStrings("invalid leader command", app.feedback.?);
+    for (definitions) |item| try std.testing.expect(!std.mem.eql(u8, item.stable_id, "file-commands"));
 }
 
 test "leader and named command surfaces use the same registry" {

@@ -1733,18 +1733,8 @@ fn drawCommandSurface(
             menu.clear();
             _ = menu.printSegment(.{ .text = " Leader ", .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
             _ = menu.printSegment(.{
-                .text = "f files  p Project  v VCS  r Review  b Bookmarks  ? help  q quit",
+                .text = "p Project  v VCS  r Review  b Bookmarks  ? help  q quit",
             }, .{ .row_offset = 1, .col_offset = 1, .wrap = .none });
-        },
-        .file => {
-            const menu = window.child(.{ .y_off = window.height -| 2, .height = 2 });
-            menu.clear();
-            _ = menu.printSegment(.{ .text = " File commands ", .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
-            _ = menu.printSegment(.{ .text = "Enter  open or pin selected Project file" }, .{
-                .row_offset = 1,
-                .col_offset = 1,
-                .wrap = .none,
-            });
         },
         .vcs => {
             const menu = window.child(.{ .y_off = window.height -| 2, .height = 2 });

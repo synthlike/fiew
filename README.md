@@ -47,7 +47,6 @@ command registry generates the in-app help (`Space ?`) and named-command search
 | Key | Action |
 | --- | --- |
 | `Space` | Leader menu |
-| `Space f` | File commands |
 | `Space ?` | Key help |
 | `:` | Search named commands |
 | `Tab` / `Shift-Tab` | Focus next / previous region |
