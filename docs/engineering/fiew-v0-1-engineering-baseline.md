@@ -1,5 +1,5 @@
 <!-- agent-workflows-record
-{"archived":false,"created":"2026-08-25T20:21:26Z","id":"fiew-v0-1-engineering-baseline","modified":"2026-08-27T20:47:56Z","record_type":"technical_baselines","title":"fiew v0.1 engineering baseline"}
+{"archived":false,"created":"2026-08-25T20:21:26Z","id":"fiew-v0-1-engineering-baseline","modified":"2026-08-28T14:45:32Z","record_type":"technical_baselines","title":"fiew v0.1 engineering baseline"}
 -->
 # fiew v0.1 engineering baseline
 
@@ -17,8 +17,8 @@ This baseline indexes the minimal production-compatible foundation for the appro
 | Terminal UI | Low-level libvaxis at immutable revision `c060d314930c5552b99a89278a6a695baf0352da` | [Adopt libvaxis’s low-level API for fiew v0.1](<docs/decisions/ARP-0001.md>) |
 | Parsing | Tree-sitter 0.26.13 with the pinned Zig grammar | Repository `build.zig`, vendored sources, and [Integrate Tree-sitter behind a direct C adapter](<docs/decisions/ARP-0002.md>) |
 | VCS | Installed Git CLI, surfaced as the only v0.1 VCS backend | [fiew v0.1](<docs/specs/fiew-v0-1.md>) |
-| Local review | Versioned Markdown under the repository's gitignored `.reviews/` directory | [Use reviewer-owned local threads with command-mediated agent replies](<docs/decisions/ARP-0007.md>) |
-| Bookmarks | Versioned fiew-owned global state outside repositories, keyed by repository identity | [fiew v0.1](<docs/specs/fiew-v0-1.md>) |
+| Local review | Private schema-versioned JSON under the repository-local `.reviews/` directory, with public command projections | [fiew v0.1](<docs/specs/fiew-v0-1.md>) |
+| Bookmarks | Private schema-versioned JSON under the repository-local `.bookmarks/` directory | [fiew v0.1](<docs/specs/fiew-v0-1.md>) |
 | Internal architecture | Single-owner event-driven ports and adapters | [Structure fiew as a single-owner event-driven application](<docs/decisions/ARP-0005.md>) |
 | Repository scale | Up to 10,000 tracked files | [Choose initial platform and terminal compatibility](<.project/issues/ISSUE-0004-choose-initial-platform-and-terminal-compatibility.md>) |
 | Distribution | Manually installed Apple Silicon binaries from GitHub Releases | [Choose initial platform and terminal compatibility](<.project/issues/ISSUE-0004-choose-initial-platform-and-terminal-compatibility.md>) |
@@ -32,8 +32,8 @@ This baseline indexes the minimal production-compatible foundation for the appro
 - Git is required only for VCS and review workflows. Non-Git directories remain browsable with those capabilities disabled.
 - Tree-sitter core and the selected Zig grammar use the accepted compatible ABI inputs.
 - Markdown parsing, Mermaid rendering, fuzzy file finding, ZLS, Linux, and additional terminals are not v0.1 prerequisites. They are planned under [Plan fiew v0.2](<.project/issues/ISSUE-0030-plan-fiew-v0-2.md>).
-- `.reviews/` is the only repository-local write boundary. fiew does not edit `.gitignore`; the user or invoking workflow must ensure the directory is ignored.
-- The next threaded review schema is incompatible with the implemented `fiew.review/v1` note model and requires explicit migration or read-only legacy handling.
+- `.reviews/` and `.bookmarks/` are the only repository-local write boundaries. fiew does not edit `.gitignore`; the user or invoking workflow must ensure both directories are ignored.
+- Canonical reviews use `fiew.review/v1`; canonical bookmarks use `fiew.bookmark/v1`. Legacy Markdown reviews, unreleased bookmark data, and unknown future schemas are refused rather than migrated or overwritten.
 
 ## Approved conventions
 
@@ -66,8 +66,8 @@ This baseline indexes the minimal production-compatible foundation for the appro
 
 ### Configuration, operations, and data
 
-- Keep configuration and bookmarks in schema-versioned fiew-owned global state outside repositories.
-- Keep reviews as public versioned Markdown under `.reviews/`; only the command-mediated operations accepted by [Use reviewer-owned local threads with command-mediated agent replies](<docs/decisions/ARP-0007.md>) may mutate them.
+- Keep canonical reviews and bookmarks as private schema-versioned JSON in repository-local `.reviews/` and `.bookmarks/` directories.
+- Expose review history to agents only through public `review show` projections. Permit agents to append replies only through `review reply`; retain reviewer authority over thread creation, lifecycle, deletion, and current-review selection.
 - Use same-directory temporary files, flush, atomic replacement, future-version refusal, and one validated backup for durable state.
 - Never clear dirty state or report approval after a persistence failure.
 - Do not add telemetry, remote services, or secrets handling.
@@ -101,12 +101,14 @@ None.
 | --- | --- |
 | `zig version` | Verified locally: `0.16.0` |
 | `zig build` | Verified on the current workspace |
-| `zig build test --system zig-pkg` | Verified; deterministic suite passed |
-| `zig build test --system zig-pkg -Dgit-integration --summary all` | Verified; 94/94 tests passed in the reviewed workspace |
+| `zig build test --system zig-pkg` with clean caches and Git absent from `PATH` | Verified; 136/144 passed with 8 expected opt-in skips |
+| `zig build test --system zig-pkg -Dgit-integration --summary all` | Verified; 142/144 passed with 2 expected performance skips |
+| `zig build test --system zig-pkg -Dgit-integration -Dperformance --summary all` | Verified; 144/144 passed |
+| 10,000-file profile | Filesystem scan: 437 ms; clean Git snapshot: 189 ms on supported Apple Silicon macOS |
+| Non-interactive review integration and mutation audit | Verified from a nested working directory; approval-sensitive exits, agent reply authority, malformed/dangling current pointers, and unchanged source/Git state passed |
 | `zig fmt --check src build.zig` | Verified |
-| `zig build -Doptimize=ReleaseSafe --system zig-pkg` | Verified |
-| `zig build -Dtarget=aarch64-macos --system zig-pkg` | Verified |
-| Manual Ghostty smoke checklist | Documented; not rerun during the implementation-conformance and roadmap revision session |
+| `zig build -Doptimize=ReleaseSafe --system zig-pkg` | Verified as a Mach-O ARM64 executable |
+| Manual Ghostty smoke checklist | Passed all steps on 2026-08-28 with Ghostty 1.3.1 on Apple Silicon macOS 26.5.2 |
 
 ## References
 

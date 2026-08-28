@@ -2,9 +2,9 @@
 id: ISSUE-0026
 title: "Verify the integrated v0.1 review workflows"
 kind: "implementation"
-status: open
+status: resolved
 created: 2026-08-25
-assignee: 
+assignee: "agent"
 parent: "ISSUE-0013-implement-fiew-v0-1.md"
 blocked_by:
   - "ISSUE-0023-re-anchor-notes-across-git-refreshes.md"
@@ -47,5 +47,19 @@ Managed by native issue relationships.
 Release packaging and all v0.2 capabilities.
 
 ## Comments
-
 ## Resolution
+
+Completed integrated v0.1 verification on the supported Apple Silicon macOS and Ghostty baseline.
+
+- Added opt-in `-Dperformance` coverage for a 10,000-file filesystem scan and a clean Git snapshot over 10,000 tracked files.
+- Measured 437 ms for the filesystem scan and 189 ms for the clean Git snapshot on this machine; the full profiled suite passed 144/144 tests.
+- The normal deterministic suite passed 136/144 with 8 expected opt-in skips using clean local/global caches, system-pinned dependencies, and Git absent from `PATH`.
+- Git integration passed 142/144 with only the 2 performance tests skipped.
+- A `ReleaseSafe` Mach-O ARM64 build completed successfully.
+- An end-to-end non-interactive CLI fixture verified nested-root discovery, public current-review output, ordered agent replies, exit `1` for unapproved but successful show/reply, exit `0` for an approved historical review, exit `2` for command failures, unchanged current selection during historical access, malformed and dangling pointer refusal, and unchanged source, index, HEAD, and Git status.
+- Existing deterministic coverage passed for canonical review/bookmark envelopes, public projections, backup recovery, future-schema refusal, persistence failures, role authority, stale completion rejection, re-anchoring, queue/cancellation behavior, and bookmark isolation.
+- Corrected the engineering baseline to reflect canonical repository-local JSON reviews and bookmarks and recorded current verification evidence.
+- Updated the Ghostty checklist to current Review Diff and Review Threads bindings and wrapped-comment behavior.
+- The reviewer confirmed every manual Ghostty checklist step passed on 2026-08-28 using Ghostty 1.3.1 on Apple Silicon macOS 26.5.2, including startup/restoration, keyboard and mouse interaction, resize, all four contexts, review conversations, bookmarks, shutdown, and source/Git mutation checks.
+
+Final verification passed with `zig fmt --check src build.zig`, `zig build test --summary all`, and `git diff --check`.

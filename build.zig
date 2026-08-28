@@ -18,8 +18,14 @@ pub fn build(b: *std.Build) void {
         "git-integration",
         "Run git integration tests (requires the git executable)",
     ) orelse false;
+    const performance = b.option(
+        bool,
+        "performance",
+        "Run opt-in v0.1 scale profiling tests",
+    ) orelse false;
     const build_options = b.addOptions();
     build_options.addOption(bool, "git_integration", git_integration);
+    build_options.addOption(bool, "performance", performance);
     fiew.addOptions("build_options", build_options);
 
     // Tree-sitter core (v0.26.13) and the Zig grammar (ABI 15) are vendored at

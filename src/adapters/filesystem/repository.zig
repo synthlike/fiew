@@ -165,6 +165,36 @@ test "repository scan is sorted and excludes Git metadata" {
     try std.testing.expectEqualStrings("src/z.zig", repository.tree.nodes[2].path);
 }
 
+test "v0.1 profile scans 10,000 files" {
+    const build_options = @import("build_options");
+    if (!build_options.performance) return error.SkipZigTest;
+
+    var temporary = std.testing.tmpDir(.{ .iterate = true });
+    defer temporary.cleanup();
+    var path_buffer: [64]u8 = undefined;
+    for (0..100) |directory_index| {
+        const directory = try std.fmt.bufPrint(&path_buffer, "d{d:0>3}", .{directory_index});
+        try temporary.dir.createDir(std.testing.io, directory, .default_dir);
+        for (0..100) |file_index| {
+            const path = try std.fmt.bufPrint(&path_buffer, "d{d:0>3}/f{d:0>3}.zig", .{ directory_index, file_index });
+            try temporary.dir.writeFile(std.testing.io, .{ .sub_path = path, .data = "const value = 1;\n" });
+        }
+    }
+
+    const root_path = try std.fmt.allocPrint(std.testing.allocator, ".zig-cache/tmp/{s}", .{temporary.sub_path});
+    defer std.testing.allocator.free(root_path);
+    const started = std.Io.Timestamp.now(std.testing.io, .real).nanoseconds;
+    var repository = try Repository.open(std.testing.allocator, std.testing.io, root_path);
+    defer repository.deinit();
+    const elapsed = std.Io.Timestamp.now(std.testing.io, .real).nanoseconds - started;
+
+    try std.testing.expectEqual(max_supported_files, repository.tree.file_count);
+    std.debug.print("v0.1 profile: scanned {d} files in {d} ms\n", .{
+        repository.tree.file_count,
+        @divFloor(elapsed, std.time.ns_per_ms),
+    });
+}
+
 test "loading a document never changes its source file" {
     var temporary = std.testing.tmpDir(.{ .iterate = true });
     defer temporary.cleanup();

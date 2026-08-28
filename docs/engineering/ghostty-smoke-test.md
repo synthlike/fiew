@@ -21,9 +21,9 @@ Use this checklist for terminal behavior that deterministic tests cannot verify.
 8. Open multiple files, then use `Ctrl-o` and `Ctrl-i`. Confirm backward and forward location history restores each file and selection.
 9. Open `Space`, `Space ?`, and `:`. Confirm menus and help list disabled commands with reasons, invalid sequences report feedback, `q` closes help without quitting, and `:quit` is available.
 10. Resize across 100 columns. Confirm Project changes between beside and overlay layouts without losing selection or scroll position. Below 60×20, confirm the unsupported-size message appears.
-11. Press `Space v` and confirm the VCS context identifies Git and shows loading without freezing input. Change a file externally, confirm the prior snapshot remains visible until refresh completes, then use `Space v r` and confirm its pending state is visible.
-12. In a repository where `.reviews/` is ignored, focus a textual diff, press `v`, extend over multiple lines on one side, then use `Space r n` and save a reviewer comment. Use `Space r f` on another change and confirm both line- and file-anchored threads appear.
-13. Open the Review sidebar with `Space r Enter`. Confirm keyboard and mouse selection, preview, focus, and scrolling are independent. Append with `Space r a`, resolve/reopen with `Space r x`, and confirm `Space r d` requires `y` before deleting the complete thread. Move an unchanged anchored change between Unstaged and Staged and confirm the thread follows it; remove or duplicate its exact context and confirm it becomes Outdated without losing remembered resolution.
+11. Press `Space r d` and confirm Review Diff identifies Git and shows loading without freezing input. Change a file externally, confirm the prior snapshot remains visible until refresh completes, then use `Space r d r` and confirm its pending state is visible.
+12. In a repository where `.reviews/` and `.bookmarks/` are ignored, focus a textual diff, press `v`, extend over multiple lines on one side, then use `Space r n` and save a reviewer comment. Use `Space r f` on another change and confirm both line- and file-anchored threads appear. Add long ASCII and Unicode comments from reviewer and agent roles; resize and page through Diff to confirm every wrapped row remains readable and retains its author color.
+13. Open Review Threads with `Space r t`. Confirm keyboard and mouse selection, preview, focus, and scrolling are independent. Append with `Space r a`, resolve/reopen with `Space r r`, and confirm `Space r x` requires `y` before deleting the complete thread. Move an unchanged anchored change between Unstaged and Staged and confirm the thread follows it; remove or duplicate its exact context and confirm it becomes Outdated without losing remembered resolution.
 14. Create labelled and unlabelled source bookmarks with `Space b n`, then create one from a diff line. Open `Space b Enter`; verify keyboard and mouse preview, `Enter`, `[ b`/`] b`, confirmed deletion, and restart persistence. Confirm `.bookmarks/bookmarks.json` is created without source or Git mutation by fiew.
 15. Open a binary file and confirm only metadata appears. If available, open a file containing invalid UTF-8 and confirm replacement characters appear without changing the file.
 16. Use `Space q`. Confirm fiew exits, the previous terminal contents return, the cursor is visible, and normal line input and echo work.
@@ -32,4 +32,12 @@ Use this checklist for terminal behavior that deterministic tests cannot verify.
 
 ## Result
 
-Record the date, Ghostty version, macOS version, and any failed step in the implementation issue.
+Record the following in the implementation issue:
+
+- date;
+- Ghostty version;
+- macOS version and architecture;
+- repository fixture used;
+- passed steps;
+- failed or blocked steps with observed behavior; and
+- confirmation that terminal restoration and source/Git mutation audits passed.

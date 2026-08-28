@@ -425,10 +425,48 @@ fn requireGitIntegration() !void {
     if (!build_options.git_integration) return error.SkipZigTest;
 }
 
+fn requirePerformanceProfile() !void {
+    if (!build_options.git_integration or !build_options.performance) return error.SkipZigTest;
+}
+
 fn runGit(dir: std.Io.Dir, args: []const []const u8) !void {
     var output = try command.run(std.testing.allocator, std.testing.io, dir, args);
     defer output.deinit();
     if (!output.succeeded()) return error.GitCommandFailed;
+}
+
+test "v0.1 profile loads a clean repository with 10,000 tracked files" {
+    try requirePerformanceProfile();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try runGit(tmp.dir, &.{ "init", "--quiet" });
+
+    var path_buffer: [64]u8 = undefined;
+    for (0..100) |directory_index| {
+        const directory = try std.fmt.bufPrint(&path_buffer, "d{d:0>3}", .{directory_index});
+        try tmp.dir.createDir(std.testing.io, directory, .default_dir);
+        for (0..100) |file_index| {
+            const path = try std.fmt.bufPrint(&path_buffer, "d{d:0>3}/f{d:0>3}.zig", .{ directory_index, file_index });
+            try writeFileTo(tmp.dir, path, "const value = 1;\n");
+        }
+    }
+    try runGit(tmp.dir, &.{ "add", "-A" });
+    try runGit(tmp.dir, &.{ "-c", "user.email=t@t", "-c", "user.name=t", "commit", "--quiet", "-m", "profile" });
+
+    var status_before = try command.run(std.testing.allocator, std.testing.io, tmp.dir, &.{ "status", "--porcelain=v2", "-z" });
+    defer status_before.deinit();
+    const started = std.Io.Timestamp.now(std.testing.io, .real).nanoseconds;
+    var snapshot = try loadSnapshot(std.testing.allocator, std.testing.io, tmp.dir);
+    defer snapshot.changeset.deinit();
+    const elapsed = std.Io.Timestamp.now(std.testing.io, .real).nanoseconds - started;
+    var status_after = try command.run(std.testing.allocator, std.testing.io, tmp.dir, &.{ "status", "--porcelain=v2", "-z" });
+    defer status_after.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), snapshot.changeset.changes.len);
+    try std.testing.expectEqualSlices(u8, status_before.stdout, status_after.stdout);
+    std.debug.print("v0.1 profile: loaded clean Git snapshot for 10,000 tracked files in {d} ms\n", .{
+        @divFloor(elapsed, std.time.ns_per_ms),
+    });
 }
 
 test "discover classifies a fresh work tree as ready and unborn" {
