@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const zig_syntax = @import("zig_syntax.zig");
+const markdown_syntax = @import("markdown_syntax.zig");
 const syntax = @import("../../model/syntax.zig");
 
 /// Show a pending indicator once a parse has run this long without finishing.
@@ -59,6 +60,20 @@ pub fn run(
     return .{ .generation = request.generation, .data = data };
 }
 
+/// Markdown has a block/inline/injection pipeline but shares the same job
+/// identity and fallback contract as Zig.
+pub fn runMarkdown(
+    engine: *markdown_syntax.Engine,
+    allocator: std.mem.Allocator,
+    request: Request,
+    cancel: ?*markdown_syntax.CancelContext,
+) Completion {
+    return .{
+        .generation = request.generation,
+        .data = engine.analyze(allocator, request.source, cancel),
+    };
+}
+
 /// Tracks the generation the UI currently cares about and rejects any
 /// completion that does not match it, so a slow parse for a superseded snapshot
 /// can never alter the current view.
@@ -110,6 +125,17 @@ test "run produces analysis tagged with its generation" {
     try testing.expectEqual(@as(u64, 7), completion.generation);
     try testing.expect(completion.data != null);
     try testing.expect(completion.data.?.folds.len >= 1);
+}
+
+test "Markdown run produces analysis with the shared generation contract" {
+    var engine = try markdown_syntax.Engine.init(testing.allocator);
+    defer engine.deinit();
+    const source = "# Heading\n\n```zig\nconst n = 1;\n```\n";
+    var completion = runMarkdown(&engine, testing.allocator, .{ .generation = 8, .source = source }, null);
+    defer completion.deinit();
+    try testing.expectEqual(@as(u64, 8), completion.generation);
+    try testing.expect(completion.data != null);
+    try testing.expect(completion.data.?.folds.len >= 2);
 }
 
 test "run returns no data for oversized input" {

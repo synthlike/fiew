@@ -126,15 +126,20 @@ fn gitWorker(
     };
 }
 
-/// Drives off-render-loop Zig parsing for the active document: one worker at a
-/// time, results routed by snapshot generation, cancelled past the one-second
-/// deadline. When the grammar is unavailable the whole feature stays dormant
-/// and documents render as plain text.
+const ParseEngine = union(enum) {
+    zig: *fiew.zig_syntax.Engine,
+    markdown: *fiew.markdown_syntax.Engine,
+};
+
+/// Drives off-render-loop Zig and Markdown parsing for the active document: one
+/// worker at a time, results routed by snapshot generation and cancelled past
+/// the one-second deadline. Unavailable grammars fall back to plain text.
 const ParseState = struct {
     io: std.Io,
     allocator: std.mem.Allocator,
     loop: *vaxis.Loop(Event),
-    engine: ?fiew.zig_syntax.Engine,
+    zig_engine: ?fiew.zig_syntax.Engine,
+    markdown_engine: ?fiew.markdown_syntax.Engine,
     coordinator: fiew.parse_job.Coordinator = .{},
     cancel: std.atomic.Value(bool) = .init(false),
     future: ?ParseFuture = null,
@@ -144,43 +149,54 @@ const ParseState = struct {
     elapsed_ticks: u8 = 0,
 
     fn init(io: std.Io, allocator: std.mem.Allocator, loop: *vaxis.Loop(Event)) ParseState {
-        const engine: ?fiew.zig_syntax.Engine = fiew.zig_syntax.Engine.init(allocator) catch null;
-        return .{ .io = io, .allocator = allocator, .loop = loop, .engine = engine };
+        const zig_engine: ?fiew.zig_syntax.Engine = fiew.zig_syntax.Engine.init(allocator) catch null;
+        const markdown_engine: ?fiew.markdown_syntax.Engine = fiew.markdown_syntax.Engine.init(allocator) catch null;
+        return .{
+            .io = io,
+            .allocator = allocator,
+            .loop = loop,
+            .zig_engine = zig_engine,
+            .markdown_engine = markdown_engine,
+        };
     }
 
     fn deinit(self: *ParseState) void {
         self.cancelInFlight();
-        if (self.engine) |*engine| engine.deinit();
+        if (self.markdown_engine) |*engine| engine.deinit();
+        if (self.zig_engine) |*engine| engine.deinit();
         self.* = undefined;
     }
 
-    fn parseable(snapshot: *const fiew.document.Snapshot) bool {
-        return snapshot.encoding == .utf8 and
-            snapshot.bytes.len > 0 and
-            snapshot.bytes.len <= fiew.zig_syntax.max_parse_bytes and
-            std.mem.endsWith(u8, snapshot.path, ".zig");
+    fn engineFor(self: *ParseState, snapshot: *const fiew.document.Snapshot) ?ParseEngine {
+        if (snapshot.encoding != .utf8 or snapshot.bytes.len == 0 or
+            snapshot.bytes.len > fiew.zig_syntax.max_parse_bytes) return null;
+        if (std.mem.endsWith(u8, snapshot.path, ".zig"))
+            return if (self.zig_engine) |*engine| .{ .zig = engine } else null;
+        if (std.mem.endsWith(u8, snapshot.path, ".md") or
+            std.mem.endsWith(u8, snapshot.path, ".markdown"))
+            return if (self.markdown_engine) |*engine| .{ .markdown = engine } else null;
+        return null;
     }
 
-    /// Request analysis for the active document if it is an unparsed, parseable
-    /// Zig snapshot we are not already working on.
+    /// Request analysis for the active document if it is an unparsed,
+    /// supported snapshot we are not already working on.
     fn drive(self: *ParseState, app: *const fiew.app.App) void {
-        if (self.engine == null) return;
         const view = app.activeView() orelse return;
         if (view.syntax != null) return;
         const snapshot = &view.snapshot;
-        if (!parseable(snapshot)) return;
+        const engine = self.engineFor(snapshot) orelse return;
         if (self.parsing_generation == snapshot.generation) return;
         if (self.resolved_generation == snapshot.generation) return;
-        self.submit(snapshot);
+        self.submit(snapshot, engine);
     }
 
-    fn submit(self: *ParseState, snapshot: *const fiew.document.Snapshot) void {
+    fn submit(self: *ParseState, snapshot: *const fiew.document.Snapshot, engine: ParseEngine) void {
         self.cancelInFlight();
         const copy = self.allocator.dupe(u8, snapshot.bytes) catch return;
         self.cancel.store(false, .release);
         self.coordinator.begin(snapshot.generation);
         const future = self.io.concurrent(parseWorker, .{
-            self.io,        self.loop, &self.engine.?,
+            self.io,        self.loop, engine,
             self.allocator, copy,      snapshot.generation,
             &self.cancel,
         }) catch {
@@ -239,7 +255,7 @@ const ParseState = struct {
 fn parseWorker(
     io: std.Io,
     loop: *vaxis.Loop(Event),
-    engine: *fiew.zig_syntax.Engine,
+    engine: ParseEngine,
     allocator: std.mem.Allocator,
     source: []const u8,
     generation: u64,
@@ -247,12 +263,11 @@ fn parseWorker(
 ) void {
     _ = io;
     var context: fiew.zig_syntax.CancelContext = .{ .flag = cancel };
-    const completion = fiew.parse_job.run(
-        engine,
-        allocator,
-        .{ .generation = generation, .source = source },
-        &context,
-    );
+    const request: fiew.parse_job.Request = .{ .generation = generation, .source = source };
+    const completion = switch (engine) {
+        .zig => |value| fiew.parse_job.run(value, allocator, request, &context),
+        .markdown => |value| fiew.parse_job.runMarkdown(value, allocator, request, &context),
+    };
     const box = allocator.create(Completion) catch {
         var owned = completion;
         owned.deinit();
@@ -2149,6 +2164,20 @@ test "terminal presentation stays usable without optional capabilities" {
     try std.testing.expect(fiew.commands.definition(.quit).binding.len != 0);
     try std.testing.expect(fiew.commands.definition(.focus_next).binding.len != 0);
     try std.testing.expect(fiew.commands.definition(.activate).binding.len != 0);
+}
+
+test "Markdown and injected Zig highlights reach the cell-style seam" {
+    const source = "# Heading\n\n```zig\nconst answer = 42;\n```\n";
+    var engine = try fiew.markdown_syntax.Engine.init(std.testing.allocator);
+    defer engine.deinit();
+    var data = engine.analyze(std.testing.allocator, source, null) orelse return error.ParseFailed;
+    defer data.deinit();
+
+    const heading = std.mem.indexOf(u8, source, "Heading").?;
+    try std.testing.expectEqual(fiew.syntax.HighlightKind.label, highlightKindAt(data.highlights, heading).?);
+    const number = std.mem.indexOf(u8, source, "42").?;
+    try std.testing.expectEqual(fiew.syntax.HighlightKind.number, highlightKindAt(data.highlights, number).?);
+    try std.testing.expectEqual(vaxis.Cell.Color{ .index = 6 }, highlightColor(highlightKindAt(data.highlights, number).?));
 }
 
 test "review render labels distinguish statuses and comment roles" {

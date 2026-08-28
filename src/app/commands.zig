@@ -1612,6 +1612,37 @@ test "parsed Zig drives fold and structural commands end to end" {
     try std.testing.expect(app.activeView() != null);
 }
 
+test "parsed Markdown drives section and fence folding end to end" {
+    const markdown_syntax = @import("../adapters/treesitter/markdown_syntax.zig");
+    var app = try testApp();
+    defer app.deinit();
+    app.pinned.?.deinit();
+    const source = "# Heading\n\nParagraph.\n\n```zig\nconst value = 1;\n```\n";
+    app.pinned = .{ .snapshot = try testSnapshot("README.md", source) };
+    app.focus = .main;
+
+    var engine = try markdown_syntax.Engine.init(std.testing.allocator);
+    defer engine.deinit();
+    const data = engine.analyze(std.testing.allocator, source, null) orelse return error.ParseFailed;
+    app.installParseData(data);
+    try std.testing.expect(app.foldsAvailable());
+    try std.testing.expect(app.outlineAvailable());
+
+    var session = Session.init(std.testing.allocator);
+    defer session.deinit();
+    const dimensions: Dimensions = .{ .sidebar_rows = 20, .document_rows = 20, .document_columns = 80 };
+
+    _ = try session.handle(&app, charKey('z'), dimensions);
+    _ = try session.handle(&app, charKey('c'), dimensions);
+    try std.testing.expect(app.activeView().?.isLineHidden(1));
+    _ = try session.handle(&app, charKey('z'), dimensions);
+    _ = try session.handle(&app, charKey('o'), dimensions);
+    try std.testing.expect(!app.activeView().?.isLineHidden(1));
+
+    _ = try session.handle(&app, .{ .code = .character, .character = 'n', .alt = true }, dimensions);
+    try std.testing.expect(app.activeView() != null);
+}
+
 test "structural navigation scrolls the view to a distant target" {
     const syntax = @import("../model/syntax.zig");
     var app = try testApp();

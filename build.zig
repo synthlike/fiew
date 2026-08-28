@@ -28,7 +28,7 @@ pub fn build(b: *std.Build) void {
     build_options.addOption(bool, "performance", performance);
     fiew.addOptions("build_options", build_options);
 
-    // Tree-sitter core (v0.26.13) and the Zig grammar (ABI 15) are vendored at
+    // Tree-sitter core (v0.26.13), Zig, and Markdown grammars (ABI 15) are vendored at
     // pinned revisions under vendor/ and statically compiled into the fiew
     // module. They are reached only through the direct C adapter in
     // src/adapters/treesitter. See each vendor/*/REVISION for the exact commit.
@@ -46,6 +46,14 @@ pub fn build(b: *std.Build) void {
         .flags = c_flags,
     });
     fiew.addIncludePath(b.path("vendor/tree-sitter-zig/src"));
+    for (&[_][]const u8{
+        "vendor/tree-sitter-markdown/block/parser.c",
+        "vendor/tree-sitter-markdown/block/scanner.c",
+        "vendor/tree-sitter-markdown/inline/parser.c",
+        "vendor/tree-sitter-markdown/inline/scanner.c",
+    }) |source| fiew.addCSourceFile(.{ .file = b.path(source), .flags = c_flags });
+    fiew.addIncludePath(b.path("vendor/tree-sitter-markdown/block"));
+    fiew.addIncludePath(b.path("vendor/tree-sitter-markdown/inline"));
     // The grammar's fold query lives outside src/, so expose it as a named
     // import the adapter can @embedFile.
     fiew.addAnonymousImport("zig_fold_query", .{

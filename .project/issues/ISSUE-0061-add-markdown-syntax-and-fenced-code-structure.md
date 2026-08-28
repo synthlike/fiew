@@ -2,9 +2,9 @@
 id: ISSUE-0061
 title: "Add Markdown syntax and fenced-code structure"
 kind: "implementation"
-status: open
+status: resolved
 created: 2026-08-28
-assignee:
+assignee: "agent"
 parent: "ISSUE-0057-implement-fiew-v0-2.md"
 blocked_by:
 labels: []
@@ -36,5 +36,13 @@ Managed by native issue relationships.
 Mermaid rendering, additional grammars, nested injections, and indentation folding.
 
 ## Comments
-
 ## Resolution
+
+Implemented the approved Markdown syntax slice. Vendored the pinned ABI-15 Markdown block and inline grammars, added direct C-adapter parsing with included ranges and fiew-owned queries, attached inline and one-level Zig fence structure to immutable parse snapshots, and routed `.md` and `.markdown` documents through the cancellable generation-checked worker path. Section and fence folds, Markdown and injected Zig highlights, structural commands, plain-text fallback, ABI/query failure, cancellation, stale-result, invalid-UTF-8, malformed-input, and size-boundary behavior have durable offline coverage.
+
+Verification passed:
+
+- `zig build test`
+- `zig build -Dtarget=x86_64-linux-musl`
+- `zig build -Dtarget=aarch64-linux-musl`
+- `zig build` and `./zig-out/bin/fiew --version`

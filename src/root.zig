@@ -29,6 +29,7 @@ pub const review_cli = @import("app/review_cli.zig");
 pub const review_store = @import("adapters/storage/review_store.zig");
 pub const bookmark_store = @import("adapters/storage/bookmark_store.zig");
 pub const state_store = @import("adapters/storage/state_store.zig");
+pub const markdown_syntax = @import("adapters/treesitter/markdown_syntax.zig");
 pub const parse_job = @import("adapters/treesitter/parse_job.zig");
 pub const syntax = @import("model/syntax.zig");
 pub const text_segmentation = @import("ports/text_segmentation.zig");
