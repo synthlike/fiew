@@ -1936,7 +1936,7 @@ fn drawCommandSurface(
             _ = menu.printSegment(.{ .text = " Files ", .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
             const git_reason = fiew.commands.unavailableReason(app, .file_find_git);
             _ = menu.printSegment(.{
-                .text = if (git_reason == null) "a all files  g Git-visible  r reload" else "a all files  g Git-visible (not a Git repository)  r reload",
+                .text = if (git_reason == null) "a all files  g git files  r reload" else "a all files  g git files (not a Git repository)  r reload",
             }, .{ .row_offset = 1, .col_offset = 1, .wrap = .none });
         },
         .note_composer => try drawComposer(allocator, window, app),
@@ -1947,7 +1947,7 @@ fn drawCommandSurface(
             box.clear();
             const label = switch (session.finder.scope) {
                 .all => "Find all files",
-                .git_visible => "Find Git-visible files",
+                .git_visible => "Find Git files",
             };
             const query = try std.fmt.allocPrint(allocator, " {s}  {s}", .{ label, session.finder.query.items });
             _ = box.printSegment(.{ .text = try sanitizeLine(allocator, query, box.width), .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });

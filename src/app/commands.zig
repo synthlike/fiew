@@ -120,7 +120,7 @@ pub const definitions = [_]Definition{
     .{ .id = .project_open, .stable_id = "project-open", .title = "Open Project sidebar", .binding = "Space p" },
     .{ .id = .file_menu, .stable_id = "file-menu", .title = "Open file finder commands", .binding = "Space f" },
     .{ .id = .file_find_all, .stable_id = "file-find-all", .title = "Find all repository files", .binding = "Space f a" },
-    .{ .id = .file_find_git, .stable_id = "file-find-git", .title = "Find Git-visible files", .binding = "Space f g" },
+    .{ .id = .file_find_git, .stable_id = "file-find-git", .title = "Find Git files", .binding = "Space f g" },
     .{ .id = .document_reload, .stable_id = "file-reload", .title = "Reload active file", .binding = "Space f r" },
     .{ .id = .git_open, .stable_id = "review-diff-open", .title = "Open Review Diff (Git)", .binding = "Space r d" },
     .{ .id = .git_refresh, .stable_id = "review-diff-refresh", .title = "Refresh Review Diff", .binding = "Space r d r" },
