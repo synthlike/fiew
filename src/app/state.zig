@@ -841,22 +841,7 @@ pub const App = struct {
         return self.history.items[current + 1];
     }
 
-    pub fn collapseSidebar(self: *App) void {
-        self.sidebar_visible = false;
-        self.clearPreview();
-        self.focus = .main;
-    }
-
-    pub fn showSidebar(self: *App) void {
-        self.sidebar_visible = true;
-        self.focus = .sidebar;
-    }
-
     pub fn toggleFocus(self: *App) void {
-        if (!self.sidebar_visible) {
-            self.showSidebar();
-            return;
-        }
         self.focus = switch (self.focus) {
             .sidebar => .main,
             .main => .sidebar,

@@ -3016,7 +3016,7 @@ fn drawCommandSurface(
             menu.clear();
             _ = menu.printSegment(.{ .text = " Leader ", .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
             _ = menu.printSegment(.{
-                .text = "p Project  f Files  r Review  b Bookmarks  t trails  ? help  q quit",
+                .text = "p Project  r Review  b Bookmarks  t Trails  ? help  q quit",
             }, .{ .row_offset = 1, .col_offset = 1, .wrap = .none });
         },
         .vcs => {
@@ -3039,13 +3039,13 @@ fn drawCommandSurface(
         },
         .trails => try drawTrails(allocator, window, app, session),
         .bookmarks => try drawBookmarksPicker(allocator, window, app, session),
-        .files => {
+        .project => {
             const menu = window.child(.{ .y_off = window.height -| 2, .height = 2 });
             menu.clear();
-            _ = menu.printSegment(.{ .text = " Files ", .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
+            _ = menu.printSegment(.{ .text = " Project ", .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
             const git_reason = fiew.commands.unavailableReason(app, .file_find_git);
             _ = menu.printSegment(.{
-                .text = if (git_reason == null) "a all files  g git files  r reload" else "a all files  g git files (not a Git repository)  r reload",
+                .text = if (git_reason == null) "f all files  g git files  r reload" else "f all files  g git files (not a Git repository)  r reload",
             }, .{ .row_offset = 1, .col_offset = 1, .wrap = .none });
         },
         .note_composer => try drawComposer(allocator, window, app),

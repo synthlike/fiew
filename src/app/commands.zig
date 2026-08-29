@@ -33,7 +33,6 @@ pub const Id = enum {
     project_expand,
     project_toggle,
     project_open,
-    file_menu,
     file_find_all,
     file_find_git,
     document_reload,
@@ -133,11 +132,10 @@ pub const definitions = [_]Definition{
     .{ .id = .project_collapse, .stable_id = "project-collapse", .title = "Collapse or parent", .binding = "h" },
     .{ .id = .project_expand, .stable_id = "project-expand", .title = "Expand or child", .binding = "l" },
     .{ .id = .project_toggle, .stable_id = "project-toggle", .title = "Toggle Project directory", .binding = "Enter" },
-    .{ .id = .project_open, .stable_id = "project-open", .title = "Open Project sidebar", .binding = "Space p" },
-    .{ .id = .file_menu, .stable_id = "file-menu", .title = "Open file finder commands", .binding = "Space f" },
-    .{ .id = .file_find_all, .stable_id = "file-find-all", .title = "Find all repository files", .binding = "Space f a" },
-    .{ .id = .file_find_git, .stable_id = "file-find-git", .title = "Find Git files", .binding = "Space f g" },
-    .{ .id = .document_reload, .stable_id = "file-reload", .title = "Reload active file", .binding = "Space f r" },
+    .{ .id = .project_open, .stable_id = "project-open", .title = "Open Project commands", .binding = "Space p" },
+    .{ .id = .file_find_all, .stable_id = "file-find-all", .title = "Find all repository files", .binding = "Space p f" },
+    .{ .id = .file_find_git, .stable_id = "file-find-git", .title = "Find Git files", .binding = "Space p g" },
+    .{ .id = .document_reload, .stable_id = "file-reload", .title = "Reload active file", .binding = "Space p r" },
     .{ .id = .git_open, .stable_id = "review-diff-open", .title = "Open Review Diff (Git)", .binding = "Space r d" },
     .{ .id = .git_refresh, .stable_id = "review-diff-refresh", .title = "Refresh Review Diff", .binding = "Space r d r" },
     .{ .id = .diff_file_next, .stable_id = "diff-file-next", .title = "Next changed file", .binding = "] f", .hint = "file" },
@@ -274,9 +272,7 @@ pub fn unavailableReason(app: *const state.App, id: Id) ?[]const u8 {
         else
             null,
         .file_find_git => if (!app.git_enabled) "not a Git repository" else null,
-        .document_reload => if (app.focus != .main)
-            "focus a document to reload"
-        else if (app.sidebar_context == .git and !app.viewing_source)
+        .document_reload => if (app.sidebar_context == .git and !app.viewing_source)
             "open source before reloading"
         else if (app.sidebar_context == .review or app.activeDocument() == null)
             "no document is open"
@@ -450,7 +446,7 @@ pub const Surface = enum {
     vcs,
     bookmarks,
     trails,
-    files,
+    project,
     note_composer,
     bookmark_composer,
     trail_composer,
@@ -484,6 +480,7 @@ pub const Session = struct {
     collection_matches: std.ArrayListUnmanaged(CollectionMatch) = .empty,
     collection_selected: usize = 0,
     collection_scroll: usize = 0,
+    project_origin: ?state.SidebarContext = null,
     finder: file_finder.Finder,
 
     pub fn init(allocator: std.mem.Allocator) Session {
@@ -540,7 +537,7 @@ pub const Session = struct {
                 .vcs => "LDR r d",
                 .bookmarks => "LDR b",
                 .trails => "LDR t",
-                .files => "LDR f",
+                .project => "LDR p",
                 .note_composer => "comment",
                 .bookmark_composer => "bookmark label",
                 .trail_composer => "trail title / note",
@@ -585,7 +582,7 @@ pub const Session = struct {
         if (self.surface == .vcs) return self.handleVcs(app, key, dimensions);
         if (self.surface == .bookmarks) return self.handleBookmarks(app, key, dimensions);
         if (self.surface == .trails) return self.handleTrails(app, key, dimensions);
-        if (self.surface == .files) return self.handleFiles(app, key, dimensions);
+        if (self.surface == .project) return self.handleProject(app, key, dimensions);
         if (self.surface == .command) return self.handleCommandInput(app, key, dimensions);
         if (self.surface == .help) {
             if (isCharacter(key, 'q')) return self.execute(app, .close_transient, dimensions);
@@ -742,16 +739,9 @@ pub const Session = struct {
                 app.clearPreview();
             },
             .project_open => {
-                if (app.sidebar_context != .project) {
-                    app.showProjectSidebar();
-                } else if (app.sidebar_visible and app.focus == .sidebar) {
-                    app.collapseSidebar();
-                } else {
-                    app.showSidebar();
-                }
-            },
-            .file_menu => {
-                self.surface = .files;
+                self.project_origin = app.sidebar_context;
+                app.showProjectSidebar();
+                self.surface = .project;
                 app.mode = .normal;
             },
             .file_find_all => {
@@ -996,7 +986,6 @@ pub const Session = struct {
     fn handleLeader(self: *Session, app: *state.App, key: Key, dimensions: Dimensions) !Effect {
         return switch (normalizedCharacter(key)) {
             'p' => self.executeAndClose(app, .project_open, dimensions),
-            'f' => self.executeAndClose(app, .file_menu, dimensions),
             'r' => self.executeAndClose(app, .review_open, dimensions),
             'b' => self.executeAndClose(app, .bookmark_open, dimensions),
             't' => self.executeAndClose(app, .trail_open, dimensions),
@@ -1010,15 +999,16 @@ pub const Session = struct {
         };
     }
 
-    fn handleFiles(self: *Session, app: *state.App, key: Key, dimensions: Dimensions) !Effect {
+    fn handleProject(self: *Session, app: *state.App, key: Key, dimensions: Dimensions) !Effect {
         return switch (normalizedCharacter(key)) {
-            'a' => self.executeAndClose(app, .file_find_all, dimensions),
-            'g' => self.executeAndClose(app, .file_find_git, dimensions),
-            'r' => self.executeAndClose(app, .document_reload, dimensions),
+            'f' => self.executeProjectAction(app, .file_find_all, dimensions),
+            'g' => self.executeProjectAction(app, .file_find_git, dimensions),
+            'r' => self.executeProjectAction(app, .document_reload, dimensions),
             else => blk: {
-                app.feedback = "invalid file finder command";
+                // `Space p` is both a complete Project command and an action
+                // prefix. A non-action key belongs to normal Project navigation.
                 self.resetTransient(app);
-                break :blk .none;
+                break :blk try self.handle(app, key, dimensions);
             },
         };
     }
@@ -1428,6 +1418,15 @@ pub const Session = struct {
         return count;
     }
 
+    fn executeProjectAction(self: *Session, app: *state.App, id: Id, dimensions: Dimensions) !Effect {
+        app.sidebar_context = self.project_origin orelse .project;
+        errdefer app.sidebar_context = .project;
+        const effect = try self.executeAndClose(app, id, dimensions);
+        app.sidebar_context = .project;
+        self.project_origin = null;
+        return effect;
+    }
+
     fn beginCollectionSearch(self: *Session, app: *state.App) !void {
         self.collection_search = true;
         self.query.clearRetainingCapacity();
@@ -1574,6 +1573,7 @@ pub const Session = struct {
         self.collection_matches.clearRetainingCapacity();
         self.collection_selected = 0;
         self.collection_scroll = 0;
+        self.project_origin = null;
         app.mode = .normal;
     }
 };
@@ -1678,11 +1678,11 @@ test "registry stable identifiers are unique" {
 
 test "required modal bindings are represented by the command registry" {
     const required = [_][]const u8{
-        "h",       "j",       "k",         "l",         "w",         "b",       "e",         "g g",       "g e",
-        "Ctrl-u",  "Ctrl-d",  "PageUp",    "PageDown",  "v",         "x",       ";",         "Alt-;",     "Enter",
-        "g d",     "g r",     "Ctrl-o",    "Ctrl-i",    "z c",       "z o",     "z a",       "z M",       "z R",
-        "Space p", "Space f", "Space f a", "Space f g", "Space f r", "Space r", "Space r d", "Space r t", "Space ?",
-        ":",       "q",
+        "h",       "j",         "k",         "l",         "w",       "b",         "e",         "g g",     "g e",
+        "Ctrl-u",  "Ctrl-d",    "PageUp",    "PageDown",  "v",       "x",         ";",         "Alt-;",   "Enter",
+        "g d",     "g r",       "Ctrl-o",    "Ctrl-i",    "z c",     "z o",       "z a",       "z M",     "z R",
+        "Space p", "Space p f", "Space p g", "Space p r", "Space r", "Space r d", "Space r t", "Space ?", ":",
+        "q",
     };
     for (required) |binding| {
         var found = false;
@@ -1693,6 +1693,10 @@ test "required modal bindings are represented by the command registry" {
             }
         }
         try std.testing.expect(found);
+    }
+    for (definitions) |item| {
+        try std.testing.expect(!std.mem.eql(u8, item.binding, "Space f"));
+        try std.testing.expect(!std.mem.startsWith(u8, item.binding, "Space f "));
     }
 }
 
@@ -1929,7 +1933,7 @@ test "bookmark commands create show navigate and confirm deletion" {
     try std.testing.expect(!app.hasBookmarks());
 }
 
-test "file menu distinguishes all and Git-visible finder commands" {
+test "Project namespace distinguishes all and Git-visible finder commands" {
     var app = try testApp();
     defer app.deinit();
     const pinned_selection = app.selection();
@@ -1939,10 +1943,12 @@ test "file menu distinguishes all and Git-visible finder commands" {
     const dimensions: Dimensions = .{ .sidebar_rows = 20, .document_rows = 20, .document_columns = 80 };
 
     _ = try session.handle(&app, charKey(' '), dimensions);
-    const menu = try session.handle(&app, charKey('f'), dimensions);
-    try std.testing.expectEqual(Surface.files, session.surface);
+    const menu = try session.handle(&app, charKey('p'), dimensions);
+    try std.testing.expectEqual(Surface.project, session.surface);
+    try std.testing.expectEqual(state.SidebarContext.project, app.sidebar_context);
+    try std.testing.expect(app.sidebar_visible);
     try std.testing.expectEqual(std.meta.Tag(Effect).none, std.meta.activeTag(menu));
-    const preview = try session.handle(&app, charKey('a'), dimensions);
+    const preview = try session.handle(&app, charKey('f'), dimensions);
     try std.testing.expectEqual(Surface.finder, session.surface);
     try std.testing.expectEqual(file_finder.Scope.all, session.finder.scope);
     try std.testing.expectEqual(std.meta.Tag(Effect).preview_finder, std.meta.activeTag(preview));
@@ -1967,7 +1973,7 @@ test "file menu distinguishes all and Git-visible finder commands" {
     try std.testing.expectEqualStrings("not a Git repository", unavailableReason(&app, .file_find_git).?);
     app.git_enabled = true;
     _ = try session.handle(&app, charKey(' '), dimensions);
-    _ = try session.handle(&app, charKey('f'), dimensions);
+    _ = try session.handle(&app, charKey('p'), dimensions);
     const load = try session.handle(&app, charKey('g'), dimensions);
     try std.testing.expectEqual(std.meta.Tag(Effect).load_git_finder, std.meta.activeTag(load));
     _ = try session.openGitFinder(&app, &.{"a.txt"});
@@ -1984,7 +1990,7 @@ test "explicit reload dispatches the active document without changing it" {
     const before_generation = app.activeDocument().?.generation;
 
     _ = try session.handle(&app, charKey(' '), dimensions);
-    _ = try session.handle(&app, charKey('f'), dimensions);
+    _ = try session.handle(&app, charKey('p'), dimensions);
     const effect = try session.handle(&app, charKey('r'), dimensions);
     try std.testing.expectEqual(std.meta.Tag(Effect).reload_document, std.meta.activeTag(effect));
     try std.testing.expectEqualStrings("a.txt", effect.reload_document);

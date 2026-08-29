@@ -172,9 +172,10 @@ blocks task completion while waiting for a review.
 | `Space r d` | Open or resume Review Diff |
 | `Space r d r` | Refresh the current Diff snapshot |
 | `Space r t` | Open Review Threads |
-| `Space p` | Open Project |
-| `Space f a` | Find any repository file by path |
-| `Space f g` | Find tracked and non-ignored untracked Git files |
+| `Space p` | Open and focus Project |
+| `Space p f` | Find any repository file by path |
+| `Space p g` | Find tracked and non-ignored untracked Git files |
+| `Space p r` | Reload the active file |
 | `Space b` | Open Bookmarks |
 | `Space b f` | Fuzzy-find a bookmark by label or path |
 | `Space t` | Open trails for the active review |
