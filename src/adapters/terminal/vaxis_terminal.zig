@@ -956,6 +956,36 @@ pub fn run(init: std.process.Init, options: Options) !u8 {
     if (review_name) |name| {
         if (app.notes) |*state_notes| state_notes.useSession(name);
     }
+    trail_setup: {
+        const active_review = if (app.notes) |state_notes| state_notes.sessionFilename() orelse break :trail_setup else break :trail_setup;
+        var result = fiew.trail_store.load(allocator, init.io, repository.root_dir, active_review) catch {
+            app.feedback = "Trail storage unreadable";
+            break :trail_setup;
+        };
+        switch (result) {
+            .loaded => |*loaded| {
+                defer loaded.deinit();
+                app.trails = fiew.trails.Trails.fromStored(allocator, active_review, loaded.value().*) catch {
+                    app.feedback = "Trail storage unavailable";
+                    break :trail_setup;
+                };
+                if (loaded.source == .backup) app.feedback = "Trail storage recovered from backup";
+            },
+            .absent => app.trails = fiew.trails.Trails.init(allocator, active_review) catch {
+                app.feedback = "Trail storage unavailable";
+                break :trail_setup;
+            },
+            .future_schema => {
+                app.feedback = "future Trail schema refused";
+                break :trail_setup;
+            },
+            .unrecoverable => {
+                app.feedback = "Trail state is unrecoverable";
+                break :trail_setup;
+            },
+        }
+        app.trails_available = true;
+    }
     var command_session = fiew.commands.Session.init(allocator);
     defer command_session.deinit();
 
@@ -1526,6 +1556,13 @@ fn applyEffect(
                 dimensions.document_rows,
             );
         },
+        .preview_trail => |source| try openTrailPoint(app, repository, segmenter, generation, source, false, dimensions.document_rows),
+        .activate_trail => |source| try openTrailPoint(app, repository, segmenter, generation, source, true, dimensions.document_rows),
+        .persist_trails => {
+            if (app.trails) |*state_trails| {
+                if (!persistTrails(repository, state_trails)) app.feedback = "Trail persistence failed; changes remain dirty";
+            }
+        },
         .save_bookmark => {
             const state_bookmarks = if (app.bookmarks) |*value| value else {
                 app.cancelBookmarkComposer();
@@ -1712,6 +1749,12 @@ fn applyEffect(
                     return false;
                 }
             }
+            if (app.trails) |*state_trails| {
+                if (!persistTrails(repository, state_trails)) {
+                    app.feedback = "Trail persistence failed; quit cancelled";
+                    return false;
+                }
+            }
             return true;
         },
     }
@@ -1827,6 +1870,50 @@ fn persistBookmarks(repository: fiew.filesystem.Repository, state_bookmarks: *fi
     fiew.bookmark_store.save(repository.allocator, repository.io, repository.root_dir, state_bookmarks.stored()) catch return false;
     state_bookmarks.markClean();
     return true;
+}
+
+fn persistTrails(repository: fiew.filesystem.Repository, state_trails: *fiew.trails.Trails) bool {
+    if (!state_trails.dirty) return true;
+    fiew.trail_store.save(repository.allocator, repository.io, repository.root_dir, state_trails.review, state_trails.stored()) catch return false;
+    state_trails.markClean();
+    return true;
+}
+
+fn openTrailPoint(
+    app: *fiew.app.App,
+    repository: fiew.filesystem.Repository,
+    segmenter: fiew.text_segmentation.Segmenter,
+    generation: *u64,
+    source: fiew.commands.SourceLocation,
+    activate: bool,
+    document_rows: usize,
+) !void {
+    generation.* +%= 1;
+    const snapshot = repository.loadDocument(source.path, generation.*, segmenter) catch |err| {
+        if (app.trails) |*state_trails| {
+            state_trails.markSelectedOutdated();
+            _ = persistTrails(repository, state_trails);
+        }
+        app.feedback = if (err == error.FileNotFound) "Trail point is Outdated: file was deleted" else @errorName(err);
+        return;
+    };
+    var effective_line = source.line;
+    var effective_column = source.column;
+    var outdated = false;
+    if (app.trails) |*state_trails| if (state_trails.selectedPoint()) |point| {
+        state_trails.reanchorPoint(point, snapshot.bytes);
+        outdated = point.status == .outdated;
+        effective_line = if (outdated) point.line else point.anchored_line orelse point.line;
+        effective_column = point.column;
+        _ = persistTrails(repository, state_trails);
+    };
+    app.showPreview(snapshot);
+    app.positionPreviewAtLine(effective_line, effective_column);
+    if (outdated) app.feedback = "Trail point is Outdated";
+    if (activate) {
+        _ = try app.pinPreview();
+        if (app.activeViewMut()) |view| view.scroll_line = effective_line -| 1 -| (document_rows / 2);
+    }
 }
 
 fn openBookmark(
@@ -2799,6 +2886,56 @@ fn drawBookmarkComposer(allocator: std.mem.Allocator, window: vaxis.Window, app:
     _ = box.printSegment(.{ .text = "Optional label (48 bytes) · Enter save · Esc cancel", .style = .{ .dim = true } }, .{ .row_offset = height -| 1, .col_offset = 1, .wrap = .none });
 }
 
+fn drawTrailComposer(allocator: std.mem.Allocator, window: vaxis.Window, app: *const fiew.app.App) !void {
+    const composer = if (app.trail_composer) |*value| value else return;
+    const height: u16 = @min(window.height, 12);
+    const box = window.child(.{ .y_off = window.height - height, .height = height });
+    box.clear();
+    const points = if (app.trails) |value| value.pointCount() else 0;
+    const heading = try std.fmt.allocPrint(allocator, " Trail — {d} points · {s} ", .{ points, @tagName(composer.field) });
+    _ = box.printSegment(.{ .text = try sanitizeLine(allocator, heading, box.width), .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
+    const title = try std.fmt.allocPrint(allocator, "Title: {s}", .{composer.title.items});
+    _ = box.printSegment(.{ .text = try sanitizeLine(allocator, title, box.width -| 2), .style = .{ .bold = composer.field == .title } }, .{ .row_offset = 1, .col_offset = 1, .wrap = .none });
+    var row: u16 = 3;
+    var lines = std.mem.splitScalar(u8, composer.note.items, '\n');
+    while (lines.next()) |line| {
+        if (row >= height -| 1) break;
+        _ = box.printSegment(.{ .text = try sanitizeLine(allocator, line, box.width -| 2), .style = .{ .bold = composer.field == .note } }, .{ .row_offset = row, .col_offset = 1, .wrap = .none });
+        row += 1;
+    }
+    _ = box.printSegment(.{ .text = "Tab field · Enter note/newline · Ctrl-Enter save · Esc resume recording", .style = .{ .dim = true } }, .{ .row_offset = height -| 1, .col_offset = 1, .wrap = .none });
+}
+
+fn drawTrails(allocator: std.mem.Allocator, window: vaxis.Window, app: *const fiew.app.App) !void {
+    const state_trails = if (app.trails) |*value| value else return;
+    const height: u16 = @min(window.height, 14);
+    const box = window.child(.{ .y_off = window.height - height, .height = height });
+    box.clear();
+    const recording = if (state_trails.recording) |draft| try std.fmt.allocPrint(allocator, " · recording {d} points", .{draft.points.items.len}) else "";
+    const heading = try std.fmt.allocPrint(allocator, " Trails · {s}{s} ", .{ state_trails.review, recording });
+    _ = box.printSegment(.{ .text = try sanitizeLine(allocator, heading, box.width), .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
+    if (state_trails.detail) {
+        if (state_trails.selected_trail < state_trails.items.items.len) {
+            const item = state_trails.items.items[state_trails.selected_trail];
+            const title = try std.fmt.allocPrint(allocator, "{s} — {s}", .{ item.title, item.note });
+            _ = box.printSegment(.{ .text = try sanitizeLine(allocator, title, box.width -| 2), .style = .{ .bold = true } }, .{ .row_offset = 1, .col_offset = 1, .wrap = .none });
+            var row: usize = 0;
+            while (row < height -| 3 and row < item.points.len) : (row += 1) {
+                const point = item.points[row];
+                const text = try std.fmt.allocPrint(allocator, "{d}. {s}:{d}:{s}{s}", .{ row + 1, point.path, if (point.status == .outdated) point.line else point.anchored_line orelse point.line, point.content, if (point.status == .outdated) "  Outdated" else "" });
+                _ = box.printSegment(.{ .text = try sanitizeLine(allocator, text, box.width -| 2), .style = .{ .reverse = row == state_trails.selected_point, .bold = row == state_trails.selected_point } }, .{ .row_offset = @intCast(row + 2), .col_offset = 1, .wrap = .none });
+            }
+        }
+    } else if (state_trails.items.items.len == 0) {
+        _ = box.printSegment(.{ .text = "No saved Trails", .style = .{ .dim = true } }, .{ .row_offset = 2, .col_offset = 1, .wrap = .none });
+    } else for (state_trails.items.items, 0..) |item, index| {
+        if (index >= height -| 2) break;
+        const text = try std.fmt.allocPrint(allocator, "{s}  ({d} points)", .{ item.title, item.points.len });
+        _ = box.printSegment(.{ .text = try sanitizeLine(allocator, text, box.width -| 2), .style = .{ .reverse = index == state_trails.selected_trail, .bold = index == state_trails.selected_trail } }, .{ .row_offset = @intCast(index + 1), .col_offset = 1, .wrap = .none });
+    }
+    _ = box.printSegment(.{ .text = if (state_trails.detail) "j/k preview · Enter pin · q list · d delete" else "j/k select · Enter open · r record/stop · a add · d delete · q close", .style = .{ .dim = true } }, .{ .row_offset = height -| 1, .col_offset = 1, .wrap = .none });
+}
+
 fn drawCommandSurface(
     allocator: std.mem.Allocator,
     window: vaxis.Window,
@@ -2830,7 +2967,7 @@ fn drawCommandSurface(
             menu.clear();
             _ = menu.printSegment(.{ .text = " Leader ", .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
             _ = menu.printSegment(.{
-                .text = "p Project  f Files  r Review  b Bookmarks  ? help  q quit",
+                .text = "p Project  f Files  r Review  b Bookmarks  t Trails  ? help  q quit",
             }, .{ .row_offset = 1, .col_offset = 1, .wrap = .none });
         },
         .vcs => {
@@ -2851,6 +2988,7 @@ fn drawCommandSurface(
                 .text = "d Diff  t Threads  n line  f file  a append  r resolve/reopen  x delete",
             }, .{ .row_offset = 1, .col_offset = 1, .wrap = .none });
         },
+        .trails => try drawTrails(allocator, window, app),
         .bookmarks => {
             const menu = window.child(.{ .y_off = window.height -| 2, .height = 2 });
             menu.clear();
@@ -2868,6 +3006,7 @@ fn drawCommandSurface(
         },
         .note_composer => try drawComposer(allocator, window, app),
         .bookmark_composer => try drawBookmarkComposer(allocator, window, app),
+        .trail_composer => try drawTrailComposer(allocator, window, app),
         .finder => {
             const height: u16 = @min(window.height, fiew.workspace.finder_max_height);
             const box = window.child(.{ .y_off = window.height - height, .height = height });
@@ -2962,6 +3101,12 @@ fn drawCommandSurface(
             const menu = window.child(.{ .y_off = window.height -| 2, .height = 2 });
             menu.clear();
             _ = menu.printSegment(.{ .text = " Delete bookmark? ", .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
+            _ = menu.printSegment(.{ .text = "y delete  n/Esc cancel" }, .{ .row_offset = 1, .col_offset = 1, .wrap = .none });
+        },
+        .confirm_trail_delete => {
+            const menu = window.child(.{ .y_off = window.height -| 2, .height = 2 });
+            menu.clear();
+            _ = menu.printSegment(.{ .text = " Delete Trail? ", .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
             _ = menu.printSegment(.{ .text = "y delete  n/Esc cancel" }, .{ .row_offset = 1, .col_offset = 1, .wrap = .none });
         },
         .command => {

@@ -2,7 +2,7 @@ const std = @import("std");
 const state = @import("state.zig");
 const file_finder = @import("file_finder.zig");
 const lsp = @import("../model/lsp.zig");
-const HandleError = std.mem.Allocator.Error || error{ PermissionDenied, InvalidComment };
+const HandleError = std.mem.Allocator.Error || error{ PermissionDenied, InvalidComment, InvalidTitle, InvalidNote, NotRecording, TooFewPoints, AlreadyRecording };
 
 pub const Id = enum {
     move_left,
@@ -46,6 +46,10 @@ pub const Id = enum {
     bookmark_delete,
     bookmark_next,
     bookmark_previous,
+    trail_open,
+    trail_record,
+    trail_add,
+    trail_delete,
     definition,
     references,
     hover,
@@ -86,6 +90,8 @@ pub const Id = enum {
     note_discard,
     bookmark_save,
     bookmark_discard,
+    trail_save,
+    trail_discard,
 };
 
 pub const Definition = struct {
@@ -153,6 +159,10 @@ pub const definitions = [_]Definition{
     .{ .id = .bookmark_delete, .stable_id = "bookmark-delete", .title = "Delete selected bookmark", .binding = "Space b d" },
     .{ .id = .bookmark_next, .stable_id = "bookmark-next", .title = "Next bookmark", .binding = "] b", .hint = "bookmark" },
     .{ .id = .bookmark_previous, .stable_id = "bookmark-previous", .title = "Previous bookmark", .binding = "[ b", .hint = "bookmark" },
+    .{ .id = .trail_open, .stable_id = "trail-open", .title = "Open review Trails", .binding = "Space t" },
+    .{ .id = .trail_record, .stable_id = "trail-record", .title = "Start or stop Trail recording", .binding = "Space t r" },
+    .{ .id = .trail_add, .stable_id = "trail-add", .title = "Add current Trail point", .binding = "Space t a" },
+    .{ .id = .trail_delete, .stable_id = "trail-delete", .title = "Delete selected Trail", .binding = "Space t d" },
     .{ .id = .definition, .stable_id = "definition", .title = "Go to definition", .binding = "g d", .hint = "definition" },
     .{ .id = .references, .stable_id = "references", .title = "Find references", .binding = "g r", .hint = "references" },
     .{ .id = .hover, .stable_id = "hover", .title = "Show hover information", .binding = "K" },
@@ -179,6 +189,8 @@ pub const definitions = [_]Definition{
     .{ .id = .note_discard, .stable_id = "note-discard", .title = "Discard note", .binding = "Esc", .disabled_reason = "note composer is not open" },
     .{ .id = .bookmark_save, .stable_id = "bookmark-save", .title = "Save bookmark", .binding = "Ctrl-Enter", .disabled_reason = "bookmark composer is not open" },
     .{ .id = .bookmark_discard, .stable_id = "bookmark-discard", .title = "Discard bookmark", .binding = "Esc", .disabled_reason = "bookmark composer is not open" },
+    .{ .id = .trail_save, .stable_id = "trail-save", .title = "Save Trail", .binding = "Ctrl-Enter", .disabled_reason = "Trail composer is not open" },
+    .{ .id = .trail_discard, .stable_id = "trail-discard", .title = "Cancel Trail composition", .binding = "Esc", .disabled_reason = "Trail composer is not open" },
 };
 
 pub fn definition(id: Id) *const Definition {
@@ -311,6 +323,22 @@ pub fn unavailableReason(app: *const state.App, id: Id) ?[]const u8 {
         else
             null,
         .bookmark_delete, .bookmark_next, .bookmark_previous => if (!app.hasBookmarks()) "no bookmarks yet" else null,
+        .trail_open => if (!app.trails_available) "Trails require an active named review" else null,
+        .trail_record => if (!app.trails_available)
+            "Trails require an active named review"
+        else if (!app.trailRecording() and (app.activeView() == null or app.activeView().?.external or app.sidebar_context == .review or (app.sidebar_context == .git and !app.viewing_source)))
+            "open a valid repository source location first"
+        else
+            null,
+        .trail_add => if (!app.trails_available)
+            "Trails require an active named review"
+        else if (!app.trailRecording())
+            "Trail recording is not active"
+        else if (app.activeView() == null or app.activeView().?.external or app.sidebar_context == .review or (app.sidebar_context == .git and !app.viewing_source))
+            "open a valid repository source location first"
+        else
+            null,
+        .trail_delete => if (!app.hasTrails()) "no Trails yet" else null,
         .zls_trust => if (!app.zls_trust_available)
             "global state unavailable; ZLS trust cannot be persisted"
         else if (app.zls_trusted)
@@ -394,6 +422,9 @@ pub const Effect = union(enum) {
     persist_bookmarks,
     preview_bookmark: SourceLocation,
     activate_bookmark: SourceLocation,
+    persist_trails,
+    preview_trail: SourceLocation,
+    activate_trail: SourceLocation,
     zls_status,
     zls_trust,
     zls_revoke,
@@ -414,14 +445,17 @@ pub const Surface = enum {
     review,
     vcs,
     bookmarks,
+    trails,
     files,
     note_composer,
     bookmark_composer,
+    trail_composer,
     finder,
     definitions,
     hover,
     confirm_delete,
     confirm_bookmark_delete,
+    confirm_trail_delete,
 };
 
 const Pending = enum {
@@ -494,14 +528,17 @@ pub const Session = struct {
                 .review => "LDR r",
                 .vcs => "LDR r d",
                 .bookmarks => "LDR b",
+                .trails => "LDR t",
                 .files => "LDR f",
                 .note_composer => "comment",
                 .bookmark_composer => "bookmark label",
+                .trail_composer => "Trail title / note",
                 .finder => "find file",
                 .definitions => "definitions",
                 .hover => "hover",
                 .confirm_delete => "confirm delete",
                 .confirm_bookmark_delete => "confirm bookmark delete",
+                .confirm_trail_delete => "confirm Trail delete",
                 .none => "",
             },
             .goto => "g",
@@ -525,8 +562,10 @@ pub const Session = struct {
     pub fn handle(self: *Session, app: *state.App, key: Key, dimensions: Dimensions) HandleError!Effect {
         if (self.surface == .note_composer) return self.handleComposer(app, key, dimensions);
         if (self.surface == .bookmark_composer) return self.handleBookmarkComposer(app, key);
+        if (self.surface == .trail_composer) return self.handleTrailComposer(app, key);
         if (self.surface == .confirm_delete) return self.handleDeleteConfirmation(app, key, dimensions);
         if (self.surface == .confirm_bookmark_delete) return self.handleBookmarkDeleteConfirmation(app, key);
+        if (self.surface == .confirm_trail_delete) return self.handleTrailDeleteConfirmation(app, key);
         if (self.surface == .finder) return self.handleFinder(app, key, dimensions);
         if (self.surface == .definitions) return self.handleDefinitions(app, key, dimensions);
         if (self.surface == .hover) return self.handleHover(app, key, dimensions);
@@ -534,6 +573,7 @@ pub const Session = struct {
         if (self.surface == .review) return self.handleReview(app, key, dimensions);
         if (self.surface == .vcs) return self.handleVcs(app, key, dimensions);
         if (self.surface == .bookmarks) return self.handleBookmarks(app, key, dimensions);
+        if (self.surface == .trails) return self.handleTrails(app, key, dimensions);
         if (self.surface == .files) return self.handleFiles(app, key, dimensions);
         if (self.surface == .command) return self.handleCommandInput(app, key, dimensions);
         if (self.surface == .help) {
@@ -724,7 +764,14 @@ pub const Session = struct {
                 self.surface = .command;
                 app.mode = .command;
             },
-            .quit => return .quit,
+            .quit => {
+                if (app.trailRecording() or app.trail_composer != null) {
+                    app.feedback = "unfinished Trail recording; save or finish it before quitting";
+                    self.resetTransient(app);
+                    return .none;
+                }
+                return .quit;
+            },
             .cancel => {
                 app.feedback = null;
                 if (app.definition_pending) {
@@ -800,6 +847,25 @@ pub const Session = struct {
                 app.moveBookmarkSelection(-1, dimensions.sidebar_rows);
                 return bookmarkEffect(app, false);
             },
+            .trail_open => {
+                self.surface = .trails;
+                app.mode = .normal;
+            },
+            .trail_record => {
+                if (app.trailRecording()) {
+                    if (app.beginTrailComposer()) {
+                        self.surface = .trail_composer;
+                        app.mode = .command;
+                    }
+                } else if (!(try app.startTrailRecording())) app.feedback = "open a valid repository source location first";
+            },
+            .trail_add => {
+                if (!(try app.addTrailPoint())) app.feedback = "open a valid repository source location first";
+            },
+            .trail_delete => {
+                self.surface = .confirm_trail_delete;
+                app.mode = .command;
+            },
             .zls_status => return .zls_status,
             .zls_trust => return .zls_trust,
             .zls_revoke => return .zls_revoke,
@@ -837,7 +903,7 @@ pub const Session = struct {
             },
             .note_next => app.moveNoteSelection(1, dimensions.sidebar_rows),
             .note_previous => app.moveNoteSelection(-1, dimensions.sidebar_rows),
-            .note_save, .note_discard, .bookmark_save, .bookmark_discard => unreachable,
+            .note_save, .note_discard, .bookmark_save, .bookmark_discard, .trail_save, .trail_discard => unreachable,
         }
         // Fold and structural commands can move the cursor far from the current
         // scroll position; keep it on screen.
@@ -910,6 +976,7 @@ pub const Session = struct {
             'f' => self.executeAndClose(app, .file_menu, dimensions),
             'r' => self.executeAndClose(app, .review_open, dimensions),
             'b' => self.executeAndClose(app, .bookmark_open, dimensions),
+            't' => self.executeAndClose(app, .trail_open, dimensions),
             '?' => self.executeAndClose(app, .help, dimensions),
             'q' => self.executeAndClose(app, .quit, dimensions),
             else => blk: {
@@ -957,6 +1024,41 @@ pub const Session = struct {
         };
     }
 
+    fn handleTrails(self: *Session, app: *state.App, key: Key, dimensions: Dimensions) !Effect {
+        const state_trails = if (app.trails) |*value| value else {
+            self.resetTransient(app);
+            return .none;
+        };
+        if (isCharacter(key, 'r')) return self.executeAndClose(app, .trail_record, dimensions);
+        if (isCharacter(key, 'a')) return self.executeAndClose(app, .trail_add, dimensions);
+        if (isCharacter(key, 'd')) return self.execute(app, .trail_delete, dimensions);
+        if (isCharacter(key, 'j') or key.code == .down) {
+            state_trails.moveSelection(1);
+            return trailEffect(app, false);
+        }
+        if (isCharacter(key, 'k') or key.code == .up) {
+            state_trails.moveSelection(-1);
+            return trailEffect(app, false);
+        }
+        if (key.code == .enter) {
+            if (!state_trails.detail) {
+                if (state_trails.openSelected()) return trailEffect(app, false);
+                return .none;
+            }
+            return trailEffect(app, true);
+        }
+        if (isCharacter(key, 'q')) {
+            if (state_trails.detail) {
+                state_trails.closeDetail();
+                return .none;
+            }
+            self.resetTransient(app);
+            return .none;
+        }
+        app.feedback = "use j/k, Enter, r, a, d, or q on Trails";
+        return .none;
+    }
+
     fn handleReview(self: *Session, app: *state.App, key: Key, dimensions: Dimensions) !Effect {
         return switch (normalizedCharacter(key)) {
             'd' => blk: {
@@ -989,6 +1091,22 @@ pub const Session = struct {
             return .none;
         }
         app.feedback = "press y to delete the bookmark or n to cancel";
+        return .none;
+    }
+
+    fn handleTrailDeleteConfirmation(self: *Session, app: *state.App, key: Key) !Effect {
+        if (normalizedCharacter(key) == 'y') {
+            if (app.trails) |*state_trails| state_trails.deleteSelected();
+            self.resetTransient(app);
+            return .persist_trails;
+        }
+        if (normalizedCharacter(key) == 'n' or key.code == .escape) {
+            self.surface = .trails;
+            app.mode = .normal;
+            app.feedback = "Trail deletion cancelled";
+            return .none;
+        }
+        app.feedback = "press y to delete the Trail or n to cancel";
         return .none;
     }
 
@@ -1025,6 +1143,35 @@ pub const Session = struct {
         }
         if (key.code == .character and !key.ctrl and !key.alt)
             app.bookmarkComposerInsert(key.character);
+        return .none;
+    }
+
+    fn handleTrailComposer(self: *Session, app: *state.App, key: Key) !Effect {
+        if (key.code == .escape) {
+            app.cancelTrailComposer();
+            self.resetTransient(app);
+            return .none;
+        }
+        if (key.code == .tab) {
+            if (app.trail_composer) |*composer| composer.field = if (composer.field == .title) .note else .title;
+            return .none;
+        }
+        if (key.code == .enter and key.ctrl) {
+            if (try app.saveTrailComposer()) {
+                self.resetTransient(app);
+                return .persist_trails;
+            }
+            return .none;
+        }
+        if (key.code == .enter) {
+            app.trailComposerNewline();
+            return .none;
+        }
+        if (key.code == .backspace) {
+            app.trailComposerBackspace();
+            return .none;
+        }
+        if (key.code == .character and !key.ctrl and !key.alt) app.trailComposerInsert(key.character);
         return .none;
     }
 
@@ -1275,6 +1422,14 @@ fn bookmarkEffect(app: *state.App, activate_bookmark: bool) Effect {
         .{ .activate_bookmark = location }
     else
         .{ .preview_bookmark = location };
+}
+
+fn trailEffect(app: *state.App, activate_point: bool) Effect {
+    const state_trails = if (app.trails) |*value| value else return .none;
+    if (!state_trails.detail) return .none;
+    const point = state_trails.selectedPoint() orelse return .none;
+    const location: SourceLocation = .{ .path = point.path, .line = point.line, .column = point.column };
+    return if (activate_point) .{ .activate_trail = location } else .{ .preview_trail = location };
 }
 
 fn activate(app: *state.App, dimensions: Dimensions) Effect {
@@ -1771,6 +1926,70 @@ fn testApp() !state.App {
     ) };
     app.focus = .main;
     return app;
+}
+
+test "Trail commands guard, record, compose, preview, pin, and confirm deletion" {
+    const trails_mod = @import("trails.zig");
+    var app = try testApp();
+    defer app.deinit();
+    var session = Session.init(std.testing.allocator);
+    defer session.deinit();
+    const dimensions: Dimensions = .{ .sidebar_rows = 20, .document_rows = 20, .document_columns = 80 };
+
+    try std.testing.expectEqualStrings("Trails require an active named review", unavailableReason(&app, .trail_open).?);
+    app.trails = try trails_mod.Trails.init(std.testing.allocator, "20260829-120000-review.json");
+    app.trails_available = true;
+    app.pinned.?.external = true;
+    try std.testing.expectEqualStrings("open a valid repository source location first", unavailableReason(&app, .trail_record).?);
+    app.pinned.?.external = false;
+
+    _ = try session.handle(&app, charKey(' '), dimensions);
+    _ = try session.handle(&app, charKey('t'), dimensions);
+    try std.testing.expectEqual(Surface.trails, session.surface);
+    _ = try session.handle(&app, charKey('r'), dimensions);
+    try std.testing.expect(app.trailRecording());
+    try std.testing.expectEqual(@as(usize, 1), app.trails.?.pointCount());
+
+    // Stopping one point is refused without losing the draft.
+    _ = try session.handle(&app, charKey(' '), dimensions);
+    _ = try session.handle(&app, charKey('t'), dimensions);
+    _ = try session.handle(&app, charKey('r'), dimensions);
+    try std.testing.expectEqualStrings("a Trail requires at least two points", app.feedback.?);
+    try std.testing.expect(app.trailRecording());
+
+    _ = try session.handle(&app, charKey(' '), dimensions);
+    _ = try session.handle(&app, charKey('t'), dimensions);
+    _ = try session.handle(&app, charKey('a'), dimensions);
+    try std.testing.expectEqual(@as(usize, 2), app.trails.?.pointCount());
+    _ = try session.handle(&app, charKey(' '), dimensions);
+    _ = try session.handle(&app, charKey('t'), dimensions);
+    _ = try session.handle(&app, charKey('r'), dimensions);
+    try std.testing.expectEqual(Surface.trail_composer, session.surface);
+    _ = try session.handle(&app, charKey('X'), dimensions);
+    _ = try session.handle(&app, .{ .code = .escape }, dimensions);
+    try std.testing.expect(app.trailRecording());
+    try std.testing.expectEqual(@as(usize, 2), app.trails.?.pointCount());
+
+    _ = try session.handle(&app, charKey(' '), dimensions);
+    _ = try session.handle(&app, charKey('t'), dimensions);
+    _ = try session.handle(&app, charKey('r'), dimensions);
+    for ("Reading path") |character| _ = try session.handle(&app, charKey(character), dimensions);
+    const saved = try session.handle(&app, .{ .code = .enter, .ctrl = true }, dimensions);
+    try std.testing.expectEqual(std.meta.Tag(Effect).persist_trails, std.meta.activeTag(saved));
+    try std.testing.expect(!app.trailRecording());
+    try std.testing.expectEqual(@as(usize, 1), app.trails.?.items.items.len);
+
+    _ = try session.handle(&app, charKey(' '), dimensions);
+    _ = try session.handle(&app, charKey('t'), dimensions);
+    const preview = try session.handle(&app, .{ .code = .enter }, dimensions);
+    try std.testing.expectEqual(std.meta.Tag(Effect).preview_trail, std.meta.activeTag(preview));
+    const pin = try session.handle(&app, .{ .code = .enter }, dimensions);
+    try std.testing.expectEqual(std.meta.Tag(Effect).activate_trail, std.meta.activeTag(pin));
+    _ = try session.handle(&app, charKey('d'), dimensions);
+    try std.testing.expectEqual(Surface.confirm_trail_delete, session.surface);
+    const deleted = try session.handle(&app, charKey('y'), dimensions);
+    try std.testing.expectEqual(std.meta.Tag(Effect).persist_trails, std.meta.activeTag(deleted));
+    try std.testing.expect(!app.hasTrails());
 }
 
 test "named ZLS lifecycle commands enforce durable trust state" {

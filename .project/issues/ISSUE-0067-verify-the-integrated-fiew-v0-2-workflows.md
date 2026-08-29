@@ -14,6 +14,7 @@ blocked_by:
   - "ISSUE-0064-navigate-to-zig-definitions-through-trusted-zls.md"
   - "ISSUE-0065-find-zig-references-through-trusted-zls.md"
   - "ISSUE-0066-show-zig-hover-information-through-trusted-zls.md"
+  - "ISSUE-0073-record-and-revisit-review-local-trails.md"
 labels: []
 ---
 # Verify the integrated fiew v0.2 workflows

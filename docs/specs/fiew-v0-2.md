@@ -1,5 +1,5 @@
 <!-- agent-workflows-record
-{"archived":false,"created":"2026-08-28T15:46:11Z","id":"fiew-v0-2","modified":"2026-08-28T15:46:11Z","record_type":"specs","title":"fiew v0.2"}
+{"archived":false,"created":"2026-08-28T15:46:11Z","id":"fiew-v0-2","modified":"2026-08-29T18:02:44Z","record_type":"specs","title":"fiew v0.2"}
 -->
 # fiew v0.2
 
@@ -7,11 +7,11 @@
 
 fiew v0.1 gives reviewers a safe read-first workspace for repository browsing and current-change review, but it leaves common supporting context expensive to inspect. Markdown remains plain text, diagrams cannot be previewed, large project trees require manual traversal, Zig navigation is structural rather than semantic, and the distributed binary supports only Apple Silicon macOS in Ghostty.
 
-Reviewers need richer read-only navigation without turning fiew into a source editor, general IDE, browser renderer, or platform-specific terminal application.
+Reviewers need richer read-only navigation without turning fiew into a source editor, general IDE, browser renderer, or platform-specific terminal application. They also need a fast way to preserve an ordered reading path without manually copying source locations into an external note application.
 
 ## Desired behavior
 
-A reviewer on Apple Silicon macOS or x86_64 Linux can retain every v0.1 review workflow while fuzzy-finding repository files, reading structured Markdown, previewing a supported Mermaid subset as terminal text, and using an optional trusted ZLS process for Zig definitions, references, and hover information. Core behavior remains useful when parsers or optional executables are absent or fail. Ghostty, Kitty, and WezTerm provide the required terminal compatibility matrix.
+A reviewer on Apple Silicon macOS or x86_64 Linux can retain every v0.1 review workflow while fuzzy-finding repository files, reading structured Markdown, previewing a supported Mermaid subset as terminal text, using an optional trusted ZLS process for Zig definitions, references, and hover information, and manually preserving ordered review-local Trails. Core behavior remains useful when parsers or optional executables are absent or fail. Ghostty, Kitty, and WezTerm provide the required terminal compatibility matrix.
 
 Unless this specification explicitly supersedes a v0.1 requirement, fiew v0.2 retains the behavior and data contracts of the fiew v0.1 specification.
 
@@ -20,10 +20,10 @@ Unless this specification explicitly supersedes a v0.1 requirement, fiew v0.2 re
 ### 1. Read-only and compatibility boundary
 
 1. fiew must retain the v0.1 prohibition on source, tracked-file, `.gitignore`, Git metadata, index, branch, commit, and other Git mutation.
-2. Markdown, Mermaid, fuzzy finding, and ZLS must not modify source or Git state.
+2. Markdown, Mermaid, fuzzy finding, ZLS, and Trails must not modify source or Git state.
 3. fiew must refuse language-server workspace edits, formatting, rename, code actions, file operations, server commands, and other source-writing requests.
 4. Failures, cancellation, malformed external output, unavailable global persistence, and stale asynchronous work must preserve the read-only boundary and the last valid view.
-5. v0.2 must preserve the canonical `fiew.review/v1` and `fiew.bookmark/v1` contracts and the reviewer/agent authority boundary unless separately superseded by an accepted specification.
+5. v0.2 must preserve the canonical `fiew.review/v1` and `fiew.bookmark/v1` contracts and the reviewer/agent authority boundary unless separately superseded by an accepted specification. Trail persistence must not alter those contracts or appear in agent review projections.
 
 ### 2. Supported platforms and terminals
 
@@ -38,7 +38,7 @@ Unless this specification explicitly supersedes a v0.1 requirement, fiew v0.2 re
 
 1. Global state must use `$HOME/Library/Application Support/fiew` on macOS.
 2. Global state must use `$XDG_STATE_HOME/fiew` on Linux, falling back to `$HOME/.local/state/fiew` when `XDG_STATE_HOME` is unset or empty.
-3. Reviews and bookmarks must remain repository-local in `.reviews/` and `.bookmarks/`.
+3. Reviews and private Trail companion records must remain repository-local under `.reviews/`; bookmarks must remain repository-local under `.bookmarks/`.
 4. If no valid global state directory is available, fiew must continue with repository browsing and review behavior, report a diagnostic, and disable capabilities that require persisted global state rather than inventing another location.
 5. v0.2 must not depend on FSEvents, inotify, polling, or terminal-focus events. Git refresh remains explicit. Source changes are detected when opening or explicitly reloading a document.
 6. A reload must retain the immutable current snapshot until a complete replacement succeeds. Deleted, replaced, or unreadable files must be reported without crashing.
@@ -132,7 +132,23 @@ Unless this specification explicitly supersedes a v0.1 requirement, fiew v0.2 re
 6. Every failure must preserve selection, pinned view, location history, Markdown/Tree-sitter behavior, and plain-text fallback.
 7. fiew must advertise only implemented capabilities and defensively refuse all unsolicited source-writing or command-execution requests.
 
-### 12. Release and installation
+### 12. Review-local Trails
+
+1. Trails must be available only when an active named review exists. A Trail is a reviewer-curated ordered reading path, not an inferred execution flow or call graph.
+2. `Space t` must open the Trails surface. `Space t r` must toggle recording, and starting must record the current valid repository source location as the first point.
+3. `Space t a` must manually append the current valid repository source location. External, binary, metadata-only, and otherwise invalid locations must be refused without stopping recording.
+4. Each point must preserve its order, repository path, one-based line, trimmed captured line content, and conservative contextual anchor.
+5. A Trail must contain at least two points. Attempting to stop earlier must keep recording active and report an exact reason.
+6. Stopping must open a composer for a required bounded title and an optional bounded multiline note. Cancelling the composer must resume recording with every point intact; saving must persist the completed Trail.
+7. Trails must use private schema-versioned `fiew.trail/v1` companion records keyed to the active review identity under the existing `.reviews/` write boundary. They must not alter `fiew.review/v1`, `fiew.bookmark/v1`, or agent review projections.
+8. Saved Trails must be listed for the active review. Opening one must expose its ordered points; `j`/`k` must change preview without changing history, and `Enter` must pin the selected point and add exactly one navigation entry.
+9. `Space t d` must delete the selected saved Trail only after confirmation.
+10. Re-anchoring must follow the conservative bookmark boundary. A uniquely matched point may update; an unresolved point must become **Outdated** while preserving its originally captured path, line, and content.
+11. Recording and composition drafts must remain memory-only. Quit must warn while either is unfinished.
+12. Missing storage, malformed or future schema, stale anchors, deleted files, persistence failure, and invalid points must preserve source viewing and existing review state.
+13. Automatic ZLS capture, External points, one-point Trails, metadata editing, point reordering or deletion, and printing Trails into comments are excluded from v0.2.
+
+### 13. Release and installation
 
 1. Linux installation instructions must verify the SHA-256 checksum, extract the archive, and install `fiew` at `$HOME/.local/bin/fiew` without root access.
 2. The Linux release gate must run deterministic tests on Ubuntu 22.04 x86_64, verify exact `fiew --version` output, inspect x86_64 ELF architecture and static linkage, extract and execute the archive from a clean temporary directory, and verify its checksum.
@@ -154,8 +170,9 @@ Unless this specification explicitly supersedes a v0.1 requirement, fiew v0.2 re
 - Tree-sitter adapter fixtures must cover Markdown block/inline included ranges, highlights, section and fence folds, one-level Zig injection, malformed input, cancellation, ABI/query failure, and plain-text fallback.
 - Mermaid adapter transcript tests must cover supported and unsupported types, executable absence/version mismatch, direct invocation, bounds, timeout, cancellation, sanitization, caching identity, stale rejection, Unicode/ASCII output, and source-preserving fallback without requiring the executable.
 - ZLS transcript tests must cover trust and revocation, version validation, initialize/open/close/shutdown order, UTF-8/UTF-16 mapping, definition/reference/hover variants, External targets, cancellation, timeout, crash, malformed messages, stale generations, result bounds, and read-only request refusal without requiring ZLS.
-- Pure reducer and command tests must verify finder, result-list, hover, pending, cancellation, preview, pin, dismissal, history, disabled-reason, and capability-fallback transitions.
-- Fixed-dimension ViewModel and RenderPlan snapshots must verify fuzzy finder, Markdown, Mermaid, definition/reference lists, hover, External labels, exact failure states, terminal fallback, and unsupported-size behavior.
+- Pure reducer and command tests must verify finder, result-list, hover, pending, cancellation, preview, pin, dismissal, history, disabled-reason, capability-fallback, and Trail start/add/stop/composer/save/cancel transitions.
+- Trail tests must verify active-review and valid-location guards, minimum point count, ordered `fiew.trail/v1` serialization, future-schema refusal, conservative re-anchoring, Outdated preservation, list/open/preview/pin/delete behavior, unfinished quit warning, and unchanged agent review projections.
+- Fixed-dimension ViewModel and RenderPlan snapshots must verify fuzzy finder, Markdown, Mermaid, definition/reference lists, hover, Trails, External labels, exact failure states, terminal fallback, and unsupported-size behavior.
 - `zig build test` must remain deterministic, offline, and independent of Git, ZLS, and `mermaid-ascii`. External-tool integration tests remain opt-in.
 - Linux CI must verify native deterministic tests, release ELF properties, clean archive execution, checksum behavior, and non-gating ARM64 compilation.
 - Manual smoke evidence must cover Ghostty, Kitty, and WezTerm on the required operating-system targets and record unavailable optional-tool behavior separately from successful integration behavior.
@@ -170,6 +187,7 @@ Unless this specification explicitly supersedes a v0.1 requirement, fiew v0.2 re
 - Windows, Intel macOS, ARM64 Linux release artifacts or runtime guarantees, package managers, signing, notarization, and automatic updates.
 - GitHub or other remote review providers, generic VCS abstraction, commit history, branch comparison, staging, committing, merging, and conflict workflows.
 - Tabs, arbitrary splits, multiple selections, key remapping, and macros.
+- Automatic Trail capture, Trail points outside the repository, global Trails without an active review, Trail metadata editing, point reordering or deletion, and printing Trails into review comments.
 
 ## Open items
 
@@ -190,3 +208,5 @@ Unless this specification explicitly supersedes a v0.1 requirement, fiew v0.2 re
 - [Structure fiew as a single-owner event-driven application](<docs/decisions/ARP-0005.md>)
 - [Linux binary portability boundary for fiew v0.2](<docs/research/linux-binary-portability-boundary-for-fiew-v0-2.md>)
 - [Terminal compatibility boundary for fiew v0.2](<docs/research/terminal-compatibility-boundary-for-fiew-v0-2.md>)
+- [Trails for review-local reading paths](<docs/product/trails-for-review-local-reading-paths.md>)
+- [Store Trails as review-keyed private companion records](<docs/decisions/ARP-0011.md>)

@@ -76,6 +76,12 @@ pub const Notes = struct {
         return count;
     }
 
+    pub fn sessionFilename(self: Notes) ?[]const u8 {
+        const index = self.session orelse return null;
+        if (index >= self.files.items.len) return null;
+        return self.files.items[index].filename;
+    }
+
     pub fn useSession(self: *Notes, filename: []const u8) void {
         for (self.files.items, 0..) |file, index| if (std.mem.eql(u8, file.filename, filename)) {
             self.session = index;

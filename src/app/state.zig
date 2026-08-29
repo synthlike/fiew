@@ -9,6 +9,8 @@ const git = @import("../model/git.zig");
 const review = @import("../model/review.zig");
 const bookmark_model = @import("../model/bookmark.zig");
 const bookmarks_state = @import("bookmarks.zig");
+const trails_state = @import("trails.zig");
+const trail_model = @import("../model/trail.zig");
 const anchor_model = @import("../model/anchor.zig");
 const lsp = @import("../model/lsp.zig");
 const definitions_state = @import("definitions.zig");
@@ -61,6 +63,20 @@ pub const BookmarkComposer = struct {
     pub fn deinit(self: *BookmarkComposer, allocator: std.mem.Allocator) void {
         self.buffer.deinit(allocator);
         self.target.deinit(allocator);
+        self.* = undefined;
+    }
+};
+
+pub const TrailComposerField = enum { title, note };
+
+pub const TrailComposer = struct {
+    title: std.ArrayListUnmanaged(u8) = .empty,
+    note: std.ArrayListUnmanaged(u8) = .empty,
+    field: TrailComposerField = .title,
+
+    pub fn deinit(self: *TrailComposer, allocator: std.mem.Allocator) void {
+        self.title.deinit(allocator);
+        self.note.deinit(allocator);
         self.* = undefined;
     }
 };
@@ -211,9 +227,13 @@ pub const App = struct {
     /// Private bookmarks for this repository, loaded from fiew-owned state.
     bookmarks: ?bookmarks_state.Bookmarks = null,
     bookmarks_available: bool = false,
-    /// The active Note Composer, when open.
+    /// Trails exist only for the explicitly active named review.
+    trails: ?trails_state.Trails = null,
+    trails_available: bool = false,
+    /// The active composers, when open.
     composer: ?Composer = null,
     bookmark_composer: ?BookmarkComposer = null,
+    trail_composer: ?TrailComposer = null,
     /// Trusted ZLS lifecycle is optional and never impairs document viewing.
     zls_status: lsp.Status = .unavailable,
     zls_trusted: bool = false,
@@ -238,8 +258,10 @@ pub const App = struct {
         if (self.review) |*review_state| review_state.deinit();
         if (self.notes) |*state_notes| state_notes.deinit();
         if (self.bookmarks) |*state_bookmarks| state_bookmarks.deinit();
+        if (self.trails) |*state_trails| state_trails.deinit();
         if (self.composer) |*composer| composer.deinit(self.allocator);
         if (self.bookmark_composer) |*composer| composer.deinit(self.allocator);
+        if (self.trail_composer) |*composer| composer.deinit(self.allocator);
         if (self.definition_results) |*results| results.deinit();
         if (self.definition_origin_preview) |*view| view.deinit();
         if (self.hover) |*content| content.deinit();
@@ -479,6 +501,110 @@ pub const App = struct {
 
     pub fn moveBookmarkSelection(self: *App, delta: isize, viewport_rows: usize) void {
         if (self.bookmarks) |*state_bookmarks| state_bookmarks.moveSelection(delta, viewport_rows);
+    }
+
+    pub fn hasTrails(self: *const App) bool {
+        const state_trails = self.trails orelse return false;
+        return state_trails.items.items.len != 0;
+    }
+
+    pub fn trailRecording(self: *const App) bool {
+        return if (self.trails) |value| value.recording != null else false;
+    }
+
+    pub fn captureTrailPoint(self: *App) !?trail_model.Point {
+        if (!self.trails_available or self.trails == null or self.sidebar_context == .review or
+            (self.sidebar_context == .git and !self.viewing_source)) return null;
+        const view = self.activeView() orelse return null;
+        if (view.external or view.snapshot.path.len == 0 or view.snapshot.encoding != .utf8) return null;
+        const source_offset = if (view.snapshot.graphemes.len == 0) 0 else view.snapshot.graphemes[@min(view.active_grapheme, view.snapshot.graphemes.len - 1)].source.start;
+        const line_index = if (view.snapshot.graphemes.len == 0) 0 else view.snapshot.graphemes[@min(view.active_grapheme, view.snapshot.graphemes.len - 1)].line;
+        if (line_index >= view.snapshot.lineCount()) return null;
+        const start = anchor_model.lineStart(view.snapshot.bytes, source_offset);
+        const end = anchor_model.lineEnd(view.snapshot.bytes, source_offset);
+        const context = try anchor_model.capture(self.allocator, view.snapshot.bytes, start, end);
+        errdefer self.allocator.free(context.bytes);
+        const path = try self.allocator.dupe(u8, view.snapshot.path);
+        errdefer self.allocator.free(path);
+        const content = try self.allocator.dupe(u8, std.mem.trim(u8, view.snapshot.bytes[start..end], " \t\r\n"));
+        return .{ .path = path, .line = line_index + 1, .column = if (view.snapshot.graphemes.len == 0) 0 else view.snapshot.graphemes[@min(view.active_grapheme, view.snapshot.graphemes.len - 1)].visual_column, .source_offset = source_offset, .line_offset = source_offset -| context.targetOffset(context.original_start), .content = content, .context = context };
+    }
+
+    pub fn startTrailRecording(self: *App) !bool {
+        const point = (try self.captureTrailPoint()) orelse return false;
+        errdefer trails_state.freePoint(self.allocator, point);
+        try self.trails.?.start(point);
+        self.feedback = "Trail recording started (1 point)";
+        return true;
+    }
+
+    pub fn addTrailPoint(self: *App) !bool {
+        const point = (try self.captureTrailPoint()) orelse return false;
+        errdefer trails_state.freePoint(self.allocator, point);
+        try self.trails.?.appendPoint(point);
+        self.feedback = "Trail point added";
+        return true;
+    }
+
+    pub fn beginTrailComposer(self: *App) bool {
+        const state_trails = if (self.trails) |*value| value else return false;
+        if (state_trails.pointCount() < 2) {
+            self.feedback = "a Trail requires at least two points";
+            return false;
+        }
+        if (self.trail_composer) |*previous| previous.deinit(self.allocator);
+        self.trail_composer = .{};
+        return true;
+    }
+
+    pub fn trailComposerInsert(self: *App, codepoint: u21) void {
+        const composer = if (self.trail_composer) |*value| value else return;
+        var buffer: [4]u8 = undefined;
+        const length = std.unicode.utf8Encode(codepoint, &buffer) catch return;
+        const target = if (composer.field == .title) &composer.title else &composer.note;
+        const limit = if (composer.field == .title) trail_model.max_title_bytes else trail_model.max_note_bytes;
+        if (target.items.len + length > limit) {
+            self.feedback = if (composer.field == .title) "Trail title is limited to 80 bytes" else "Trail note is limited to 4096 bytes";
+            return;
+        }
+        target.appendSlice(self.allocator, buffer[0..length]) catch return;
+        self.feedback = null;
+    }
+
+    pub fn trailComposerNewline(self: *App) void {
+        const composer = if (self.trail_composer) |*value| value else return;
+        if (composer.field == .title) {
+            composer.field = .note;
+            return;
+        }
+        if (composer.note.items.len < trail_model.max_note_bytes) composer.note.append(self.allocator, '\n') catch {};
+    }
+
+    pub fn trailComposerBackspace(self: *App) void {
+        const composer = if (self.trail_composer) |*value| value else return;
+        const target = if (composer.field == .title) &composer.title else &composer.note;
+        if (target.items.len == 0) return;
+        var start = target.items.len - 1;
+        while (start > 0 and (target.items[start] & 0xc0) == 0x80) start -= 1;
+        target.shrinkRetainingCapacity(start);
+    }
+
+    pub fn cancelTrailComposer(self: *App) void {
+        if (self.trail_composer) |*composer| composer.deinit(self.allocator);
+        self.trail_composer = null;
+        self.feedback = "Trail composition cancelled; recording resumed";
+    }
+
+    pub fn saveTrailComposer(self: *App) !bool {
+        const composer = if (self.trail_composer) |*value| value else return false;
+        if (!trail_model.validTitle(composer.title.items)) {
+            self.feedback = "Trail title is required and limited to 80 bytes";
+            return false;
+        }
+        try self.trails.?.saveDraft(composer.title.items, composer.note.items);
+        composer.deinit(self.allocator);
+        self.trail_composer = null;
+        return true;
     }
 
     pub fn hasNotes(self: *const App) bool {
