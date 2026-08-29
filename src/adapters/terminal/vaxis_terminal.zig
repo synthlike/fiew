@@ -1988,6 +1988,11 @@ fn handleMouse(
             }
             return;
         }
+        if (row >= 1 and app.sidebar_context == .git) {
+            if (app.review) |*review| review.selectRow(review.scroll + row - 1, dimensions.content_height -| 1);
+            app.viewing_source = false;
+            return;
+        }
         if (row >= 2) {
             const visible_index = app.browser.scroll + row - 2;
             app.browser.selectVisible(visible_index, dimensions.content_height -| 2);
@@ -2207,22 +2212,35 @@ fn drawGitSidebar(allocator: std.mem.Allocator, window: vaxis.Window, app: *cons
 
     const available = window.height -| 1;
     var row: usize = 0;
-    while (row < available and review.scroll + row < review.rows.len) : (row += 1) {
-        const row_index = review.scroll + row;
+    while (row < available and review.scroll + row < review.visible.items.len) : (row += 1) {
+        const visible_index = review.scroll + row;
+        const row_index = review.visible.items[visible_index];
         switch (review.rows[row_index]) {
             .header => |group| {
                 const text = try std.fmt.allocPrint(allocator, "{s} ({d})", .{ group.title(), review.changeset.groupCount(group) });
                 _ = window.printSegment(.{ .text = text, .style = .{ .bold = true } }, .{ .row_offset = @intCast(row + 1), .wrap = .none });
             },
+            .directory => |directory| {
+                const selected = visible_index == review.selected;
+                const indent: u16 = @intCast(@min(directory.depth * 2 + 2, window.width));
+                const marker = if (review.expanded[row_index]) "▾ " else "▸ ";
+                const name = try sanitizeLine(allocator, std.fs.path.basename(directory.path), window.width -| indent -| 2);
+                _ = window.print(&.{
+                    .{ .text = marker, .style = .{ .reverse = selected } },
+                    .{ .text = name, .style = .{ .reverse = selected, .bold = selected } },
+                }, .{ .row_offset = @intCast(row + 1), .col_offset = indent, .wrap = .none });
+            },
             .change => |change_index| {
                 const change = review.changeset.changes[change_index];
-                const selected = row_index == review.selected;
-                const name = try sanitizeLine(allocator, std.fs.path.basename(change.path), window.width -| 5);
+                const selected = visible_index == review.selected;
+                const depth = std.mem.count(u8, change.path, &.{std.fs.path.sep});
+                const indent: u16 = @intCast(@min(depth * 2 + 2, window.width));
+                const name = try sanitizeLine(allocator, std.fs.path.basename(change.path), window.width -| indent -| 3);
                 _ = window.print(&.{
                     .{ .text = changeMarker(change), .style = .{ .fg = changeColor(change), .bold = true, .reverse = selected } },
                     .{ .text = " " },
                     .{ .text = name, .style = .{ .reverse = selected, .bold = selected } },
-                }, .{ .row_offset = @intCast(row + 1), .col_offset = 2, .wrap = .none });
+                }, .{ .row_offset = @intCast(row + 1), .col_offset = indent, .wrap = .none });
             },
         }
     }

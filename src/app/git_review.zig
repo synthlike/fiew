@@ -7,17 +7,30 @@ const git = @import("../model/git.zig");
 const review_model = @import("../model/review.zig");
 const anchor_model = @import("../model/anchor.zig");
 
-/// One visible sidebar row: a group heading or a change within it.
+/// One sidebar tree row: a Git group, a repository directory, or a change.
 pub const Row = union(enum) {
     header: git.Group,
+    directory: Directory,
     change: usize, // index into `changeset.changes`
+
+    pub const Directory = struct {
+        group: git.Group,
+        /// Repository-relative path borrowed from one of the owned changes.
+        path: []const u8,
+        /// Zero-based nesting below the Git group.
+        depth: usize,
+    };
 };
 
 pub const Review = struct {
     allocator: std.mem.Allocator,
     changeset: git.ChangeSet,
+    /// Complete tree in display order. `visible` indexes this slice.
     rows: []Row,
-    /// Index into `rows`; kept on a change row whenever any change exists.
+    visible: std.ArrayListUnmanaged(usize) = .empty,
+    /// Expansion state aligned with `rows`; only directory entries use it.
+    expanded: []bool,
+    /// Index into `visible`.
     selected: usize = 0,
     scroll: usize = 0,
     /// Cursor within the selected change's diff (index into its `FileDiff.lines`).
@@ -39,20 +52,60 @@ pub const Review = struct {
         for (group_order) |group| {
             if (changeset.groupCount(group) == 0) continue;
             try rows.append(allocator, .{ .header = group });
+
+            var indices: std.ArrayList(usize) = .empty;
+            defer indices.deinit(allocator);
             for (changeset.changes, 0..) |change, index| {
-                if (change.group == group) try rows.append(allocator, .{ .change = index });
+                if (change.group == group) try indices.append(allocator, index);
+            }
+            std.mem.sort(usize, indices.items, changeset.changes, struct {
+                fn lessThan(items: []git.Change, left: usize, right: usize) bool {
+                    return std.mem.lessThan(u8, items[left].path, items[right].path);
+                }
+            }.lessThan);
+
+            var directories = std.StringHashMap(void).init(allocator);
+            defer directories.deinit();
+            for (indices.items) |index| {
+                const path = changeset.changes[index].path;
+                var cursor: usize = 0;
+                var depth: usize = 0;
+                while (std.mem.indexOfScalarPos(u8, path, cursor, std.fs.path.sep)) |separator| {
+                    const directory_path = path[0..separator];
+                    if (!directories.contains(directory_path)) {
+                        try directories.put(directory_path, {});
+                        try rows.append(allocator, .{ .directory = .{
+                            .group = group,
+                            .path = directory_path,
+                            .depth = depth,
+                        } });
+                    }
+                    cursor = separator + 1;
+                    depth += 1;
+                }
+                try rows.append(allocator, .{ .change = index });
             }
         }
+        const owned_rows = try rows.toOwnedSlice(allocator);
+        errdefer allocator.free(owned_rows);
+        const expanded = try allocator.alloc(bool, owned_rows.len);
+        errdefer allocator.free(expanded);
+        @memset(expanded, true);
         var review: Review = .{
             .allocator = allocator,
             .changeset = changeset,
-            .rows = try rows.toOwnedSlice(allocator),
+            .rows = owned_rows,
+            .expanded = expanded,
         };
+        errdefer review.visible.deinit(allocator);
+        try review.rebuildVisible(null);
         review.selected = review.firstChangeRow() orelse 0;
         return review;
     }
 
     pub fn deinit(self: *Review) void {
+        self.visible.deinit(self.allocator);
+        self.allocator.free(self.expanded);
         self.allocator.free(self.rows);
         self.changeset.deinit();
         self.* = undefined;
@@ -62,25 +115,56 @@ pub const Review = struct {
     /// follows the same Git group and repository-relative path when it remains;
     /// otherwise the replacement keeps its normal first-change fallback.
     pub fn restorePosition(self: *Review, previous: Review) void {
-        const previous_index = previous.selectedChange() orelse return;
-        const previous_change = previous.changeset.changes[previous_index];
-        for (self.rows, 0..) |row, row_index| switch (row) {
-            .header => {},
-            .change => |change_index| {
-                const change = self.changeset.changes[change_index];
-                if (change.group == previous_change.group and
-                    std.mem.eql(u8, change.path, previous_change.path))
-                {
-                    self.selected = row_index;
-                    self.scroll = @min(previous.scroll, self.rows.len -| 1);
-                    const diff = &self.changeset.diffs[change_index];
-                    self.diff_line = @min(previous.diff_line, diff.lines.len -| 1);
-                    self.diff_scroll = @min(previous.diff_scroll, diff.lines.len -| 1);
-                    self.diff_visual_scroll = previous.diff_visual_scroll;
-                    return;
-                }
-            },
+        // Restore directory state by stable Git group and repository path. New
+        // directories retain the expanded default.
+        var old_expansion = [_]std.StringHashMap(bool){
+            std.StringHashMap(bool).init(self.allocator),
+            std.StringHashMap(bool).init(self.allocator),
+            std.StringHashMap(bool).init(self.allocator),
         };
+        defer for (&old_expansion) |*map| map.deinit();
+        for (previous.rows, 0..) |row, row_index| switch (row) {
+            .directory => |directory| old_expansion[groupIndex(directory.group)].put(directory.path, previous.expanded[row_index]) catch return,
+            else => {},
+        };
+        for (self.rows, 0..) |row, row_index| switch (row) {
+            .directory => |directory| if (old_expansion[groupIndex(directory.group)].get(directory.path)) |expanded| {
+                self.expanded[row_index] = expanded;
+            },
+            else => {},
+        };
+        self.rebuildVisible(null) catch return;
+
+        const previous_row_index = previous.selectedRowIndex() orelse return;
+        const previous_row = previous.rows[previous_row_index];
+        for (self.visible.items, 0..) |row_index, visible_index| {
+            const matches = switch (self.rows[row_index]) {
+                .header => false,
+                .directory => |directory| switch (previous_row) {
+                    .directory => |old| directory.group == old.group and std.mem.eql(u8, directory.path, old.path),
+                    else => false,
+                },
+                .change => |change_index| switch (previous_row) {
+                    .change => |previous_change_index| blk: {
+                        const change = self.changeset.changes[change_index];
+                        const old = previous.changeset.changes[previous_change_index];
+                        break :blk change.group == old.group and std.mem.eql(u8, change.path, old.path);
+                    },
+                    else => false,
+                },
+            };
+            if (!matches) continue;
+            self.selected = visible_index;
+            self.scroll = @min(previous.scroll, self.visible.items.len -| 1);
+            if (self.rows[row_index] == .change) {
+                const change_index = self.rows[row_index].change;
+                const diff = &self.changeset.diffs[change_index];
+                self.diff_line = @min(previous.diff_line, diff.lines.len -| 1);
+                self.diff_scroll = @min(previous.diff_scroll, diff.lines.len -| 1);
+                self.diff_visual_scroll = previous.diff_visual_scroll;
+            }
+            return;
+        }
     }
 
     pub fn isEmpty(self: Review) bool {
@@ -89,10 +173,10 @@ pub const Review = struct {
 
     /// The change index the selection is on, if it is on a change row.
     pub fn selectedChange(self: Review) ?usize {
-        if (self.selected >= self.rows.len) return null;
-        return switch (self.rows[self.selected]) {
+        const row_index = self.selectedRowIndex() orelse return null;
+        return switch (self.rows[row_index]) {
             .change => |index| index,
-            .header => null,
+            else => null,
         };
     }
 
@@ -103,23 +187,24 @@ pub const Review = struct {
     }
 
     pub fn selectedGroup(self: Review) ?git.Group {
-        if (self.selected >= self.rows.len) return null;
-        return switch (self.rows[self.selected]) {
+        const row_index = self.selectedRowIndex() orelse return null;
+        return switch (self.rows[row_index]) {
             .header => |group| group,
+            .directory => |directory| directory.group,
             .change => |index| self.changeset.changes[index].group,
         };
     }
 
-    /// Move the selection by whole rows, skipping headers, and keep it visible.
+    /// Move through visible directory and change rows, skipping group headers.
     pub fn moveSelection(self: *Review, delta: isize, viewport_rows: usize) void {
-        if (self.rows.len == 0) return;
+        if (self.visible.items.len == 0) return;
         var current: isize = @intCast(self.selected);
-        const last: isize = @intCast(self.rows.len - 1);
+        const last: isize = @intCast(self.visible.items.len - 1);
         const step: isize = if (delta < 0) -1 else 1;
         var remaining = @abs(delta);
         while (remaining > 0) : (remaining -= 1) {
             var probe = current + step;
-            while (probe >= 0 and probe <= last and self.rows[@intCast(probe)] == .header) probe += step;
+            while (probe >= 0 and probe <= last and self.rows[self.visible.items[@intCast(probe)]] == .header) probe += step;
             if (probe < 0 or probe > last) break;
             current = probe;
         }
@@ -128,11 +213,11 @@ pub const Review = struct {
         self.ensureVisible(viewport_rows);
     }
 
-    /// Select the change at visible row `visible_index` (for mouse clicks).
-    pub fn selectRow(self: *Review, row_index: usize, viewport_rows: usize) void {
-        if (row_index >= self.rows.len) return;
-        if (self.rows[row_index] == .header) return;
-        self.selected = row_index;
+    /// Select a visible directory or change row (for mouse clicks).
+    pub fn selectRow(self: *Review, visible_index: usize, viewport_rows: usize) void {
+        if (visible_index >= self.visible.items.len) return;
+        if (self.rows[self.visible.items[visible_index]] == .header) return;
+        self.selected = visible_index;
         self.resetDiffCursor();
         self.ensureVisible(viewport_rows);
     }
@@ -147,11 +232,23 @@ pub const Review = struct {
         viewport_rows: usize,
     ) bool {
         for (self.rows, 0..) |row, row_index| switch (row) {
-            .header => {},
+            .header, .directory => {},
             .change => |change_index| {
                 const change = self.changeset.changes[change_index];
                 if (change.group != group or !std.mem.eql(u8, change.path, path)) continue;
-                self.selected = row_index;
+                // A thread may target a file below a directory the reviewer
+                // collapsed after creating it. Reveal all of its ancestors.
+                for (self.rows, 0..) |candidate, candidate_index| switch (candidate) {
+                    .directory => |directory| if (directory.group == group and
+                        change.path.len > directory.path.len and
+                        std.mem.startsWith(u8, change.path, directory.path) and
+                        change.path[directory.path.len] == std.fs.path.sep)
+                    {
+                        self.expanded[candidate_index] = true;
+                    },
+                    else => {},
+                };
+                self.rebuildVisible(row_index) catch return false;
                 self.resetDiffCursor();
                 if (side) |anchor_side| if (start_line) |line_number| {
                     const diff = &self.changeset.diffs[change_index];
@@ -177,9 +274,9 @@ pub const Review = struct {
         const group = self.selectedGroup() orelse return false;
         const step: isize = if (forward) 1 else -1;
         var probe: isize = @as(isize, @intCast(self.selected)) + step;
-        const last: isize = @intCast(self.rows.len - 1);
+        const last: isize = @intCast(self.visible.items.len - 1);
         while (probe >= 0 and probe <= last) : (probe += step) {
-            switch (self.rows[@intCast(probe)]) {
+            switch (self.rows[self.visible.items[@intCast(probe)]]) {
                 .change => |index| {
                     if (self.changeset.changes[index].group != group) return false;
                     self.selected = @intCast(probe);
@@ -188,6 +285,7 @@ pub const Review = struct {
                     return true;
                 },
                 .header => return false,
+                .directory => {},
             }
         }
         return false;
@@ -300,11 +398,125 @@ pub const Review = struct {
         }
     }
 
+    fn selectedRowIndex(self: Review) ?usize {
+        if (self.selected >= self.visible.items.len) return null;
+        return self.visible.items[self.selected];
+    }
+
     fn firstChangeRow(self: Review) ?usize {
-        for (self.rows, 0..) |row, index| {
-            if (row == .change) return index;
+        for (self.visible.items, 0..) |row_index, visible_index| {
+            if (self.rows[row_index] == .change) return visible_index;
         }
         return null;
+    }
+
+    /// Collapse the selected directory, or move to its parent directory.
+    pub fn collapseOrParent(self: *Review, viewport_rows: usize) !void {
+        const row_index = self.selectedRowIndex() orelse return;
+        const selected_row = self.rows[row_index];
+        if (selected_row == .directory and self.expanded[row_index]) {
+            self.expanded[row_index] = false;
+            try self.rebuildVisible(row_index);
+            self.ensureVisible(viewport_rows);
+            return;
+        }
+        const group = self.selectedGroup() orelse return;
+        const depth = rowDepth(self, selected_row);
+        if (depth == 0) return;
+        var probe = row_index;
+        while (probe > 0) {
+            probe -= 1;
+            switch (self.rows[probe]) {
+                .directory => |directory| if (directory.group == group and directory.depth + 1 == depth) {
+                    self.selectVisibleRow(probe);
+                    self.ensureVisible(viewport_rows);
+                    return;
+                },
+                .header => return,
+                .change => {},
+            }
+        }
+    }
+
+    /// Expand the selected directory, or move to its first visible child.
+    pub fn expandOrChild(self: *Review, viewport_rows: usize) !void {
+        const row_index = self.selectedRowIndex() orelse return;
+        const directory = switch (self.rows[row_index]) {
+            .directory => |value| value,
+            else => return,
+        };
+        if (!self.expanded[row_index]) {
+            self.expanded[row_index] = true;
+            try self.rebuildVisible(row_index);
+        } else if (self.selected + 1 < self.visible.items.len) {
+            const child_index = self.visible.items[self.selected + 1];
+            if (rowDepth(self, self.rows[child_index]) == directory.depth + 1) self.selected += 1;
+        }
+        self.ensureVisible(viewport_rows);
+    }
+
+    fn rebuildVisible(self: *Review, preserve_row: ?usize) !void {
+        self.visible.clearRetainingCapacity();
+        var collapsed_group: ?git.Group = null;
+        var collapsed_depth: usize = 0;
+        for (self.rows, 0..) |row, row_index| {
+            switch (row) {
+                .header => {
+                    collapsed_group = null;
+                    try self.visible.append(self.allocator, row_index);
+                },
+                .directory => |directory| {
+                    if (collapsed_group) |group| {
+                        if (group == directory.group and directory.depth > collapsed_depth) continue;
+                        collapsed_group = null;
+                    }
+                    try self.visible.append(self.allocator, row_index);
+                    if (!self.expanded[row_index]) {
+                        collapsed_group = directory.group;
+                        collapsed_depth = directory.depth;
+                    }
+                },
+                .change => |change_index| {
+                    if (collapsed_group) |group| {
+                        const change = self.changeset.changes[change_index];
+                        if (group == change.group and pathDepth(change.path) > collapsed_depth) continue;
+                        collapsed_group = null;
+                    }
+                    try self.visible.append(self.allocator, row_index);
+                },
+            }
+        }
+        if (preserve_row) |row_index| self.selectVisibleRow(row_index) else self.selected = @min(self.selected, self.visible.items.len -| 1);
+    }
+
+    fn selectVisibleRow(self: *Review, row_index: usize) void {
+        for (self.visible.items, 0..) |visible_row, visible_index| {
+            if (visible_row == row_index) {
+                self.selected = visible_index;
+                return;
+            }
+        }
+        self.selected = @min(self.selected, self.visible.items.len -| 1);
+    }
+
+    fn rowDepth(self: *const Review, row: Row) usize {
+        return switch (row) {
+            .header => 0,
+            .directory => |directory| directory.depth,
+            .change => |index| pathDepth(self.changeset.changes[index].path),
+        };
+    }
+
+    fn pathDepth(path: []const u8) usize {
+        return std.mem.count(u8, path, &.{std.fs.path.sep});
+    }
+
+    fn groupIndex(group: git.Group) usize {
+        return switch (group) {
+            .staged => 0,
+            .unstaged => 1,
+            .untracked => 2,
+        };
     }
 
     /// Select the active diff line linewise. Repeating the operation extends
@@ -547,6 +759,36 @@ fn buildChangeSet(allocator: std.mem.Allocator) !git.ChangeSet {
     return .{ .allocator = allocator, .changes = changes, .diffs = diffs };
 }
 
+fn buildNestedChangeSet(allocator: std.mem.Allocator) !git.ChangeSet {
+    const paths = [_][]const u8{ "src/app/commands.zig", "README.md", "src/state.zig", "lib/new.zig" };
+    var changes = try allocator.alloc(git.Change, paths.len);
+    for (paths, 0..) |path, index| {
+        changes[index] = .{
+            .group = .unstaged,
+            .kind = if (index == 3) .renamed else .modified,
+            .content = .text,
+            .path = try allocator.dupe(u8, path),
+            .old_path = if (index == 3) try allocator.dupe(u8, "old/location.zig") else null,
+        };
+    }
+    const diffs = try allocator.alloc(git.FileDiff, paths.len);
+    for (diffs) |*diff| diff.* = .{
+        .allocator = allocator,
+        .text = try allocator.alloc(u8, 0),
+        .hunks = try allocator.alloc(git.Hunk, 0),
+        .lines = try allocator.alloc(git.DiffLine, 0),
+    };
+    return .{ .allocator = allocator, .changes = changes, .diffs = diffs };
+}
+
+fn findDirectoryRow(review: Review, group: git.Group, path: []const u8) ?usize {
+    for (review.rows, 0..) |row, index| switch (row) {
+        .directory => |directory| if (directory.group == group and std.mem.eql(u8, directory.path, path)) return index,
+        else => {},
+    };
+    return null;
+}
+
 test "review builds grouped rows and selects the first change" {
     var review = try Review.init(testing.allocator, try buildChangeSet(testing.allocator));
     defer review.deinit();
@@ -558,6 +800,74 @@ test "review builds grouped rows and selects the first change" {
     // Selection lands on the first change row, not the header.
     try testing.expectEqual(@as(usize, 1), review.selected);
     try testing.expectEqualStrings("a.zig", review.changeset.changes[review.selectedChange().?].path);
+}
+
+test "review preserves parent directories and places renames at their destination" {
+    var review = try Review.init(testing.allocator, try buildNestedChangeSet(testing.allocator));
+    defer review.deinit();
+
+    const src = findDirectoryRow(review, .unstaged, "src").?;
+    const app = findDirectoryRow(review, .unstaged, "src/app").?;
+    const lib = findDirectoryRow(review, .unstaged, "lib").?;
+    try testing.expectEqual(@as(usize, 0), review.rows[src].directory.depth);
+    try testing.expectEqual(@as(usize, 1), review.rows[app].directory.depth);
+    try testing.expect(lib < src);
+
+    var renamed_row: ?usize = null;
+    for (review.rows, 0..) |row, index| switch (row) {
+        .change => |change_index| {
+            if (review.changeset.changes[change_index].kind == .renamed) renamed_row = index;
+        },
+        else => {},
+    };
+    try testing.expect(renamed_row.? > lib and renamed_row.? < src);
+}
+
+test "Git directories collapse expand and remain selectable" {
+    var review = try Review.init(testing.allocator, try buildNestedChangeSet(testing.allocator));
+    defer review.deinit();
+
+    const src = findDirectoryRow(review, .unstaged, "src").?;
+    review.selectVisibleRow(src);
+    const expanded_count = review.visible.items.len;
+    try review.collapseOrParent(20);
+    try testing.expect(!review.expanded[src]);
+    try testing.expect(review.visible.items.len < expanded_count);
+    try testing.expect(review.rows[review.selectedRowIndex().?] == .directory);
+    try testing.expectEqualStrings("src", review.rows[review.selectedRowIndex().?].directory.path);
+
+    try review.expandOrChild(20);
+    try testing.expect(review.expanded[src]);
+    try testing.expectEqual(expanded_count, review.visible.items.len);
+    try review.expandOrChild(20);
+    try testing.expectEqualStrings("src/app", review.rows[review.selectedRowIndex().?].directory.path);
+}
+
+test "selecting a thread anchor reveals a change below collapsed directories" {
+    var review = try Review.init(testing.allocator, try buildNestedChangeSet(testing.allocator));
+    defer review.deinit();
+    const src = findDirectoryRow(review, .unstaged, "src").?;
+    review.selectVisibleRow(src);
+    try review.collapseOrParent(20);
+
+    try testing.expect(review.selectThreadAnchor(.unstaged, "src/app/commands.zig", null, null, 20));
+    try testing.expect(review.expanded[src]);
+    try testing.expectEqualStrings("src/app/commands.zig", review.changeset.changes[review.selectedChange().?].path);
+}
+
+test "Git directory expansion survives refresh" {
+    var previous = try Review.init(testing.allocator, try buildNestedChangeSet(testing.allocator));
+    defer previous.deinit();
+    const previous_src = findDirectoryRow(previous, .unstaged, "src").?;
+    previous.selectVisibleRow(previous_src);
+    try previous.collapseOrParent(20);
+
+    var replacement = try Review.init(testing.allocator, try buildNestedChangeSet(testing.allocator));
+    defer replacement.deinit();
+    replacement.restorePosition(previous);
+    const replacement_src = findDirectoryRow(replacement, .unstaged, "src").?;
+    try testing.expect(!replacement.expanded[replacement_src]);
+    try testing.expectEqualStrings("src", replacement.rows[replacement.selectedRowIndex().?].directory.path);
 }
 
 test "selection movement skips headers" {

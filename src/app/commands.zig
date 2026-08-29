@@ -725,12 +725,22 @@ pub const Session = struct {
                 return .preview_selection;
             },
             .project_collapse => {
-                if (app.sidebar_context == .git or app.sidebar_context == .review or app.sidebar_context == .bookmarks) return .none;
+                if (app.sidebar_context == .git) {
+                    if (app.review) |*review| try review.collapseOrParent(dimensions.sidebar_rows);
+                    app.viewing_source = false;
+                    return .none;
+                }
+                if (app.sidebar_context == .review or app.sidebar_context == .bookmarks) return .none;
                 try app.browser.collapseOrParent(dimensions.sidebar_rows);
                 return .preview_selection;
             },
             .project_expand => {
-                if (app.sidebar_context == .git or app.sidebar_context == .review or app.sidebar_context == .bookmarks) return .none;
+                if (app.sidebar_context == .git) {
+                    if (app.review) |*review| try review.expandOrChild(dimensions.sidebar_rows);
+                    app.viewing_source = false;
+                    return .none;
+                }
+                if (app.sidebar_context == .review or app.sidebar_context == .bookmarks) return .none;
                 try app.browser.expandOrChild(dimensions.sidebar_rows);
                 return .preview_selection;
             },

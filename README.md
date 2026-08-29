@@ -181,6 +181,7 @@ blocks task completion while waiting for a review.
 | `Space t` | Open trails for the active review |
 | `Space t f` | Fuzzy-find a trail by title |
 | `Space t r` / `Space t a` | Start or stop recording / add a trail point |
+| `h` / `l` in a sidebar tree | Collapse / expand the selected directory |
 | `] f` / `[ f` | Next / previous changed file |
 | `] h` / `[ h` | Next / previous hunk |
 | `] c` / `[ c` | Next / previous changed line |
@@ -229,8 +230,9 @@ or revoke the integration.
 
 - Apple Silicon macOS in Ghostty;
 - immutable repository browsing with location history;
-- current Git review of Staged, Unstaged, and Untracked changes, including
-  textual unified diffs and explicit metadata for unsupported textual forms;
+- current Git review of Staged, Unstaged, and Untracked changes in collapsible
+  directory trees, including textual unified diffs and explicit metadata for
+  unsupported textual forms;
 - reviewer-owned file and line/range threads with agent replies, explicit
   resolution, and constrained exact-context re-anchoring after Git refreshes;
 - private repository-local bookmarks for reviewer navigation; and
