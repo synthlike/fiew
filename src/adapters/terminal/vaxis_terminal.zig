@@ -758,17 +758,74 @@ fn parseWorker(
 }
 
 pub const Options = struct {
+    /// A repository directory or a file to open inside its containing repository.
     root_path: []const u8 = ".",
     review_filename: ?[]const u8 = null,
 };
 
+const RequestedTarget = struct {
+    allocator: std.mem.Allocator,
+    directory: []u8,
+    file: ?[]const u8,
+
+    fn deinit(self: *RequestedTarget) void {
+        self.allocator.free(self.directory);
+        self.* = undefined;
+    }
+};
+
+fn requestedTarget(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !RequestedTarget {
+    const stat = try std.Io.Dir.cwd().statFile(io, path, .{});
+    return switch (stat.kind) {
+        .directory => .{
+            .allocator = allocator,
+            .directory = try allocator.dupe(u8, path),
+            .file = null,
+        },
+        .file => .{
+            .allocator = allocator,
+            .directory = try allocator.dupe(u8, std.fs.path.dirname(path) orelse "."),
+            .file = path,
+        },
+        else => error.UnsupportedLaunchTarget,
+    };
+}
+
+fn repositoryPathForFile(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    repository: fiew.filesystem.Repository,
+    requested_file: []const u8,
+) ![]u8 {
+    var root_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const root_length = try repository.root_dir.realPath(io, &root_buffer);
+    var file_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const file_length = try std.Io.Dir.cwd().realPathFile(io, requested_file, &file_buffer);
+    const relative = try std.fs.path.relative(
+        allocator,
+        ".",
+        null,
+        root_buffer[0..root_length],
+        file_buffer[0..file_length],
+    );
+    errdefer allocator.free(relative);
+    var components = std.fs.path.componentIterator(relative);
+    if (components.next()) |component| {
+        if (std.mem.eql(u8, component.name, "..")) return error.InitialFileOutsideRepository;
+    }
+    if (std.fs.path.isAbsolute(relative)) return error.InitialFileOutsideRepository;
+    return relative;
+}
+
 pub fn run(init: std.process.Init, options: Options) !u8 {
     const allocator = init.gpa;
-    const root_path = options.root_path;
+    var requested_target = try requestedTarget(allocator, init.io, options.root_path);
+    defer requested_target.deinit();
+    const root_path = requested_target.directory;
     const review_name = options.review_filename;
 
-    // Discover once from the requested path, then make the discovered worktree
-    // top level the one root used by Project, Git, source, reviews, and state.
+    // Discover once from the requested directory, then make the discovered
+    // worktree top level the root used by Project, Git, source, reviews, and state.
     var requested_dir = try std.Io.Dir.cwd().openDir(init.io, root_path, .{});
     defer requested_dir.close(init.io);
     var canonical_root: ?[]u8 = null;
@@ -786,6 +843,11 @@ pub fn run(init: std.process.Init, options: Options) !u8 {
 
     var repository = try fiew.filesystem.Repository.open(allocator, init.io, canonical_root orelse root_path);
     defer repository.deinit();
+    const initial_path: ?[]u8 = if (requested_target.file) |file|
+        try repositoryPathForFile(allocator, init.io, repository, file)
+    else
+        null;
+    defer if (initial_path) |path| allocator.free(path);
     var app = try fiew.app.App.init(allocator, &repository.tree);
     defer app.deinit();
     app.git_enabled = git_ready;
@@ -902,7 +964,15 @@ pub fn run(init: std.process.Init, options: Options) !u8 {
         .width_fn = graphemeWidth,
     };
     var generation: u64 = 0;
-    try previewSelection(&app, repository, segmenter, &generation);
+    if (initial_path) |path| {
+        if (!try app.browser.revealPath(path, 1)) return error.InitialFileNotInRepository;
+        generation +%= 1;
+        const snapshot = try repository.loadDocument(path, generation, segmenter);
+        app.showPreview(snapshot);
+        _ = try app.pinPreview();
+    } else {
+        try previewSelection(&app, repository, segmenter, &generation);
+    }
 
     var read_buffer: [1024]u8 = undefined;
     var tty: vaxis.Tty = try .init(init.io, &read_buffer);
@@ -916,6 +986,8 @@ pub fn run(init: std.process.Init, options: Options) !u8 {
         .kitty_keyboard_flags = .{ .report_events = true },
     });
     defer vx.deinit(allocator, tty.writer());
+    if (initial_path != null)
+        app.browser.centerSelected(commandDimensions(vx.window(), &app).sidebar_rows);
 
     var loop: vaxis.Loop(Event) = .init(init.io, &tty, &vx);
     try loop.start();
@@ -3153,6 +3225,37 @@ test "Kitty and conventional VT keys translate to the same command input" {
         .mods = .{ .ctrl = true },
     });
     try std.testing.expectEqual(conventional_ctrl_c, kitty_ctrl_c);
+}
+
+test "file launch target resolves to its repository path" {
+    var temporary = std.testing.tmpDir(.{ .iterate = true });
+    defer temporary.cleanup();
+    try temporary.dir.createDir(std.testing.io, "src", .default_dir);
+    try temporary.dir.writeFile(std.testing.io, .{ .sub_path = "src/main.zig", .data = "pub fn main() void {}\n" });
+    const root_path = try std.fmt.allocPrint(
+        std.testing.allocator,
+        ".zig-cache/tmp/{s}",
+        .{temporary.sub_path},
+    );
+    defer std.testing.allocator.free(root_path);
+    const file_path = try std.fs.path.join(std.testing.allocator, &.{ root_path, "src/main.zig" });
+    defer std.testing.allocator.free(file_path);
+
+    var directory = try requestedTarget(std.testing.allocator, std.testing.io, root_path);
+    defer directory.deinit();
+    try std.testing.expect(directory.file == null);
+    try std.testing.expectEqualStrings(root_path, directory.directory);
+
+    var requested = try requestedTarget(std.testing.allocator, std.testing.io, file_path);
+    defer requested.deinit();
+    try std.testing.expectEqualStrings(std.fs.path.dirname(file_path).?, requested.directory);
+    try std.testing.expectEqualStrings(file_path, requested.file.?);
+
+    var repository = try fiew.filesystem.Repository.open(std.testing.allocator, std.testing.io, root_path);
+    defer repository.deinit();
+    const relative = try repositoryPathForFile(std.testing.allocator, std.testing.io, repository, file_path);
+    defer std.testing.allocator.free(relative);
+    try std.testing.expectEqualStrings("src/main.zig", relative);
 }
 
 test "definition target validation distinguishes repository and external files" {

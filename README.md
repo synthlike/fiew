@@ -65,6 +65,7 @@ Ensure `$HOME/.local/bin` is on `PATH`, then inspect and run it:
 ```sh
 fiew --version
 fiew /path/to/repository
+fiew /path/to/repository/src/main.zig
 ```
 
 If macOS blocks the unsigned executable, verify its checksum before deciding
@@ -79,6 +80,9 @@ Install Zig 0.16.0, fetch the locked dependencies, and run fiew in Ghostty:
 zig build --fetch
 zig build run -- /path/to/repository
 ```
+
+Passing a file opens its containing repository and focuses that file immediately.
+Relative paths such as `fiew src/main.zig` work from inside a repository.
 
 Start the review workflow inside fiew:
 

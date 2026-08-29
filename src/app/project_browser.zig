@@ -111,6 +111,35 @@ pub const Browser = struct {
         }
     }
 
+    pub fn centerSelected(self: *Browser, viewport_height: usize) void {
+        if (viewport_height == 0 or self.visible.items.len <= viewport_height) {
+            self.scroll = 0;
+            return;
+        }
+        const centered = self.selected -| (viewport_height / 2);
+        self.scroll = @min(centered, self.visible.items.len - viewport_height);
+    }
+
+    /// Reveal and select one exact repository path, expanding only its parent
+    /// directories. Used when startup names a file directly.
+    pub fn revealPath(self: *Browser, path: []const u8, viewport_height: usize) !bool {
+        var target: ?usize = null;
+        for (self.tree.nodes, 0..) |node, index| {
+            if (std.mem.eql(u8, node.path, path) and node.kind == .file) {
+                target = index;
+                break;
+            }
+        }
+        const node_index = target orelse return false;
+        for (self.tree.nodes, 0..) |node, index| {
+            if (node.kind == .directory and isDescendant(node.path, path))
+                self.expanded[index] = true;
+        }
+        try self.rebuildVisible(node_index);
+        self.ensureVisible(viewport_height);
+        return true;
+    }
+
     fn rebuildVisible(self: *Browser, preserve_node: ?usize) !void {
         self.visible.clearRetainingCapacity();
         var collapsed_depth: ?usize = null;
@@ -140,6 +169,43 @@ pub const Browser = struct {
             child[parent.len] == std.fs.path.sep;
     }
 };
+
+test "centering selection uses the middle when list edges allow it" {
+    var nodes: [20]project.Node = undefined;
+    var paths: [20][8]u8 = undefined;
+    for (&nodes, &paths, 0..) |*node, *path, index| {
+        const value = try std.fmt.bufPrint(path, "f{d:0>2}.zig", .{index});
+        node.* = .{ .path = value, .depth = 1, .kind = .file };
+    }
+    const tree: project.Tree = .{ .allocator = std.testing.allocator, .nodes = &nodes, .file_count = nodes.len };
+    var browser = try Browser.init(std.testing.allocator, &tree);
+    defer browser.deinit();
+
+    browser.selectVisible(10, 5);
+    browser.centerSelected(5);
+    try std.testing.expectEqual(@as(usize, 8), browser.scroll);
+    browser.selectVisible(19, 5);
+    browser.centerSelected(5);
+    try std.testing.expectEqual(@as(usize, 15), browser.scroll);
+}
+
+test "revealing a nested file expands parents and selects it" {
+    const nodes = [_]project.Node{
+        .{ .path = "README.md", .depth = 1, .kind = .file },
+        .{ .path = "src", .depth = 1, .kind = .directory },
+        .{ .path = "src/app", .depth = 2, .kind = .directory },
+        .{ .path = "src/app/main.zig", .depth = 3, .kind = .file },
+    };
+    const tree: project.Tree = .{ .allocator = std.testing.allocator, .nodes = @constCast(&nodes), .file_count = 2 };
+    var browser = try Browser.init(std.testing.allocator, &tree);
+    defer browser.deinit();
+
+    try std.testing.expect(try browser.revealPath("src/app/main.zig", 10));
+    try std.testing.expectEqualStrings("src/app/main.zig", browser.selectedNode().?.path);
+    try std.testing.expect(browser.expanded[1]);
+    try std.testing.expect(browser.expanded[2]);
+    try std.testing.expect(!try browser.revealPath("missing.zig", 10));
+}
 
 test "collapse preserves selection and hides descendants" {
     const nodes = [_]project.Node{

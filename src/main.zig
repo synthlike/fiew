@@ -51,12 +51,12 @@ fn isHelp(arg: []const u8) bool {
 }
 
 const generalHelp =
-    \\Usage: fiew [<repository>]
+    \\Usage: fiew [<repository-or-file>]
     \\       fiew review <command> [options]
     \\       fiew version | --version
     \\       fiew help | -h | --help
-    \\Open a read-first Git review workspace. Use Space r d for Review Diff
-    \\and Space r t for Review Threads.
+    \\Open a read-first Git review workspace, optionally focused on a file.
+    \\Use Space r d for Review Diff and Space r t for Review Threads.
     \\Run 'fiew review help' for the non-interactive review interface.
 ;
 
