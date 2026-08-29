@@ -176,6 +176,21 @@ blocks task completion while waiting for a review.
 The status line shows the current mode (`NOR`, `EXT`, or `CMD`) and active
 leader path, such as `LDR r d`.
 
+### Trust ZLS for Zig definitions
+
+Install ZLS 0.16.x and ensure `zls` is available on `PATH`. Because ZLS may
+evaluate repository-controlled Zig build logic, fiew requires explicit trust
+for each repository before launching it.
+
+1. Open the repository in fiew.
+2. Press `:` and enter `zls-trust-repository`.
+3. Select **Trust repository for ZLS** and press `Enter`.
+4. Open a UTF-8 Zig file and press `g d` to go to the selected definition.
+
+Trust is persisted for the canonical repository identity. Use the named
+commands `zls-status`, `zls-restart`, or `zls-revoke-trust` to inspect, restart,
+or revoke the integration.
+
 ## What v0.1 supports
 
 - Apple Silicon macOS in Ghostty;
