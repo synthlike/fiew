@@ -102,7 +102,10 @@ pub fn initializeBody(allocator: std.mem.Allocator, id: i64, root_uri: []const u
             .capabilities = .{
                 .general = .{ .positionEncodings = &.{ "utf-8", "utf-16" } },
                 .workspace = .{ .applyEdit = false, .workspaceEdit = .{ .documentChanges = false } },
-                .textDocument = .{ .definition = .{ .dynamicRegistration = false, .linkSupport = true } },
+                .textDocument = .{
+                    .definition = .{ .dynamicRegistration = false, .linkSupport = true },
+                    .references = .{ .dynamicRegistration = false },
+                },
             },
             // This narrows ZLS behavior but is not represented as a sandbox.
             .initializationOptions = .{ .enable_build_on_save = false },
@@ -147,6 +150,26 @@ pub fn definitionBody(
         .params = .{
             .textDocument = .{ .uri = uri },
             .position = position,
+        },
+    }, .{});
+}
+
+pub fn referencesBody(
+    allocator: std.mem.Allocator,
+    id: i64,
+    uri: []const u8,
+    position: lsp.Position,
+) ![]u8 {
+    return std.json.Stringify.valueAlloc(allocator, .{
+        .jsonrpc = "2.0",
+        .id = id,
+        .method = "textDocument/references",
+        .params = .{
+            .textDocument = .{ .uri = uri },
+            .position = position,
+            // The declaration is not synthesized by fiew. It appears only if
+            // ZLS includes it in this requested result set.
+            .context = .{ .includeDeclaration = true },
         },
     }, .{});
 }
@@ -198,6 +221,7 @@ test "lifecycle transcript balances initialize open close shutdown and exit" {
     try std.testing.expect(std.mem.indexOf(u8, initialize, "\"applyEdit\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, initialize, "\"dynamicRegistration\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, initialize, "\"linkSupport\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, initialize, "\"references\"") != null);
     const initialized = try initializedBody(std.testing.allocator);
     defer std.testing.allocator.free(initialized);
     try std.testing.expect(std.mem.indexOf(u8, initialized, "\"params\":{}") != null);
@@ -221,6 +245,13 @@ test "document lifecycle refuses imbalance and mismatched responses" {
     try std.testing.expectError(error.DocumentAlreadyOpen, lifecycle.open("file:///two.zig"));
     try std.testing.expectError(error.DocumentMismatch, lifecycle.close("file:///two.zig"));
     try std.testing.expectError(error.DocumentStillOpen, lifecycle.beginShutdown());
+}
+
+test "reference request asks ZLS to decide whether to include the declaration" {
+    const body = try referencesBody(std.testing.allocator, 7, "file:///repo/main.zig", .{ .line = 2, .character = 3 });
+    defer std.testing.allocator.free(body);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"method\":\"textDocument/references\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"includeDeclaration\":true") != null);
 }
 
 test "initialize response negotiates UTF-8 and defaults to UTF-16" {

@@ -9,6 +9,9 @@ pub const Target = struct {
     source_start: usize,
     preview: []u8,
     external: bool,
+    /// True for the first ordered result in a file. Renderers use this to
+    /// make reference groups visible without adding non-selectable rows.
+    group_start: bool = true,
 
     pub fn deinit(self: *Target, allocator: std.mem.Allocator) void {
         allocator.free(self.path);
@@ -22,9 +25,14 @@ pub const Results = struct {
     items: []Target,
     selected: usize = 0,
     scroll: usize = 0,
+    truncated: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, items: []Target) Results {
         return .{ .allocator = allocator, .items = items };
+    }
+
+    pub fn initTruncated(allocator: std.mem.Allocator, items: []Target, truncated: bool) Results {
+        return .{ .allocator = allocator, .items = items, .truncated = truncated };
     }
 
     pub fn deinit(self: *Results) void {

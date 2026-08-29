@@ -29,12 +29,15 @@ const DefinitionFailure = enum {
     unavailable,
     malformed,
 
-    fn message(self: DefinitionFailure) []const u8 {
+    fn message(self: DefinitionFailure, operation: fiew.lsp.Operation) []const u8 {
         return switch (self) {
             .not_installed => "ZLS not installed",
             .incompatible => "ZLS incompatible",
             .unavailable => "ZLS crashed",
-            .malformed => "ZLS returned a malformed definition response",
+            .malformed => if (operation == .references)
+                "ZLS returned a malformed references response"
+            else
+                "ZLS returned a malformed definition response",
         };
     }
 };
@@ -43,6 +46,7 @@ const DefinitionCompletion = struct {
     generation: u64,
     document_generation: u64,
     selection: fiew.document.ByteRange,
+    operation: fiew.lsp.Operation,
     result: union(enum) {
         success: fiew.zls_process.DefinitionResponse,
         failure: DefinitionFailure,
@@ -177,6 +181,7 @@ const DefinitionRequestData = struct {
     selection: fiew.document.ByteRange,
     utf8_position: fiew.lsp.Position,
     utf16_position: fiew.lsp.Position,
+    operation: fiew.lsp.Operation,
 
     fn deinit(self: *DefinitionRequestData) void {
         self.allocator.free(self.root_uri);
@@ -219,11 +224,11 @@ const DefinitionState = struct {
         };
         const selection = app.activeView().?.selection();
         const utf8_position = fiew.lsp.positionAt(snapshot.*, selection.start, .utf8) catch {
-            app.failDefinition(generation, "definition requires a valid UTF-8 position");
+            app.failDefinition(generation, if (app.semantic_operation == .references) "references require a valid UTF-8 position" else "definition requires a valid UTF-8 position");
             return;
         };
         const utf16_position = fiew.lsp.positionAt(snapshot.*, selection.start, .utf16) catch {
-            app.failDefinition(generation, "definition requires a valid UTF-16 position");
+            app.failDefinition(generation, if (app.semantic_operation == .references) "references require a valid UTF-16 position" else "definition requires a valid UTF-16 position");
             return;
         };
         const absolute = if (std.fs.path.isAbsolute(snapshot.path))
@@ -261,6 +266,7 @@ const DefinitionState = struct {
             .selection = selection,
             .utf8_position = utf8_position,
             .utf16_position = utf16_position,
+            .operation = app.semantic_operation,
         };
         self.request = request;
         self.started_nanoseconds = std.Io.Timestamp.now(self.io, .real).nanoseconds;
@@ -291,20 +297,23 @@ const DefinitionState = struct {
         const request = self.request orelse return;
         const active = app.activeView() orelse {
             const generation = app.definition_generation;
+            const operation = request.operation;
             self.cancel();
-            app.failDefinition(generation, "definition discarded because the document changed");
+            app.failDefinition(generation, semanticDiscardedDocument(operation));
             return;
         };
         if (active.snapshot.generation != request.document_generation) {
             const generation = app.definition_generation;
+            const operation = request.operation;
             self.cancel();
-            app.failDefinition(generation, "definition discarded because the document changed");
+            app.failDefinition(generation, semanticDiscardedDocument(operation));
             return;
         }
         if (!std.meta.eql(active.selection(), request.selection)) {
             const generation = app.definition_generation;
+            const operation = request.operation;
             self.cancel();
-            app.failDefinition(generation, "definition discarded because the selection changed");
+            app.failDefinition(generation, semanticDiscardedSelection(operation));
         }
     }
 
@@ -312,13 +321,15 @@ const DefinitionState = struct {
         if (self.future == null) return;
         const elapsed = std.Io.Timestamp.now(self.io, .real).nanoseconds - self.started_nanoseconds;
         if (elapsed >= std.time.ns_per_ms * 100 and app.definition_pending and !self.pending_shown) {
-            app.feedback = "ZLS definition pending";
+            app.feedback = if (app.semantic_operation == .references) "ZLS references pending" else "ZLS definition pending";
             self.pending_shown = true;
         }
-        if (elapsed >= std.time.ns_per_s * 2) {
+        const timeout: i96 = if (app.semantic_operation == .references) std.time.ns_per_s * 5 else std.time.ns_per_s * 2;
+        if (elapsed >= timeout) {
             const generation = app.definition_generation;
+            const operation = app.semantic_operation;
             self.cancel();
-            app.failDefinition(generation, "ZLS definition timed out");
+            app.failDefinition(generation, if (operation == .references) "ZLS references timed out" else "ZLS definition timed out");
         }
     }
 
@@ -343,17 +354,31 @@ fn definitionWorker(
     generation: u64,
     request: DefinitionRequestData,
 ) void {
-    const result = fiew.zls_process.requestDefinition(
-        allocator,
-        io,
-        repository_dir,
-        request.root_uri,
-        request.document_uri,
-        request.document_generation,
-        request.text,
-        request.utf8_position,
-        request.utf16_position,
-    );
+    const result = switch (request.operation) {
+        .definition => fiew.zls_process.requestDefinition(
+            allocator,
+            io,
+            repository_dir,
+            request.root_uri,
+            request.document_uri,
+            request.document_generation,
+            request.text,
+            request.utf8_position,
+            request.utf16_position,
+        ),
+        .references => fiew.zls_process.requestReferences(
+            allocator,
+            io,
+            repository_dir,
+            request.root_uri,
+            request.document_uri,
+            request.document_generation,
+            request.text,
+            request.utf8_position,
+            request.utf16_position,
+        ),
+        .hover => unreachable,
+    };
     const box = allocator.create(DefinitionCompletion) catch {
         if (result) |response| {
             var owned = response;
@@ -365,6 +390,7 @@ fn definitionWorker(
         .generation = generation,
         .document_generation = request.document_generation,
         .selection = request.selection,
+        .operation = request.operation,
         .result = if (result) |response|
             .{ .success = response }
         else |err|
@@ -374,6 +400,20 @@ fn definitionWorker(
         box.deinit();
         allocator.destroy(box);
     };
+}
+
+fn semanticDiscardedDocument(operation: fiew.lsp.Operation) []const u8 {
+    return if (operation == .references)
+        "references discarded because the document changed"
+    else
+        "definition discarded because the document changed";
+}
+
+fn semanticDiscardedSelection(operation: fiew.lsp.Operation) []const u8 {
+    return if (operation == .references)
+        "references discarded because the selection changed"
+    else
+        "definition discarded because the selection changed";
 }
 
 fn definitionFailure(err: anyerror) DefinitionFailure {
@@ -914,15 +954,15 @@ pub fn run(init: std.process.Init, options: Options) !u8 {
                 }
                 if (!owned_by_state or box.generation != app.definition_generation) continue;
                 const active = app.activeView() orelse {
-                    app.failDefinition(box.generation, "definition discarded because the document changed");
+                    app.failDefinition(box.generation, semanticDiscardedDocument(box.operation));
                     continue;
                 };
                 if (active.snapshot.generation != box.document_generation) {
-                    app.failDefinition(box.generation, "definition discarded because the document changed");
+                    app.failDefinition(box.generation, semanticDiscardedDocument(box.operation));
                     continue;
                 }
                 if (!std.meta.eql(active.selection(), box.selection)) {
-                    app.failDefinition(box.generation, "definition discarded because the selection changed");
+                    app.failDefinition(box.generation, semanticDiscardedSelection(box.operation));
                     continue;
                 }
                 switch (box.result) {
@@ -936,7 +976,7 @@ pub fn run(init: std.process.Init, options: Options) !u8 {
                         zls_state.stop(status);
                         zls_state.last_published = status;
                         app.zls_status = status;
-                        app.failDefinition(box.generation, failure.message());
+                        app.failDefinition(box.generation, failure.message(box.operation));
                     },
                     .success => |*response| {
                         var results = validateDefinitionTargets(
@@ -946,18 +986,19 @@ pub fn run(init: std.process.Init, options: Options) !u8 {
                             segmenter,
                             &generation,
                             response,
+                            box.operation,
                         ) catch |err| {
                             app.failDefinition(box.generation, @errorName(err));
                             continue;
                         };
                         if (results.items.len == 0) {
                             results.deinit();
-                            app.failDefinition(box.generation, "no valid definition returned");
+                            app.failDefinition(box.generation, if (box.operation == .references) "no valid references returned" else "no valid definition returned");
                             continue;
                         }
                         _ = app.installDefinitions(box.generation, results);
                         app.prepareDefinitionPreview();
-                        if (app.definition_results.?.items.len == 1) {
+                        if (box.operation == .definition and app.definition_results.?.items.len == 1) {
                             const target = app.definition_results.?.items[0];
                             openDefinitionTarget(&app, repository, segmenter, &generation, target, true) catch |err| {
                                 app.dismissDefinitions(false);
@@ -1083,7 +1124,8 @@ fn validateDefinitionTargets(
     canonical_root: []const u8,
     segmenter: fiew.text_segmentation.Segmenter,
     snapshot_generation: *u64,
-    response: *const fiew.zls_process.DefinitionResponse,
+    response: *const fiew.zls_process.SemanticResponse,
+    operation: fiew.lsp.Operation,
 ) !fiew.definitions.Results {
     var targets: std.ArrayList(fiew.definitions.Target) = .empty;
     errdefer {
@@ -1117,12 +1159,14 @@ fn validateDefinitionTargets(
         const source_start = fiew.lsp.byteOffsetAt(snapshot, location.start, response.encoding) catch continue;
         const source_end = fiew.lsp.byteOffsetAt(snapshot, location.end, response.encoding) catch continue;
         if (source_end < source_start) continue;
-        var duplicate = false;
-        for (targets.items) |target| if (target.source_start == source_start and std.mem.eql(u8, target.path, display_path)) {
-            duplicate = true;
-            break;
-        };
-        if (duplicate) continue;
+        if (operation == .definition) {
+            var duplicate = false;
+            for (targets.items) |target| if (target.source_start == source_start and std.mem.eql(u8, target.path, display_path)) {
+                duplicate = true;
+                break;
+            };
+            if (duplicate) continue;
+        }
 
         const line_index: usize = @intCast(location.start.line);
         if (line_index >= snapshot.lineCount()) continue;
@@ -1148,7 +1192,47 @@ fn validateDefinitionTargets(
             .external = !internal,
         });
     }
-    return fiew.definitions.Results.init(allocator, try targets.toOwnedSlice(allocator));
+    return finalizeSemanticTargets(allocator, &targets, operation);
+}
+
+fn finalizeSemanticTargets(
+    allocator: std.mem.Allocator,
+    targets: *std.ArrayList(fiew.definitions.Target),
+    operation: fiew.lsp.Operation,
+) !fiew.definitions.Results {
+    if (operation == .references) {
+        std.mem.sort(fiew.definitions.Target, targets.items, {}, struct {
+            fn lessThan(_: void, left: fiew.definitions.Target, right: fiew.definitions.Target) bool {
+                const path_order = std.mem.order(u8, left.path, right.path);
+                if (path_order != .eq) return path_order == .lt;
+                if (left.source_start != right.source_start) return left.source_start < right.source_start;
+                return left.column < right.column;
+            }
+        }.lessThan);
+        var write_index: usize = 0;
+        for (targets.items) |target| {
+            if (write_index != 0 and target.source_start == targets.items[write_index - 1].source_start and
+                std.mem.eql(u8, target.path, targets.items[write_index - 1].path))
+            {
+                var duplicate = target;
+                duplicate.deinit(allocator);
+                continue;
+            }
+            if (write_index < targets.items.len) targets.items[write_index] = target;
+            write_index += 1;
+        }
+        targets.shrinkRetainingCapacity(write_index);
+        for (targets.items, 0..) |*target, index| {
+            target.group_start = index == 0 or !std.mem.eql(u8, targets.items[index - 1].path, target.path);
+        }
+    }
+    const max_reference_results: usize = 5_000;
+    const truncated = operation == .references and targets.items.len > max_reference_results;
+    if (truncated) {
+        for (targets.items[max_reference_results..]) |*target| target.deinit(allocator);
+        targets.shrinkRetainingCapacity(max_reference_results);
+    }
+    return fiew.definitions.Results.initTruncated(allocator, try targets.toOwnedSlice(allocator), truncated);
 }
 
 fn openDefinitionTarget(
@@ -2653,21 +2737,25 @@ fn drawCommandSurface(
             const height: u16 = @min(window.height, fiew.workspace.finder_max_height);
             const box = window.child(.{ .y_off = window.height - height, .height = height });
             box.clear();
-            _ = box.printSegment(.{ .text = " Definitions ", .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
+            _ = box.printSegment(.{ .text = if (app.semantic_operation == .references) " References " else " Definitions ", .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
             if (app.definition_results) |results| {
                 const available: usize = height -| 2;
                 var row: usize = 0;
                 while (row < available and results.scroll + row < results.items.len) : (row += 1) {
                     const index = results.scroll + row;
                     const target = results.items[index];
-                    const label = try definitionResultLabel(allocator, target);
+                    const label = try definitionResultLabel(allocator, target, app.semantic_operation == .references);
                     _ = box.printSegment(.{
                         .text = try sanitizeLine(allocator, label, box.width -| 2),
                         .style = .{ .reverse = index == results.selected, .bold = index == results.selected },
                     }, .{ .row_offset = @intCast(row + 1), .col_offset = 1, .wrap = .none });
                 }
             }
-            _ = box.printSegment(.{ .text = "j/k or ↑/↓ preview · Enter open · Esc cancel", .style = .{ .dim = true } }, .{
+            const semantic_hint = if (app.definition_results != null and app.definition_results.?.truncated)
+                "Results truncated to 5,000 · j/k preview · Enter open · Esc cancel"
+            else
+                "j/k or ↑/↓ preview · Enter open · Esc cancel";
+            _ = box.printSegment(.{ .text = semantic_hint, .style = .{ .dim = true } }, .{
                 .row_offset = height -| 1,
                 .col_offset = 1,
                 .wrap = .none,
@@ -2739,7 +2827,14 @@ fn drawCommandSurface(
     }
 }
 
-fn definitionResultLabel(allocator: std.mem.Allocator, target: fiew.definitions.Target) ![]u8 {
+fn definitionResultLabel(allocator: std.mem.Allocator, target: fiew.definitions.Target, grouped: bool) ![]u8 {
+    if (grouped and !target.group_start) {
+        return std.fmt.allocPrint(allocator, "  {d}  {s}{s}", .{
+            target.line,
+            target.preview,
+            if (target.external) "  External" else "",
+        });
+    }
     return std.fmt.allocPrint(allocator, "{s}:{d}  {s}{s}", .{
         target.path,
         target.line,
@@ -2939,7 +3034,7 @@ test "definition target validation distinguishes repository and external files" 
     defer response.deinit();
     const segmenter: fiew.text_segmentation.Segmenter = .{ .next_fn = nextGrapheme, .width_fn = graphemeWidth };
     var generation: u64 = 0;
-    var targets = try validateDefinitionTargets(std.testing.allocator, repository, canonical_root, segmenter, &generation, &response);
+    var targets = try validateDefinitionTargets(std.testing.allocator, repository, canonical_root, segmenter, &generation, &response, .definition);
     defer targets.deinit();
     try std.testing.expectEqual(@as(usize, 2), targets.items.len);
     try std.testing.expectEqualStrings("main.zig", targets.items[0].path);
@@ -2949,12 +3044,43 @@ test "definition target validation distinguishes repository and external files" 
     try std.testing.expectEqualStrings(external_path, targets.items[1].path);
 }
 
+test "reference targets are path-position ordered, visibly grouped, and capped" {
+    var items: std.ArrayList(fiew.definitions.Target) = .empty;
+    errdefer {
+        for (items.items) |*item| item.deinit(std.testing.allocator);
+        items.deinit(std.testing.allocator);
+    }
+    for (0..5_001) |index| {
+        const path = if (index % 2 == 0) "z.zig" else "a.zig";
+        try items.append(std.testing.allocator, .{
+            .path = try std.testing.allocator.dupe(u8, path),
+            .line = index + 1,
+            .column = 0,
+            .source_start = 5_001 - index,
+            .preview = try std.testing.allocator.dupe(u8, "value"),
+            .external = false,
+        });
+    }
+    var results = try finalizeSemanticTargets(std.testing.allocator, &items, .references);
+    defer results.deinit();
+    try std.testing.expectEqual(@as(usize, 5_000), results.items.len);
+    try std.testing.expect(results.truncated);
+    try std.testing.expectEqualStrings("a.zig", results.items[0].path);
+    try std.testing.expect(results.items[0].group_start);
+    try std.testing.expect(!results.items[1].group_start);
+    try std.testing.expect(results.items[0].source_start < results.items[1].source_start);
+    const second_group = for (results.items, 0..) |item, index| {
+        if (std.mem.eql(u8, item.path, "z.zig")) break index;
+    } else unreachable;
+    try std.testing.expect(results.items[second_group].group_start);
+}
+
 test "definition result render labels include line preview and External state" {
     const internal: fiew.definitions.Target = .{ .path = @constCast("src/main.zig"), .line = 12, .column = 0, .source_start = 0, .preview = @constCast("pub fn main()"), .external = false };
     const external: fiew.definitions.Target = .{ .path = @constCast("/zig/std/process.zig"), .line = 4, .column = 0, .source_start = 0, .preview = @constCast("pub const Init"), .external = true };
-    const internal_label = try definitionResultLabel(std.testing.allocator, internal);
+    const internal_label = try definitionResultLabel(std.testing.allocator, internal, false);
     defer std.testing.allocator.free(internal_label);
-    const external_label = try definitionResultLabel(std.testing.allocator, external);
+    const external_label = try definitionResultLabel(std.testing.allocator, external, false);
     defer std.testing.allocator.free(external_label);
     try std.testing.expectEqualStrings("src/main.zig:12  pub fn main()", internal_label);
     try std.testing.expectEqualStrings("/zig/std/process.zig:4  pub const Init  External", external_label);
@@ -2974,6 +3100,7 @@ test "pending continuation rows render every prefix and disabled reason" {
             "g   start — no document is open",
             "e   end — no document is open",
             "d   definition — focus an open Zig document",
+            "r   references — focus an open Zig document",
         } },
         .{ .prefix = 'z', .rows = &.{
             "c   close — Tree-sitter folds are not available",

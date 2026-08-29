@@ -46,6 +46,7 @@ pub const Id = enum {
     bookmark_next,
     bookmark_previous,
     definition,
+    references,
     zls_status,
     zls_trust,
     zls_revoke,
@@ -151,6 +152,7 @@ pub const definitions = [_]Definition{
     .{ .id = .bookmark_next, .stable_id = "bookmark-next", .title = "Next bookmark", .binding = "] b", .hint = "bookmark" },
     .{ .id = .bookmark_previous, .stable_id = "bookmark-previous", .title = "Previous bookmark", .binding = "[ b", .hint = "bookmark" },
     .{ .id = .definition, .stable_id = "definition", .title = "Go to definition", .binding = "g d", .hint = "definition" },
+    .{ .id = .references, .stable_id = "references", .title = "Find references", .binding = "g r", .hint = "references" },
     .{ .id = .zls_status, .stable_id = "zls-status", .title = "Show ZLS status", .binding = "" },
     .{ .id = .zls_trust, .stable_id = "zls-trust-repository", .title = "Trust repository for ZLS (may execute Zig build logic)", .binding = "" },
     .{ .id = .zls_revoke, .stable_id = "zls-revoke-trust", .title = "Revoke ZLS trust for this repository", .binding = "" },
@@ -319,10 +321,10 @@ pub fn unavailableReason(app: *const state.App, id: Id) ?[]const u8 {
         else
             null,
         .zls_restart => if (!app.zls_trusted) "ZLS untrusted" else null,
-        .definition => if (app.focus != .main or app.activeDocument() == null)
+        .definition, .references => if (app.focus != .main or app.activeDocument() == null)
             "focus an open Zig document"
         else if (!std.mem.endsWith(u8, app.activeDocument().?.path, ".zig") or app.activeDocument().?.encoding != .utf8)
-            "definition requires a valid UTF-8 Zig document"
+            if (id == .definition) "definition requires a valid UTF-8 Zig document" else "references require a valid UTF-8 Zig document"
         else if (!app.zls_trusted)
             "ZLS untrusted"
         else switch (app.zls_status) {
@@ -788,7 +790,8 @@ pub const Session = struct {
             .zls_trust => return .zls_trust,
             .zls_revoke => return .zls_revoke,
             .zls_restart => return .zls_restart,
-            .definition => return .{ .request_definition = app.beginDefinition() },
+            .definition => return .{ .request_definition = app.beginDefinition(.definition) },
+            .references => return .{ .request_definition = app.beginDefinition(.references) },
             .note_create => {
                 if (app.beginNoteFromDiff() catch false) {
                     self.surface = .note_composer;
@@ -849,6 +852,7 @@ pub const Session = struct {
                 'g' => .document_start,
                 'e' => .document_end,
                 'd' => .definition,
+                'r' => .references,
                 else => null,
             },
             .fold => if (key.shift) switch (character) {
@@ -1302,11 +1306,11 @@ test "registry stable identifiers are unique" {
 
 test "required modal bindings are represented by the command registry" {
     const required = [_][]const u8{
-        "h",       "j",         "k",         "l",         "w",       "b",         "e",         "g g",     "g e",
-        "Ctrl-u",  "Ctrl-d",    "PageUp",    "PageDown",  "v",       "x",         ";",         "Alt-;",   "Enter",
-        "g d",     "Ctrl-o",    "Ctrl-i",    "z c",       "z o",     "z a",       "z M",       "z R",     "Space p",
-        "Space f", "Space f a", "Space f g", "Space f r", "Space r", "Space r d", "Space r t", "Space ?", ":",
-        "q",
+        "h",       "j",       "k",         "l",         "w",         "b",       "e",         "g g",       "g e",
+        "Ctrl-u",  "Ctrl-d",  "PageUp",    "PageDown",  "v",         "x",       ";",         "Alt-;",     "Enter",
+        "g d",     "g r",     "Ctrl-o",    "Ctrl-i",    "z c",       "z o",     "z a",       "z M",       "z R",
+        "Space p", "Space f", "Space f a", "Space f g", "Space f r", "Space r", "Space r d", "Space r t", "Space ?",
+        ":",       "q",
     };
     for (required) |binding| {
         var found = false;
@@ -1390,7 +1394,7 @@ test "pending prefixes expose registry-backed continuation commands and keys" {
     const dimensions: Dimensions = .{ .sidebar_rows = 20, .document_rows = 20, .document_columns = 80 };
 
     const cases = [_]struct { prefix: u21, ids: []const Id, keys: []const []const u8 }{
-        .{ .prefix = 'g', .ids = &.{ .document_start, .document_end, .definition }, .keys = &.{ "g", "e", "d" } },
+        .{ .prefix = 'g', .ids = &.{ .document_start, .document_end, .definition, .references }, .keys = &.{ "g", "e", "d", "r" } },
         .{ .prefix = 'z', .ids = &.{ .fold_close, .fold_open, .fold_toggle, .fold_close_all, .fold_open_all }, .keys = &.{ "c", "o", "a", "M", "R" } },
         .{ .prefix = ']', .ids = &.{ .diff_file_next, .diff_hunk_next, .diff_line_next, .note_next, .bookmark_next }, .keys = &.{ "f", "h", "c", "n", "b" } },
         .{ .prefix = '[', .ids = &.{ .diff_file_previous, .diff_hunk_previous, .diff_line_previous, .note_previous, .bookmark_previous }, .keys = &.{ "f", "h", "c", "n", "b" } },

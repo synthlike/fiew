@@ -21,17 +21,21 @@ pub const WireLocation = struct {
     }
 };
 
-pub const DefinitionResponse = struct {
+pub const SemanticResponse = struct {
     allocator: std.mem.Allocator,
     encoding: lsp.PositionEncoding,
     locations: []WireLocation,
 
-    pub fn deinit(self: *DefinitionResponse) void {
+    pub fn deinit(self: *SemanticResponse) void {
         for (self.locations) |*location| location.deinit(self.allocator);
         self.allocator.free(self.locations);
         self.* = undefined;
     }
 };
+
+pub const DefinitionResponse = SemanticResponse;
+pub const ReferenceResponse = SemanticResponse;
+const SemanticOperation = enum { definition, references };
 
 pub fn fileUri(allocator: std.mem.Allocator, absolute_path: []const u8) ![]u8 {
     if (!std.fs.path.isAbsolute(absolute_path)) return error.NotAbsolute;
@@ -219,6 +223,35 @@ pub fn requestDefinition(
     utf8_position: lsp.Position,
     utf16_position: lsp.Position,
 ) !DefinitionResponse {
+    return requestLocations(allocator, io, repository, root_uri, document_uri, document_version, document_text, utf8_position, utf16_position, .definition);
+}
+
+pub fn requestReferences(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    repository: std.Io.Dir,
+    root_uri: []const u8,
+    document_uri: []const u8,
+    document_version: u64,
+    document_text: []const u8,
+    utf8_position: lsp.Position,
+    utf16_position: lsp.Position,
+) !ReferenceResponse {
+    return requestLocations(allocator, io, repository, root_uri, document_uri, document_version, document_text, utf8_position, utf16_position, .references);
+}
+
+fn requestLocations(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    repository: std.Io.Dir,
+    root_uri: []const u8,
+    document_uri: []const u8,
+    document_version: u64,
+    document_text: []const u8,
+    utf8_position: lsp.Position,
+    utf16_position: lsp.Position,
+    operation: SemanticOperation,
+) !SemanticResponse {
     try probe(allocator, io, repository);
     var child = try std.process.spawn(io, .{
         .argv = &.{"zls"},
@@ -264,12 +297,11 @@ pub fn requestDefinition(
 
     const encoding = lifecycle.encoding;
     const request_id: i64 = 2;
-    const request = try zls_protocol.definitionBody(
-        allocator,
-        request_id,
-        document_uri,
-        if (encoding == .utf8) utf8_position else utf16_position,
-    );
+    const position = if (encoding == .utf8) utf8_position else utf16_position;
+    const request = switch (operation) {
+        .definition => try zls_protocol.definitionBody(allocator, request_id, document_uri, position),
+        .references => try zls_protocol.referencesBody(allocator, request_id, document_uri, position),
+    };
     defer allocator.free(request);
     try writeFrame(&writer.interface, request);
 

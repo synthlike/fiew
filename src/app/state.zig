@@ -219,6 +219,7 @@ pub const App = struct {
     zls_trust_available: bool = false,
     definition_pending: bool = false,
     definition_generation: u64 = 0,
+    semantic_operation: lsp.Operation = .definition,
     definition_results: ?definitions_state.Results = null,
     definition_origin_preview: ?View = null,
 
@@ -245,8 +246,9 @@ pub const App = struct {
         self.* = undefined;
     }
 
-    pub fn beginDefinition(self: *App) u64 {
+    pub fn beginDefinition(self: *App, operation: lsp.Operation) u64 {
         self.definition_generation +%= 1;
+        self.semantic_operation = operation;
         self.definition_pending = true;
         self.feedback = null;
         if (self.definition_results != null or self.definition_origin_preview != null)
