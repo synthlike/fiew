@@ -200,6 +200,16 @@ pub fn definition(id: Id) *const Definition {
     unreachable;
 }
 
+pub const ReviewMenuContext = enum { destinations, diff, threads };
+
+/// The Review leader presents destinations outside Review and only actions
+/// relevant to the active Review surface once one is open.
+pub fn reviewMenuContext(app: *const state.App) ReviewMenuContext {
+    if (app.sidebar_context == .git and !app.viewing_source) return .diff;
+    if (app.sidebar_context == .review) return .threads;
+    return .destinations;
+}
+
 pub fn unavailableReason(app: *const state.App, id: Id) ?[]const u8 {
     if (definition(id).disabled_reason) |reason| return reason;
     return switch (id) {
@@ -1817,6 +1827,20 @@ test "invalid and timed out sequences preserve selection" {
     try std.testing.expectEqualStrings("key sequence timed out", app.feedback.?);
     try std.testing.expectEqual(before, app.selection());
     try std.testing.expectEqual(@as(usize, 0), session.pendingCommandCount());
+}
+
+test "Review menu follows the active Review surface" {
+    var app = try testApp();
+    defer app.deinit();
+
+    try std.testing.expectEqual(ReviewMenuContext.destinations, reviewMenuContext(&app));
+    app.sidebar_context = .git;
+    app.viewing_source = false;
+    try std.testing.expectEqual(ReviewMenuContext.diff, reviewMenuContext(&app));
+    app.viewing_source = true;
+    try std.testing.expectEqual(ReviewMenuContext.destinations, reviewMenuContext(&app));
+    app.sidebar_context = .review;
+    try std.testing.expectEqual(ReviewMenuContext.threads, reviewMenuContext(&app));
 }
 
 test "Space r d opens Review Diff and exposes a pending refresh state" {

@@ -3051,9 +3051,12 @@ fn drawCommandSurface(
             const menu = window.child(.{ .y_off = window.height -| 2, .height = 2 });
             menu.clear();
             _ = menu.printSegment(.{ .text = " Review ", .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
-            _ = menu.printSegment(.{
-                .text = "d Diff  t Threads  n line  f file  a append  r resolve/reopen  x delete",
-            }, .{ .row_offset = 1, .col_offset = 1, .wrap = .none });
+            const actions = switch (fiew.commands.reviewMenuContext(app)) {
+                .destinations => "d Diff  t Threads",
+                .diff => "t Threads  n line  f file",
+                .threads => "d Diff  a append  r resolve/reopen  x delete",
+            };
+            _ = menu.printSegment(.{ .text = actions }, .{ .row_offset = 1, .col_offset = 1, .wrap = .none });
         },
         .trails => try drawTrails(allocator, window, app, session),
         .bookmarks => try drawBookmarksPicker(allocator, window, app, session),
