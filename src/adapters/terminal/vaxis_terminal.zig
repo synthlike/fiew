@@ -2906,13 +2906,46 @@ fn drawTrailComposer(allocator: std.mem.Allocator, window: vaxis.Window, app: *c
     _ = box.printSegment(.{ .text = "Tab field · Enter note/newline · Ctrl-Enter save · Esc resume recording", .style = .{ .dim = true } }, .{ .row_offset = height -| 1, .col_offset = 1, .wrap = .none });
 }
 
-fn drawTrails(allocator: std.mem.Allocator, window: vaxis.Window, app: *const fiew.app.App) !void {
+fn drawBookmarksPicker(allocator: std.mem.Allocator, window: vaxis.Window, app: *const fiew.app.App, session: *const fiew.commands.Session) !void {
+    const state_bookmarks = if (app.bookmarks) |*value| value else return;
+    const height: u16 = @min(window.height, 14);
+    const box = window.child(.{ .y_off = window.height - height, .height = height });
+    box.clear();
+    const heading = if (session.collection_search)
+        try std.fmt.allocPrint(allocator, " Find Bookmarks · {s} ", .{session.query.items})
+    else
+        try allocator.dupe(u8, " Bookmarks ");
+    _ = box.printSegment(.{ .text = try sanitizeLine(allocator, heading, box.width), .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
+    const count = if (session.collection_search) session.collection_matches.items.len else state_bookmarks.items.items.len;
+    if (count == 0) {
+        _ = box.printSegment(.{ .text = if (session.collection_search) "No matching bookmarks" else "No bookmarks yet", .style = .{ .dim = true } }, .{ .row_offset = 2, .col_offset = 1, .wrap = .none });
+    } else {
+        const scroll = if (session.collection_search) session.collection_scroll else state_bookmarks.scroll;
+        var row: usize = 0;
+        while (row < height -| 2 and scroll + row < count) : (row += 1) {
+            const visible_index = scroll + row;
+            const index = if (session.collection_search) session.collection_matches.items[visible_index].index else visible_index;
+            const item = state_bookmarks.items.items[index];
+            const selected = if (session.collection_search) visible_index == session.collection_selected else index == state_bookmarks.selected;
+            const label = if (item.label.len != 0) item.label else item.path;
+            const text = try std.fmt.allocPrint(allocator, "{s}  {s}:{d}{s}", .{ label, item.path, item.line, if (item.status == .outdated) "  Outdated" else "" });
+            _ = box.printSegment(.{ .text = try sanitizeLine(allocator, text, box.width -| 2), .style = .{ .reverse = selected, .bold = selected, .dim = item.status == .outdated } }, .{ .row_offset = @intCast(row + 1), .col_offset = 1, .wrap = .none });
+        }
+    }
+    const hint = if (session.collection_search) "type to filter label/path · Tab/↑/↓ select · Enter open · Esc list" else "f find · j/k preview · Enter open · n new · d delete · q close";
+    _ = box.printSegment(.{ .text = hint, .style = .{ .dim = true } }, .{ .row_offset = height -| 1, .col_offset = 1, .wrap = .none });
+}
+
+fn drawTrails(allocator: std.mem.Allocator, window: vaxis.Window, app: *const fiew.app.App, session: *const fiew.commands.Session) !void {
     const state_trails = if (app.trails) |*value| value else return;
     const height: u16 = @min(window.height, 14);
     const box = window.child(.{ .y_off = window.height - height, .height = height });
     box.clear();
     const recording = if (state_trails.recording) |draft| try std.fmt.allocPrint(allocator, " · recording {d} points", .{draft.points.items.len}) else "";
-    const heading = try std.fmt.allocPrint(allocator, " Trails · {s}{s} ", .{ state_trails.review, recording });
+    const heading = if (session.collection_search)
+        try std.fmt.allocPrint(allocator, " Find Trails · {s} ", .{session.query.items})
+    else
+        try std.fmt.allocPrint(allocator, " Trails · {s}{s} ", .{ state_trails.review, recording });
     _ = box.printSegment(.{ .text = try sanitizeLine(allocator, heading, box.width), .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
     if (state_trails.detail) {
         if (state_trails.selected_trail < state_trails.items.items.len) {
@@ -2926,14 +2959,30 @@ fn drawTrails(allocator: std.mem.Allocator, window: vaxis.Window, app: *const fi
                 _ = box.printSegment(.{ .text = try sanitizeLine(allocator, text, box.width -| 2), .style = .{ .reverse = row == state_trails.selected_point, .bold = row == state_trails.selected_point } }, .{ .row_offset = @intCast(row + 2), .col_offset = 1, .wrap = .none });
             }
         }
-    } else if (state_trails.items.items.len == 0) {
-        _ = box.printSegment(.{ .text = "No saved Trails", .style = .{ .dim = true } }, .{ .row_offset = 2, .col_offset = 1, .wrap = .none });
-    } else for (state_trails.items.items, 0..) |item, index| {
-        if (index >= height -| 2) break;
-        const text = try std.fmt.allocPrint(allocator, "{s}  ({d} points)", .{ item.title, item.points.len });
-        _ = box.printSegment(.{ .text = try sanitizeLine(allocator, text, box.width -| 2), .style = .{ .reverse = index == state_trails.selected_trail, .bold = index == state_trails.selected_trail } }, .{ .row_offset = @intCast(index + 1), .col_offset = 1, .wrap = .none });
+    } else {
+        const count = if (session.collection_search) session.collection_matches.items.len else state_trails.items.items.len;
+        if (count == 0) {
+            _ = box.printSegment(.{ .text = if (session.collection_search) "No matching Trails" else "No saved Trails", .style = .{ .dim = true } }, .{ .row_offset = 2, .col_offset = 1, .wrap = .none });
+        } else {
+            const scroll = if (session.collection_search) session.collection_scroll else 0;
+            var row: usize = 0;
+            while (row < height -| 2 and scroll + row < count) : (row += 1) {
+                const visible_index = scroll + row;
+                const index = if (session.collection_search) session.collection_matches.items[visible_index].index else visible_index;
+                const item = state_trails.items.items[index];
+                const selected = if (session.collection_search) visible_index == session.collection_selected else index == state_trails.selected_trail;
+                const text = try std.fmt.allocPrint(allocator, "{s}  ({d} points)", .{ item.title, item.points.len });
+                _ = box.printSegment(.{ .text = try sanitizeLine(allocator, text, box.width -| 2), .style = .{ .reverse = selected, .bold = selected } }, .{ .row_offset = @intCast(row + 1), .col_offset = 1, .wrap = .none });
+            }
+        }
     }
-    _ = box.printSegment(.{ .text = if (state_trails.detail) "j/k preview · Enter pin · q list · d delete" else "j/k select · Enter open · r record/stop · a add · d delete · q close", .style = .{ .dim = true } }, .{ .row_offset = height -| 1, .col_offset = 1, .wrap = .none });
+    const hint = if (state_trails.detail)
+        "j/k preview · Enter pin · q list · d delete"
+    else if (session.collection_search)
+        "type to filter title · Tab/↑/↓ select · Enter open · Esc list"
+    else
+        "f find · j/k select · Enter open · r record/stop · a add · d delete · q close";
+    _ = box.printSegment(.{ .text = hint, .style = .{ .dim = true } }, .{ .row_offset = height -| 1, .col_offset = 1, .wrap = .none });
 }
 
 fn drawCommandSurface(
@@ -2988,13 +3037,8 @@ fn drawCommandSurface(
                 .text = "d Diff  t Threads  n line  f file  a append  r resolve/reopen  x delete",
             }, .{ .row_offset = 1, .col_offset = 1, .wrap = .none });
         },
-        .trails => try drawTrails(allocator, window, app),
-        .bookmarks => {
-            const menu = window.child(.{ .y_off = window.height -| 2, .height = 2 });
-            menu.clear();
-            _ = menu.printSegment(.{ .text = " Bookmarks ", .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
-            _ = menu.printSegment(.{ .text = "n new  d delete  Enter show" }, .{ .row_offset = 1, .col_offset = 1, .wrap = .none });
-        },
+        .trails => try drawTrails(allocator, window, app, session),
+        .bookmarks => try drawBookmarksPicker(allocator, window, app, session),
         .files => {
             const menu = window.child(.{ .y_off = window.height -| 2, .height = 2 });
             menu.clear();

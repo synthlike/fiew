@@ -46,7 +46,9 @@ pub const Id = enum {
     bookmark_delete,
     bookmark_next,
     bookmark_previous,
+    bookmark_find,
     trail_open,
+    trail_find,
     trail_record,
     trail_add,
     trail_delete,
@@ -159,7 +161,9 @@ pub const definitions = [_]Definition{
     .{ .id = .bookmark_delete, .stable_id = "bookmark-delete", .title = "Delete selected bookmark", .binding = "Space b d" },
     .{ .id = .bookmark_next, .stable_id = "bookmark-next", .title = "Next bookmark", .binding = "] b", .hint = "bookmark" },
     .{ .id = .bookmark_previous, .stable_id = "bookmark-previous", .title = "Previous bookmark", .binding = "[ b", .hint = "bookmark" },
+    .{ .id = .bookmark_find, .stable_id = "bookmark-find", .title = "Find bookmarks", .binding = "Space b f" },
     .{ .id = .trail_open, .stable_id = "trail-open", .title = "Open review Trails", .binding = "Space t" },
+    .{ .id = .trail_find, .stable_id = "trail-find", .title = "Find Trails by title", .binding = "Space t f" },
     .{ .id = .trail_record, .stable_id = "trail-record", .title = "Start or stop Trail recording", .binding = "Space t r" },
     .{ .id = .trail_add, .stable_id = "trail-add", .title = "Add current Trail point", .binding = "Space t a" },
     .{ .id = .trail_delete, .stable_id = "trail-delete", .title = "Delete selected Trail", .binding = "Space t d" },
@@ -311,7 +315,7 @@ pub fn unavailableReason(app: *const state.App, id: Id) ?[]const u8 {
         .note_next,
         .note_previous,
         => if (!app.hasNotes()) "no notes yet" else null,
-        .bookmark_open, .bookmark_show => if (!app.bookmarks_available) "bookmark storage is unavailable" else null,
+        .bookmark_open, .bookmark_show, .bookmark_find => if (!app.bookmarks_available) "bookmark storage is unavailable" else null,
         .bookmark_create => if (!app.bookmarks_available)
             "bookmark storage is unavailable"
         else if (app.sidebar_context == .git and !app.viewing_source)
@@ -323,7 +327,7 @@ pub fn unavailableReason(app: *const state.App, id: Id) ?[]const u8 {
         else
             null,
         .bookmark_delete, .bookmark_next, .bookmark_previous => if (!app.hasBookmarks()) "no bookmarks yet" else null,
-        .trail_open => if (!app.trails_available) "Trails require an active named review" else null,
+        .trail_open, .trail_find => if (!app.trails_available) "Trails require an active named review" else null,
         .trail_record => if (!app.trails_available)
             "Trails require an active named review"
         else if (!app.trailRecording() and (app.activeView() == null or app.activeView().?.external or app.sidebar_context == .review or (app.sidebar_context == .git and !app.viewing_source)))
@@ -466,6 +470,8 @@ const Pending = enum {
     bracket_previous,
 };
 
+const CollectionMatch = struct { index: usize, score: usize };
+
 pub const Session = struct {
     allocator: std.mem.Allocator,
     surface: Surface = .none,
@@ -474,6 +480,10 @@ pub const Session = struct {
     query: std.ArrayListUnmanaged(u8) = .empty,
     selected_command: usize = 0,
     help_scroll: usize = 0,
+    collection_search: bool = false,
+    collection_matches: std.ArrayListUnmanaged(CollectionMatch) = .empty,
+    collection_selected: usize = 0,
+    collection_scroll: usize = 0,
     finder: file_finder.Finder,
 
     pub fn init(allocator: std.mem.Allocator) Session {
@@ -482,6 +492,7 @@ pub const Session = struct {
 
     pub fn deinit(self: *Session) void {
         self.query.deinit(self.allocator);
+        self.collection_matches.deinit(self.allocator);
         self.finder.deinit();
         self.* = undefined;
     }
@@ -826,9 +837,15 @@ pub const Session = struct {
             .review_show => app.showReviewSidebar(),
             .bookmark_open => {
                 self.surface = .bookmarks;
+                self.collection_search = false;
+                self.query.clearRetainingCapacity();
                 app.mode = .normal;
             },
             .bookmark_show => app.showBookmarksSidebar(),
+            .bookmark_find => {
+                self.surface = .bookmarks;
+                try self.beginCollectionSearch(app);
+            },
             .bookmark_create => {
                 if (try app.beginBookmark()) {
                     self.surface = .bookmark_composer;
@@ -849,7 +866,13 @@ pub const Session = struct {
             },
             .trail_open => {
                 self.surface = .trails;
+                self.collection_search = false;
+                self.query.clearRetainingCapacity();
                 app.mode = .normal;
+            },
+            .trail_find => {
+                self.surface = .trails;
+                try self.beginCollectionSearch(app);
             },
             .trail_record => {
                 if (app.trailRecording()) {
@@ -1012,23 +1035,49 @@ pub const Session = struct {
     }
 
     fn handleBookmarks(self: *Session, app: *state.App, key: Key, dimensions: Dimensions) !Effect {
+        if (self.collection_search) return self.handleCollectionSearch(app, key, dimensions, true);
         return switch (normalizedCharacter(key)) {
+            'f' => self.execute(app, .bookmark_find, dimensions),
             'n' => self.executeAndClose(app, .bookmark_create, dimensions),
             'd' => self.executeAndClose(app, .bookmark_delete, dimensions),
-            else => blk: {
-                if (key.code == .enter) break :blk self.executeAndClose(app, .bookmark_show, dimensions);
-                app.feedback = "invalid bookmark command";
+            'j' => blk: {
+                app.moveBookmarkSelection(1, dimensions.finder_rows);
+                break :blk bookmarkEffect(app, false);
+            },
+            'k' => blk: {
+                app.moveBookmarkSelection(-1, dimensions.finder_rows);
+                break :blk bookmarkEffect(app, false);
+            },
+            'q' => blk: {
                 self.resetTransient(app);
+                break :blk .none;
+            },
+            else => blk: {
+                if (key.code == .down) {
+                    app.moveBookmarkSelection(1, dimensions.finder_rows);
+                    break :blk bookmarkEffect(app, false);
+                }
+                if (key.code == .up) {
+                    app.moveBookmarkSelection(-1, dimensions.finder_rows);
+                    break :blk bookmarkEffect(app, false);
+                }
+                if (key.code == .enter) {
+                    self.resetTransient(app);
+                    break :blk bookmarkEffect(app, true);
+                }
+                app.feedback = "use f, j/k, Enter, n, d, or q on Bookmarks";
                 break :blk .none;
             },
         };
     }
 
     fn handleTrails(self: *Session, app: *state.App, key: Key, dimensions: Dimensions) !Effect {
+        if (self.collection_search) return self.handleCollectionSearch(app, key, dimensions, false);
         const state_trails = if (app.trails) |*value| value else {
             self.resetTransient(app);
             return .none;
         };
+        if (isCharacter(key, 'f')) return self.execute(app, .trail_find, dimensions);
         if (isCharacter(key, 'r')) return self.executeAndClose(app, .trail_record, dimensions);
         if (isCharacter(key, 'a')) return self.executeAndClose(app, .trail_add, dimensions);
         if (isCharacter(key, 'd')) return self.execute(app, .trail_delete, dimensions);
@@ -1379,6 +1428,117 @@ pub const Session = struct {
         return count;
     }
 
+    fn beginCollectionSearch(self: *Session, app: *state.App) !void {
+        self.collection_search = true;
+        self.query.clearRetainingCapacity();
+        self.collection_selected = 0;
+        self.collection_scroll = 0;
+        app.mode = .command;
+        try self.rebuildCollectionMatches(app);
+        self.syncCollectionSelection(app);
+    }
+
+    fn rebuildCollectionMatches(self: *Session, app: *state.App) !void {
+        self.collection_matches.clearRetainingCapacity();
+        const count = if (self.surface == .bookmarks)
+            if (app.bookmarks) |value| value.items.items.len else 0
+        else if (app.trails) |value| value.items.items.len else 0;
+        for (0..count) |index| {
+            const score = if (self.surface == .bookmarks) score: {
+                const item = app.bookmarks.?.items.items[index];
+                const label_score = file_finder.scorePath(item.label, self.query.items);
+                const path_score = file_finder.scorePath(item.path, self.query.items);
+                break :score if (label_score) |label| if (path_score) |path| @max(label, path) else label else path_score orelse continue;
+            } else file_finder.scorePath(app.trails.?.items.items[index].title, self.query.items) orelse continue;
+            var at: usize = 0;
+            while (at < self.collection_matches.items.len and
+                (self.collection_matches.items[at].score > score or
+                    (self.collection_matches.items[at].score == score and self.collection_matches.items[at].index < index))) : (at += 1)
+            {}
+            if (at >= file_finder.max_results) continue;
+            try self.collection_matches.insert(self.allocator, at, .{ .index = index, .score = score });
+            if (self.collection_matches.items.len > file_finder.max_results) _ = self.collection_matches.pop();
+        }
+        self.collection_selected = 0;
+        self.collection_scroll = 0;
+    }
+
+    fn syncCollectionSelection(self: *Session, app: *state.App) void {
+        if (self.collection_selected >= self.collection_matches.items.len) return;
+        const index = self.collection_matches.items[self.collection_selected].index;
+        if (self.surface == .bookmarks) {
+            if (app.bookmarks) |*value| value.selected = index;
+        } else if (app.trails) |*value| {
+            value.selected_trail = index;
+            value.detail = false;
+        }
+    }
+
+    fn moveCollectionSelection(self: *Session, app: *state.App, delta: isize, viewport_rows: usize) void {
+        if (self.collection_matches.items.len == 0) return;
+        const current: isize = @intCast(self.collection_selected);
+        self.collection_selected = @intCast(std.math.clamp(current + delta, 0, @as(isize, @intCast(self.collection_matches.items.len - 1))));
+        if (self.collection_selected < self.collection_scroll) self.collection_scroll = self.collection_selected;
+        if (viewport_rows != 0 and self.collection_selected >= self.collection_scroll + viewport_rows)
+            self.collection_scroll = self.collection_selected - viewport_rows + 1;
+        self.syncCollectionSelection(app);
+    }
+
+    fn handleCollectionSearch(self: *Session, app: *state.App, key: Key, dimensions: Dimensions, bookmarks: bool) !Effect {
+        if (key.code == .escape) {
+            self.collection_search = false;
+            self.query.clearRetainingCapacity();
+            app.mode = .normal;
+            return .none;
+        }
+        if (key.code == .enter) {
+            if (self.collection_matches.items.len == 0) return .none;
+            self.syncCollectionSelection(app);
+            self.collection_search = false;
+            self.query.clearRetainingCapacity();
+            app.mode = .normal;
+            if (bookmarks) {
+                self.resetTransient(app);
+                return bookmarkEffect(app, true);
+            }
+            const state_trails = if (app.trails) |*value| value else return .none;
+            if (state_trails.openSelected()) return trailEffect(app, false);
+            return .none;
+        }
+        if (key.code == .tab) {
+            self.moveCollectionSelection(app, if (key.shift) -1 else 1, dimensions.finder_rows);
+            return if (bookmarks) bookmarkEffect(app, false) else .none;
+        }
+        if (key.code == .down) {
+            self.moveCollectionSelection(app, 1, dimensions.finder_rows);
+            return if (bookmarks) bookmarkEffect(app, false) else .none;
+        }
+        if (key.code == .up) {
+            self.moveCollectionSelection(app, -1, dimensions.finder_rows);
+            return if (bookmarks) bookmarkEffect(app, false) else .none;
+        }
+        if (key.code == .backspace) {
+            if (self.query.items.len != 0) {
+                var start = self.query.items.len - 1;
+                while (start > 0 and (self.query.items[start] & 0xc0) == 0x80) start -= 1;
+                self.query.shrinkRetainingCapacity(start);
+                try self.rebuildCollectionMatches(app);
+                self.syncCollectionSelection(app);
+            }
+            return .none;
+        }
+        if (key.code == .character and !key.ctrl and !key.alt) {
+            var buffer: [4]u8 = undefined;
+            const length = std.unicode.utf8Encode(key.character, &buffer) catch return .none;
+            if (self.query.items.len + length <= file_finder.max_query_bytes) {
+                try self.query.appendSlice(self.allocator, buffer[0..length]);
+                try self.rebuildCollectionMatches(app);
+                self.syncCollectionSelection(app);
+            }
+        }
+        return .none;
+    }
+
     fn executeAndClose(self: *Session, app: *state.App, id: Id, dimensions: Dimensions) !Effect {
         self.surface = .none;
         return self.execute(app, id, dimensions);
@@ -1410,6 +1570,10 @@ pub const Session = struct {
         self.query.clearRetainingCapacity();
         self.selected_command = 0;
         self.help_scroll = 0;
+        self.collection_search = false;
+        self.collection_matches.clearRetainingCapacity();
+        self.collection_selected = 0;
+        self.collection_scroll = 0;
         app.mode = .normal;
     }
 };
@@ -1744,8 +1908,12 @@ test "bookmark commands create show navigate and confirm deletion" {
     try app.bookmarks.?.add("a.txt", 1, 0, 0, .{ .bytes = "one two", .original_start = 0, .target_start = 0, .target_end = 7 }, "A");
     _ = try session.handle(&app, charKey(' '), dimensions);
     _ = try session.handle(&app, charKey('b'), dimensions);
-    _ = try session.handle(&app, .{ .code = .enter }, dimensions);
-    try std.testing.expectEqual(state.SidebarContext.bookmarks, app.sidebar_context);
+    _ = try session.handle(&app, charKey('f'), dimensions);
+    try std.testing.expect(session.collection_search);
+    _ = try session.handle(&app, charKey('A'), dimensions);
+    try std.testing.expectEqual(@as(usize, 1), session.collection_matches.items.len);
+    const opened = try session.handle(&app, .{ .code = .enter }, dimensions);
+    try std.testing.expectEqual(std.meta.Tag(Effect).activate_bookmark, std.meta.activeTag(opened));
 
     const navigation = try session.handle(&app, charKey(']'), dimensions);
     try std.testing.expectEqual(std.meta.Tag(Effect).none, std.meta.activeTag(navigation));
@@ -1981,6 +2149,10 @@ test "Trail commands guard, record, compose, preview, pin, and confirm deletion"
 
     _ = try session.handle(&app, charKey(' '), dimensions);
     _ = try session.handle(&app, charKey('t'), dimensions);
+    _ = try session.handle(&app, charKey('f'), dimensions);
+    for ("read") |character| _ = try session.handle(&app, charKey(character), dimensions);
+    try std.testing.expect(session.collection_search);
+    try std.testing.expectEqual(@as(usize, 1), session.collection_matches.items.len);
     const preview = try session.handle(&app, .{ .code = .enter }, dimensions);
     try std.testing.expectEqual(std.meta.Tag(Effect).preview_trail, std.meta.activeTag(preview));
     const pin = try session.handle(&app, .{ .code = .enter }, dimensions);
