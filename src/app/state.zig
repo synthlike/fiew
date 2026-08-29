@@ -11,6 +11,7 @@ const bookmark_model = @import("../model/bookmark.zig");
 const bookmarks_state = @import("bookmarks.zig");
 const anchor_model = @import("../model/anchor.zig");
 const lsp = @import("../model/lsp.zig");
+const definitions_state = @import("definitions.zig");
 
 /// Which structural relation to move the selection toward.
 pub const StructuralMove = enum { parent, child, next_sibling, previous_sibling };
@@ -96,6 +97,7 @@ pub const View = struct {
     preferred_column: u32 = 0,
     scroll_line: usize = 0,
     scroll_column: u32 = 0,
+    external: bool = false,
     /// Syntax analysis for this snapshot, when Tree-sitter produced it.
     syntax: ?syntax.ParseData = null,
     /// Start lines of folds the user has collapsed in this view.
@@ -177,6 +179,7 @@ pub const Location = struct {
     source_start: usize,
     scroll_line: usize,
     scroll_column: u32,
+    external: bool = false,
 };
 
 pub const App = struct {
@@ -214,6 +217,10 @@ pub const App = struct {
     zls_status: lsp.Status = .unavailable,
     zls_trusted: bool = false,
     zls_trust_available: bool = false,
+    definition_pending: bool = false,
+    definition_generation: u64 = 0,
+    definition_results: ?definitions_state.Results = null,
+    definition_origin_preview: ?View = null,
 
     pub fn init(allocator: std.mem.Allocator, tree: *const project.Tree) !App {
         return .{
@@ -230,10 +237,79 @@ pub const App = struct {
         if (self.bookmarks) |*state_bookmarks| state_bookmarks.deinit();
         if (self.composer) |*composer| composer.deinit(self.allocator);
         if (self.bookmark_composer) |*composer| composer.deinit(self.allocator);
+        if (self.definition_results) |*results| results.deinit();
+        if (self.definition_origin_preview) |*view| view.deinit();
         for (self.history.items) |location| self.allocator.free(location.path);
         self.history.deinit(self.allocator);
         self.browser.deinit();
         self.* = undefined;
+    }
+
+    pub fn beginDefinition(self: *App) u64 {
+        self.definition_generation +%= 1;
+        self.definition_pending = true;
+        self.feedback = null;
+        if (self.definition_results != null or self.definition_origin_preview != null)
+            self.dismissDefinitions(true);
+        return self.definition_generation;
+    }
+
+    pub fn failDefinition(self: *App, generation: u64, message: []const u8) void {
+        if (generation != self.definition_generation) return;
+        self.definition_pending = false;
+        self.feedback = message;
+    }
+
+    pub fn installDefinitions(self: *App, generation: u64, results: definitions_state.Results) bool {
+        if (generation != self.definition_generation) {
+            var stale = results;
+            stale.deinit();
+            return false;
+        }
+        if (self.definition_results) |*previous| previous.deinit();
+        self.definition_results = results;
+        self.definition_pending = false;
+        self.feedback = null;
+        return true;
+    }
+
+    pub fn prepareDefinitionPreview(self: *App) void {
+        if (self.definition_origin_preview != null) return;
+        if (self.preview) |view| {
+            self.definition_origin_preview = view;
+            self.preview = null;
+        }
+    }
+
+    pub fn dismissDefinitions(self: *App, restore_origin: bool) void {
+        if (self.definition_results) |*results| results.deinit();
+        self.definition_results = null;
+        if (restore_origin) {
+            if (self.preview) |*view| view.deinit();
+            self.preview = self.definition_origin_preview;
+            self.definition_origin_preview = null;
+        } else if (self.definition_origin_preview) |*view| {
+            view.deinit();
+            self.definition_origin_preview = null;
+        }
+    }
+
+    pub fn pinDefinitionPreview(self: *App) !bool {
+        if (self.definition_origin_preview) |origin| {
+            const target = self.preview orelse return false;
+            self.preview = origin;
+            self.definition_origin_preview = null;
+            _ = try self.pinPreview();
+            self.preview = target;
+            return self.pinPreview();
+        }
+        return self.pinSemanticPreview();
+    }
+
+    pub fn cancelDefinition(self: *App) void {
+        self.definition_generation +%= 1;
+        self.definition_pending = false;
+        self.dismissDefinitions(true);
     }
 
     pub fn showGitSidebar(self: *App) void {
@@ -530,6 +606,7 @@ pub const App = struct {
             .snapshot = snapshot,
             .scroll_line = target.scroll_line,
             .scroll_column = target.scroll_column,
+            .external = target.external,
         };
         replacement.active_grapheme = graphemeAtSource(replacement.snapshot, source_start);
         replacement.anchor_grapheme = replacement.active_grapheme;
@@ -555,10 +632,18 @@ pub const App = struct {
         return true;
     }
 
+    pub fn pinSemanticPreview(self: *App) !bool {
+        if (self.preview == null) return false;
+        // A semantic jump may begin from a pinned view established outside the
+        // history list. Capture that origin exactly once before replacing it.
+        if (self.history_index == null and self.pinned != null) try self.appendPinnedLocation();
+        return self.pinPreview();
+    }
+
     pub fn installHistorySnapshot(self: *App, snapshot: document.Snapshot, location: Location) void {
         self.clearPreview();
         if (self.pinned) |*view| view.deinit();
-        self.pinned = .{ .snapshot = snapshot };
+        self.pinned = .{ .snapshot = snapshot, .external = location.external };
         const view = &self.pinned.?;
         view.active_grapheme = graphemeAtSource(view.snapshot, location.source_start);
         view.anchor_grapheme = view.active_grapheme;
@@ -1130,6 +1215,7 @@ pub const App = struct {
         self.history.items[index].source_start = selected_range.start;
         self.history.items[index].scroll_line = view.scroll_line;
         self.history.items[index].scroll_column = view.scroll_column;
+        self.history.items[index].external = view.external;
     }
 
     fn appendPinnedLocation(self: *App) !void {
@@ -1149,6 +1235,7 @@ pub const App = struct {
             .source_start = selected_range.start,
             .scroll_line = view.scroll_line,
             .scroll_column = view.scroll_column,
+            .external = view.external,
         }) catch |err| {
             self.allocator.free(owned_path);
             return err;
@@ -1343,6 +1430,44 @@ test "pinning and history preserve source locations" {
     try std.testing.expectEqualStrings("second.txt", next.path);
     app.installHistorySnapshot(try testSnapshot("second.txt", "second"), next);
     try std.testing.expectEqualStrings("second.txt", app.activeDocument().?.path);
+}
+
+test "definition preview cancellation restores an unpinned origin" {
+    var app = try testApp();
+    defer app.deinit();
+    app.pinned = .{ .snapshot = try testSnapshot("older.zig", "older") };
+    app.showPreview(try testSnapshot("origin.zig", "origin"));
+    app.moveHorizontal(2, 20);
+    app.prepareDefinitionPreview();
+    app.showPreview(try testSnapshot("target.zig", "target"));
+    app.cancelDefinition();
+    try std.testing.expectEqualStrings("origin.zig", app.activeDocument().?.path);
+    try std.testing.expectEqual(@as(usize, 2), app.activeView().?.active_grapheme);
+}
+
+test "definition pin records an unpinned origin and target" {
+    var app = try testApp();
+    defer app.deinit();
+    app.pinned = .{ .snapshot = try testSnapshot("older.zig", "older") };
+    app.showPreview(try testSnapshot("origin.zig", "origin"));
+    app.prepareDefinitionPreview();
+    app.showPreview(try testSnapshot("target.zig", "target"));
+    try std.testing.expect(try app.pinDefinitionPreview());
+    try std.testing.expectEqual(@as(usize, 2), app.history.items.len);
+    try std.testing.expectEqualStrings("origin.zig", app.history.items[0].path);
+    try std.testing.expectEqualStrings("target.zig", app.history.items[1].path);
+}
+
+test "semantic-style pin captures one previously untracked origin" {
+    var app = try testApp();
+    defer app.deinit();
+    app.pinned = .{ .snapshot = try testSnapshot("origin.zig", "const origin = 1;") };
+    app.showPreview(try testSnapshot("target.zig", "const target = 1;"));
+    try std.testing.expect(try app.pinSemanticPreview());
+    try std.testing.expectEqual(@as(usize, 2), app.history.items.len);
+    try std.testing.expectEqualStrings("origin.zig", app.history.items[0].path);
+    try std.testing.expectEqualStrings("target.zig", app.history.items[1].path);
+    try std.testing.expectEqualStrings("origin.zig", (try app.historyBack()).?.path);
 }
 
 test "word and page movement remain on grapheme boundaries" {

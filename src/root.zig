@@ -8,6 +8,7 @@ pub const bookmark = @import("model/bookmark.zig");
 pub const anchor = @import("model/anchor.zig");
 pub const commands = @import("app/commands.zig");
 pub const diagnostics = @import("app/diagnostics.zig");
+pub const definitions = @import("app/definitions.zig");
 pub const document = @import("model/document.zig");
 pub const notes = @import("app/notes.zig");
 pub const filesystem = @import("adapters/filesystem/repository.zig");

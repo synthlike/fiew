@@ -13,6 +13,7 @@ const Event = union(enum) {
     /// owns and frees the boxed completion.
     parse_done: *fiew.parse_job.Completion,
     git_done: *fiew.git_job.Completion,
+    definition_done: *DefinitionCompletion,
     shutdown: u8,
 };
 
@@ -20,6 +21,41 @@ const Completion = fiew.parse_job.Completion;
 const ParseFuture = std.Io.Future(void);
 const GitFuture = std.Io.Future(void);
 const ZlsFuture = std.Io.Future(void);
+const DefinitionFuture = std.Io.Future(void);
+
+const DefinitionFailure = enum {
+    not_installed,
+    incompatible,
+    unavailable,
+    malformed,
+
+    fn message(self: DefinitionFailure) []const u8 {
+        return switch (self) {
+            .not_installed => "ZLS not installed",
+            .incompatible => "ZLS incompatible",
+            .unavailable => "ZLS crashed",
+            .malformed => "ZLS returned a malformed definition response",
+        };
+    }
+};
+
+const DefinitionCompletion = struct {
+    generation: u64,
+    document_generation: u64,
+    selection: fiew.document.ByteRange,
+    result: union(enum) {
+        success: fiew.zls_process.DefinitionResponse,
+        failure: DefinitionFailure,
+    },
+
+    fn deinit(self: *DefinitionCompletion) void {
+        switch (self.result) {
+            .success => |*response| response.deinit(),
+            .failure => {},
+        }
+        self.* = undefined;
+    }
+};
 
 const ZlsState = struct {
     io: std.Io,
@@ -51,7 +87,10 @@ const ZlsState = struct {
         var document_version: u64 = 0;
         if (app.activeDocument()) |snapshot| {
             if (snapshot.encoding == .utf8 and std.mem.endsWith(u8, snapshot.path, ".zig")) {
-                const absolute = std.fs.path.join(self.allocator, &.{ canonical_path, snapshot.path }) catch null;
+                const absolute = if (std.fs.path.isAbsolute(snapshot.path))
+                    self.allocator.dupe(u8, snapshot.path) catch null
+                else
+                    std.fs.path.join(self.allocator, &.{ canonical_path, snapshot.path }) catch null;
                 if (absolute) |path| {
                     defer self.allocator.free(path);
                     self.document_uri = fiew.zls_process.fileUri(self.allocator, path) catch null;
@@ -110,9 +149,9 @@ const ZlsState = struct {
         const current = self.status.load(.acquire);
         if (current == .starting) {
             self.starting_ticks +|= 1;
-            // The shared timer ticks every 250 ms. Bound version validation and
+            // The shared timer ticks every 100 ms. Bound version validation and
             // initialization together to two seconds.
-            if (self.starting_ticks >= 8) {
+            if (self.starting_ticks >= 20) {
                 self.stop(.crashed);
                 app.zls_status = .crashed;
                 app.feedback = "ZLS startup timed out";
@@ -128,6 +167,223 @@ const ZlsState = struct {
         }
     }
 };
+
+const DefinitionRequestData = struct {
+    allocator: std.mem.Allocator,
+    root_uri: []u8,
+    document_uri: []u8,
+    text: []u8,
+    document_generation: u64,
+    selection: fiew.document.ByteRange,
+    utf8_position: fiew.lsp.Position,
+    utf16_position: fiew.lsp.Position,
+
+    fn deinit(self: *DefinitionRequestData) void {
+        self.allocator.free(self.root_uri);
+        self.allocator.free(self.document_uri);
+        self.allocator.free(self.text);
+        self.* = undefined;
+    }
+};
+
+const DefinitionState = struct {
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    loop: *vaxis.Loop(Event),
+    future: ?DefinitionFuture = null,
+    request: ?DefinitionRequestData = null,
+    started_nanoseconds: i96 = 0,
+    pending_shown: bool = false,
+    running_generation: ?u64 = null,
+
+    fn init(io: std.Io, allocator: std.mem.Allocator, loop: *vaxis.Loop(Event)) DefinitionState {
+        return .{ .io = io, .allocator = allocator, .loop = loop };
+    }
+
+    fn deinit(self: *DefinitionState) void {
+        self.cancel();
+        self.* = undefined;
+    }
+
+    fn submit(
+        self: *DefinitionState,
+        repository: fiew.filesystem.Repository,
+        canonical_path: []const u8,
+        app: *fiew.app.App,
+        generation: u64,
+    ) void {
+        self.cancel();
+        const snapshot = app.activeDocument() orelse {
+            app.failDefinition(generation, "focus an open Zig document");
+            return;
+        };
+        const selection = app.activeView().?.selection();
+        const utf8_position = fiew.lsp.positionAt(snapshot.*, selection.start, .utf8) catch {
+            app.failDefinition(generation, "definition requires a valid UTF-8 position");
+            return;
+        };
+        const utf16_position = fiew.lsp.positionAt(snapshot.*, selection.start, .utf16) catch {
+            app.failDefinition(generation, "definition requires a valid UTF-16 position");
+            return;
+        };
+        const absolute = if (std.fs.path.isAbsolute(snapshot.path))
+            self.allocator.dupe(u8, snapshot.path) catch {
+                app.failDefinition(generation, "ZLS unavailable");
+                return;
+            }
+        else
+            std.fs.path.join(self.allocator, &.{ canonical_path, snapshot.path }) catch {
+                app.failDefinition(generation, "ZLS unavailable");
+                return;
+            };
+        defer self.allocator.free(absolute);
+        const root_uri = fiew.zls_process.fileUri(self.allocator, canonical_path) catch {
+            app.failDefinition(generation, "ZLS unavailable");
+            return;
+        };
+        const document_uri = fiew.zls_process.fileUri(self.allocator, absolute) catch {
+            self.allocator.free(root_uri);
+            app.failDefinition(generation, "ZLS unavailable");
+            return;
+        };
+        const text = self.allocator.dupe(u8, snapshot.bytes) catch {
+            self.allocator.free(root_uri);
+            self.allocator.free(document_uri);
+            app.failDefinition(generation, "ZLS unavailable");
+            return;
+        };
+        const request: DefinitionRequestData = .{
+            .allocator = self.allocator,
+            .root_uri = root_uri,
+            .document_uri = document_uri,
+            .text = text,
+            .document_generation = snapshot.generation,
+            .selection = selection,
+            .utf8_position = utf8_position,
+            .utf16_position = utf16_position,
+        };
+        self.request = request;
+        self.started_nanoseconds = std.Io.Timestamp.now(self.io, .real).nanoseconds;
+        self.pending_shown = false;
+        self.running_generation = generation;
+        self.future = self.io.concurrent(definitionWorker, .{
+            self.loop, self.allocator, repository.io, repository.root_dir, generation, request,
+        }) catch {
+            self.request.?.deinit();
+            self.request = null;
+            self.running_generation = null;
+            app.failDefinition(generation, "ZLS unavailable");
+            return;
+        };
+    }
+
+    fn cancel(self: *DefinitionState) void {
+        if (self.future) |*future| _ = future.cancel(self.io);
+        self.future = null;
+        if (self.request) |*request| request.deinit();
+        self.request = null;
+        self.started_nanoseconds = 0;
+        self.pending_shown = false;
+        self.running_generation = null;
+    }
+
+    fn sync(self: *DefinitionState, app: *fiew.app.App) void {
+        const request = self.request orelse return;
+        const active = app.activeView() orelse {
+            const generation = app.definition_generation;
+            self.cancel();
+            app.failDefinition(generation, "definition discarded because the document changed");
+            return;
+        };
+        if (active.snapshot.generation != request.document_generation) {
+            const generation = app.definition_generation;
+            self.cancel();
+            app.failDefinition(generation, "definition discarded because the document changed");
+            return;
+        }
+        if (!std.meta.eql(active.selection(), request.selection)) {
+            const generation = app.definition_generation;
+            self.cancel();
+            app.failDefinition(generation, "definition discarded because the selection changed");
+        }
+    }
+
+    fn onTick(self: *DefinitionState, app: *fiew.app.App) void {
+        if (self.future == null) return;
+        const elapsed = std.Io.Timestamp.now(self.io, .real).nanoseconds - self.started_nanoseconds;
+        if (elapsed >= std.time.ns_per_ms * 100 and app.definition_pending and !self.pending_shown) {
+            app.feedback = "ZLS definition pending";
+            self.pending_shown = true;
+        }
+        if (elapsed >= std.time.ns_per_s * 2) {
+            const generation = app.definition_generation;
+            self.cancel();
+            app.failDefinition(generation, "ZLS definition timed out");
+        }
+    }
+
+    fn finish(self: *DefinitionState, box: *DefinitionCompletion) bool {
+        if (self.running_generation != box.generation) return false;
+        if (self.future) |*future| _ = future.await(self.io);
+        self.future = null;
+        if (self.request) |*request| request.deinit();
+        self.request = null;
+        self.started_nanoseconds = 0;
+        self.pending_shown = false;
+        self.running_generation = null;
+        return true;
+    }
+};
+
+fn definitionWorker(
+    loop: *vaxis.Loop(Event),
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    repository_dir: std.Io.Dir,
+    generation: u64,
+    request: DefinitionRequestData,
+) void {
+    const result = fiew.zls_process.requestDefinition(
+        allocator,
+        io,
+        repository_dir,
+        request.root_uri,
+        request.document_uri,
+        request.document_generation,
+        request.text,
+        request.utf8_position,
+        request.utf16_position,
+    );
+    const box = allocator.create(DefinitionCompletion) catch {
+        if (result) |response| {
+            var owned = response;
+            owned.deinit();
+        } else |_| {}
+        return;
+    };
+    box.* = .{
+        .generation = generation,
+        .document_generation = request.document_generation,
+        .selection = request.selection,
+        .result = if (result) |response|
+            .{ .success = response }
+        else |err|
+            .{ .failure = definitionFailure(err) },
+    };
+    loop.postEvent(.{ .definition_done = box }) catch {
+        box.deinit();
+        allocator.destroy(box);
+    };
+}
+
+fn definitionFailure(err: anyerror) DefinitionFailure {
+    return switch (err) {
+        error.NotInstalled, error.FileNotFound => .not_installed,
+        error.Incompatible => .incompatible,
+        error.MalformedResponse, error.InvalidCharacter, error.UnexpectedEndOfInput => .malformed,
+        else => .unavailable,
+    };
+}
 
 /// Owns the single bounded Git worker slot. New requests supersede old
 /// generations; obsolete completions are destroyed without publishing.
@@ -356,8 +612,8 @@ const ParseState = struct {
     fn onTick(self: *ParseState) void {
         if (self.parsing_generation == null) return;
         self.elapsed_ticks +|= 1;
-        // Ticks arrive every 250 ms; four of them cross the one-second deadline.
-        if (self.elapsed_ticks >= 4) self.cancel.store(true, .release);
+        // Ticks arrive every 100 ms; ten of them cross the one-second deadline.
+        if (self.elapsed_ticks >= 10) self.cancel.store(true, .release);
     }
 };
 
@@ -568,6 +824,8 @@ pub fn run(init: std.process.Init, options: Options) !u8 {
     defer git_state.deinit();
     var zls_state = ZlsState.init(init.io, allocator, app.zls_status);
     defer zls_state.deinit();
+    var definition_state = DefinitionState.init(init.io, allocator, &loop);
+    defer definition_state.deinit();
 
     try vx.enterAltScreen(tty.writer());
     try tty.writer().flush();
@@ -608,6 +866,7 @@ pub fn run(init: std.process.Init, options: Options) !u8 {
                         repository_identity.slug(),
                         repository_identity.canonical_path,
                         &zls_state,
+                        &definition_state,
                     )) {
                         // Exit code reports whether the named review has blocking
                         // threads or unsaved state. Cleanup
@@ -635,18 +894,102 @@ pub fn run(init: std.process.Init, options: Options) !u8 {
                 const viewport_height = dimensions.content_height -| 2;
                 app.browser.ensureVisible(viewport_height);
                 command_session.finder.ensureVisible(fiew.workspace.finderResultRows(dimensions.content_height));
+                if (app.definition_results) |*results|
+                    results.ensureVisible(fiew.workspace.finderResultRows(dimensions.content_height));
                 app.ensureCurrentDocumentVisible(viewport_height, dimensions.main_width -| 6);
             },
             .tick => {
                 command_session.tick(&app);
                 parse_state.onTick();
                 zls_state.publish(&app);
+                definition_state.onTick(&app);
             },
             .parse_done => |box| parse_state.onCompletion(&app, box),
             .git_done => |box| git_state.onCompletion(&app, repository, box),
+            .definition_done => |box| {
+                const owned_by_state = definition_state.finish(box);
+                defer {
+                    box.deinit();
+                    allocator.destroy(box);
+                }
+                if (!owned_by_state or box.generation != app.definition_generation) continue;
+                const active = app.activeView() orelse {
+                    app.failDefinition(box.generation, "definition discarded because the document changed");
+                    continue;
+                };
+                if (active.snapshot.generation != box.document_generation) {
+                    app.failDefinition(box.generation, "definition discarded because the document changed");
+                    continue;
+                }
+                if (!std.meta.eql(active.selection(), box.selection)) {
+                    app.failDefinition(box.generation, "definition discarded because the selection changed");
+                    continue;
+                }
+                switch (box.result) {
+                    .failure => |failure| {
+                        const status: fiew.lsp.Status = switch (failure) {
+                            .not_installed => .not_installed,
+                            .incompatible => .incompatible,
+                            .unavailable => .crashed,
+                            .malformed => .stopped,
+                        };
+                        zls_state.stop(status);
+                        zls_state.last_published = status;
+                        app.zls_status = status;
+                        app.failDefinition(box.generation, failure.message());
+                    },
+                    .success => |*response| {
+                        var results = validateDefinitionTargets(
+                            allocator,
+                            repository,
+                            repository_identity.canonical_path,
+                            segmenter,
+                            &generation,
+                            response,
+                        ) catch |err| {
+                            app.failDefinition(box.generation, @errorName(err));
+                            continue;
+                        };
+                        if (results.items.len == 0) {
+                            results.deinit();
+                            app.failDefinition(box.generation, "no valid definition returned");
+                            continue;
+                        }
+                        _ = app.installDefinitions(box.generation, results);
+                        app.prepareDefinitionPreview();
+                        if (app.definition_results.?.items.len == 1) {
+                            const target = app.definition_results.?.items[0];
+                            openDefinitionTarget(&app, repository, segmenter, &generation, target, true) catch |err| {
+                                app.dismissDefinitions(false);
+                                app.failDefinition(box.generation, @errorName(err));
+                            };
+                        } else {
+                            const effect = command_session.openDefinitions(&app);
+                            _ = try applyEffect(
+                                &command_session,
+                                &app,
+                                repository,
+                                segmenter,
+                                &generation,
+                                commandDimensions(vx.window(), &app),
+                                effect,
+                                review_name,
+                                &git_state,
+                                if (global_store) |*store| store else null,
+                                &zls_trust,
+                                repository_identity.slug(),
+                                repository_identity.canonical_path,
+                                &zls_state,
+                                &definition_state,
+                            );
+                        }
+                    },
+                }
+            },
             .shutdown => |code| return code,
         }
 
+        definition_state.sync(&app);
         parse_state.drive(&app);
         zls_state.syncDocument(repository, repository_identity.canonical_path, &app);
         _ = frame_arena.reset(.retain_capacity);
@@ -667,7 +1010,7 @@ fn timerRun(
     stop: *std.atomic.Value(bool),
 ) void {
     while (!stop.load(.acquire)) {
-        io.sleep(.fromMilliseconds(250), .real) catch {
+        io.sleep(.fromMilliseconds(100), .real) catch {
             // A handled shutdown signal may interrupt the sleep. Wake the main
             // loop once so it can observe the atomic request and unwind.
             if (ShutdownSignals.requestedExitCode() != null)
@@ -734,6 +1077,102 @@ fn producedCharacter(key: vaxis.Key) u21 {
     return key.shifted_codepoint orelse key.codepoint;
 }
 
+fn validateDefinitionTargets(
+    allocator: std.mem.Allocator,
+    repository: fiew.filesystem.Repository,
+    canonical_root: []const u8,
+    segmenter: fiew.text_segmentation.Segmenter,
+    snapshot_generation: *u64,
+    response: *const fiew.zls_process.DefinitionResponse,
+) !fiew.definitions.Results {
+    var targets: std.ArrayList(fiew.definitions.Target) = .empty;
+    errdefer {
+        for (targets.items) |*target| target.deinit(allocator);
+        targets.deinit(allocator);
+    }
+    for (response.locations) |location| {
+        const decoded = fiew.zls_process.pathFromFileUri(allocator, location.uri) catch continue;
+        defer allocator.free(decoded);
+        const canonical_z = std.Io.Dir.realPathFileAbsoluteAlloc(repository.io, decoded, allocator) catch continue;
+        defer allocator.free(canonical_z);
+        const canonical: []const u8 = canonical_z;
+        const stat = std.Io.Dir.cwd().statFile(repository.io, canonical, .{}) catch continue;
+        if (stat.kind != .file) continue;
+        const root_is_filesystem_root = canonical_root.len == 1 and canonical_root[0] == std.fs.path.sep;
+        const internal = if (root_is_filesystem_root)
+            canonical.len > 1 and canonical[0] == std.fs.path.sep
+        else
+            canonical.len > canonical_root.len and
+                std.mem.startsWith(u8, canonical, canonical_root) and
+                canonical[canonical_root.len] == std.fs.path.sep;
+        const relative_start = canonical_root.len + @intFromBool(!root_is_filesystem_root);
+        const display_path = if (internal) canonical[relative_start..] else canonical;
+
+        snapshot_generation.* +%= 1;
+        var snapshot = if (internal)
+            repository.loadDocument(display_path, snapshot_generation.*, segmenter) catch continue
+        else
+            repository.loadExternalDocument(canonical, snapshot_generation.*, segmenter) catch continue;
+        defer snapshot.deinit();
+        const source_start = fiew.lsp.byteOffsetAt(snapshot, location.start, response.encoding) catch continue;
+        const source_end = fiew.lsp.byteOffsetAt(snapshot, location.end, response.encoding) catch continue;
+        if (source_end < source_start) continue;
+        var duplicate = false;
+        for (targets.items) |target| if (target.source_start == source_start and std.mem.eql(u8, target.path, display_path)) {
+            duplicate = true;
+            break;
+        };
+        if (duplicate) continue;
+
+        const line_index: usize = @intCast(location.start.line);
+        if (line_index >= snapshot.lineCount()) continue;
+        var visual_column: usize = 0;
+        const grapheme_range = snapshot.graphemeRangeForLine(line_index);
+        for (snapshot.graphemes[grapheme_range.start..grapheme_range.end]) |grapheme| {
+            if (grapheme.source.start >= source_start) {
+                visual_column = grapheme.visual_column;
+                break;
+            }
+        }
+        const preview_range = snapshot.lineDisplayRange(line_index);
+        const preview = try allocator.dupe(u8, snapshot.display_bytes[preview_range.start..preview_range.end]);
+        errdefer allocator.free(preview);
+        const path = try allocator.dupe(u8, display_path);
+        errdefer allocator.free(path);
+        try targets.append(allocator, .{
+            .path = path,
+            .line = line_index + 1,
+            .column = visual_column,
+            .source_start = source_start,
+            .preview = preview,
+            .external = !internal,
+        });
+    }
+    return fiew.definitions.Results.init(allocator, try targets.toOwnedSlice(allocator));
+}
+
+fn openDefinitionTarget(
+    app: *fiew.app.App,
+    repository: fiew.filesystem.Repository,
+    segmenter: fiew.text_segmentation.Segmenter,
+    snapshot_generation: *u64,
+    target: fiew.definitions.Target,
+    pin: bool,
+) !void {
+    snapshot_generation.* +%= 1;
+    const snapshot = if (target.external)
+        try repository.loadExternalDocument(target.path, snapshot_generation.*, segmenter)
+    else
+        try repository.loadDocument(target.path, snapshot_generation.*, segmenter);
+    app.showPreview(snapshot);
+    app.preview.?.external = target.external;
+    app.positionPreviewAtLine(target.line, target.column);
+    if (pin) {
+        _ = try app.pinDefinitionPreview();
+        app.dismissDefinitions(false);
+    }
+}
+
 fn applyEffect(
     session: *fiew.commands.Session,
     app: *fiew.app.App,
@@ -749,6 +1188,7 @@ fn applyEffect(
     repository_slug: []const u8,
     canonical_path: []const u8,
     zls_state: *ZlsState,
+    definition_state: *DefinitionState,
 ) !bool {
     switch (effect) {
         .none => {},
@@ -787,7 +1227,10 @@ fn applyEffect(
         },
         .open_history => |location| {
             generation.* +%= 1;
-            const snapshot = repository.loadDocument(location.path, generation.*, segmenter) catch |err| {
+            const snapshot = (if (location.external)
+                repository.loadExternalDocument(location.path, generation.*, segmenter)
+            else
+                repository.loadDocument(location.path, generation.*, segmenter)) catch |err| {
                 app.feedback = @errorName(err);
                 return false;
             };
@@ -906,6 +1349,8 @@ fn applyEffect(
                 app.feedback = @errorName(err);
                 return false;
             };
+            definition_state.cancel();
+            if (app.definition_pending or app.definition_results != null) app.cancelDefinition();
             zls_state.stop(.untrusted);
             zls_state.last_published = .untrusted;
             app.zls_trusted = false;
@@ -913,9 +1358,30 @@ fn applyEffect(
             app.feedback = "ZLS trust revoked";
         },
         .zls_restart => {
+            definition_state.cancel();
             zls_state.start(repository, canonical_path, app);
             app.zls_status = .starting;
             app.feedback = "ZLS starting";
+        },
+        .request_definition => |definition_generation| {
+            zls_state.stop(.stopped);
+            definition_state.submit(repository, canonical_path, app, definition_generation);
+        },
+        .cancel_definition => definition_state.cancel(),
+        .preview_definition => {
+            const target = app.definition_results.?.selectedTarget() orelse return false;
+            openDefinitionTarget(app, repository, segmenter, generation, target.*, false) catch |err| {
+                app.feedback = @errorName(err);
+                return false;
+            };
+        },
+        .activate_definition => {
+            const target = app.definition_results.?.selectedTarget() orelse return false;
+            openDefinitionTarget(app, repository, segmenter, generation, target.*, true) catch |err| {
+                _ = session.openDefinitions(app);
+                app.feedback = @errorName(err);
+                return false;
+            };
         },
         .save_note => {
             const state_notes = if (app.notes) |*value| value else {
@@ -1711,6 +2177,7 @@ fn drawDocument(allocator: std.mem.Allocator, window: vaxis.Window, app: *const 
         },
         .{ .text = " " },
         .{ .text = safe_path },
+        .{ .text = if (view.external) "  External" else "", .style = .{ .bold = view.external } },
     }, .{ .wrap = .none });
 
     if (snapshot.encoding == .binary) {
@@ -2143,6 +2610,30 @@ fn drawCommandSurface(
                 "Tab/Shift-Tab or ↑/↓ select · Enter open · Esc cancel";
             _ = box.printSegment(.{ .text = hint, .style = .{ .dim = true } }, .{ .row_offset = height -| 1, .col_offset = 1, .wrap = .none });
         },
+        .definitions => {
+            const height: u16 = @min(window.height, fiew.workspace.finder_max_height);
+            const box = window.child(.{ .y_off = window.height - height, .height = height });
+            box.clear();
+            _ = box.printSegment(.{ .text = " Definitions ", .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
+            if (app.definition_results) |results| {
+                const available: usize = height -| 2;
+                var row: usize = 0;
+                while (row < available and results.scroll + row < results.items.len) : (row += 1) {
+                    const index = results.scroll + row;
+                    const target = results.items[index];
+                    const label = try definitionResultLabel(allocator, target);
+                    _ = box.printSegment(.{
+                        .text = try sanitizeLine(allocator, label, box.width -| 2),
+                        .style = .{ .reverse = index == results.selected, .bold = index == results.selected },
+                    }, .{ .row_offset = @intCast(row + 1), .col_offset = 1, .wrap = .none });
+                }
+            }
+            _ = box.printSegment(.{ .text = "j/k or ↑/↓ preview · Enter open · Esc cancel", .style = .{ .dim = true } }, .{
+                .row_offset = height -| 1,
+                .col_offset = 1,
+                .wrap = .none,
+            });
+        },
         .confirm_delete => {
             const menu = window.child(.{ .y_off = window.height -| 2, .height = 2 });
             menu.clear();
@@ -2207,6 +2698,15 @@ fn drawCommandSurface(
             });
         },
     }
+}
+
+fn definitionResultLabel(allocator: std.mem.Allocator, target: fiew.definitions.Target) ![]u8 {
+    return std.fmt.allocPrint(allocator, "{s}:{d}  {s}{s}", .{
+        target.path,
+        target.line,
+        target.preview,
+        if (target.external) "  External" else "",
+    });
 }
 
 fn continuationHintRow(
@@ -2372,6 +2872,55 @@ test "Kitty and conventional VT keys translate to the same command input" {
     try std.testing.expectEqual(conventional_ctrl_c, kitty_ctrl_c);
 }
 
+test "definition target validation distinguishes repository and external files" {
+    var repository_tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer repository_tmp.cleanup();
+    try repository_tmp.dir.writeFile(std.testing.io, .{ .sub_path = "main.zig", .data = "const a = 1;\nconst b = a;\n" });
+    var external_tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer external_tmp.cleanup();
+    try external_tmp.dir.writeFile(std.testing.io, .{ .sub_path = "stdlib.zig", .data = "pub const value = 1;\n" });
+    const repository_path = try std.fmt.allocPrint(std.testing.allocator, ".zig-cache/tmp/{s}", .{repository_tmp.sub_path});
+    defer std.testing.allocator.free(repository_path);
+    var repository = try fiew.filesystem.Repository.open(std.testing.allocator, std.testing.io, repository_path);
+    defer repository.deinit();
+    var root_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try repository.root_dir.realPath(std.testing.io, &root_buffer);
+    const canonical_root = root_buffer[0..root_len];
+    const internal_path = try std.fs.path.join(std.testing.allocator, &.{ canonical_root, "main.zig" });
+    defer std.testing.allocator.free(internal_path);
+    var external_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const external_len = try external_tmp.dir.realPath(std.testing.io, &external_buffer);
+    const external_path = try std.fs.path.join(std.testing.allocator, &.{ external_buffer[0..external_len], "stdlib.zig" });
+    defer std.testing.allocator.free(external_path);
+    const locations = try std.testing.allocator.alloc(fiew.zls_process.WireLocation, 3);
+    locations[0] = .{ .uri = try fiew.zls_process.fileUri(std.testing.allocator, internal_path), .start = .{ .line = 1, .character = 10 }, .end = .{ .line = 1, .character = 11 } };
+    locations[1] = .{ .uri = try fiew.zls_process.fileUri(std.testing.allocator, external_path), .start = .{ .line = 0, .character = 10 }, .end = .{ .line = 0, .character = 15 } };
+    locations[2] = .{ .uri = try fiew.zls_process.fileUri(std.testing.allocator, internal_path), .start = .{ .line = 99, .character = 0 }, .end = .{ .line = 99, .character = 1 } };
+    var response: fiew.zls_process.DefinitionResponse = .{ .allocator = std.testing.allocator, .encoding = .utf8, .locations = locations };
+    defer response.deinit();
+    const segmenter: fiew.text_segmentation.Segmenter = .{ .next_fn = nextGrapheme, .width_fn = graphemeWidth };
+    var generation: u64 = 0;
+    var targets = try validateDefinitionTargets(std.testing.allocator, repository, canonical_root, segmenter, &generation, &response);
+    defer targets.deinit();
+    try std.testing.expectEqual(@as(usize, 2), targets.items.len);
+    try std.testing.expectEqualStrings("main.zig", targets.items[0].path);
+    try std.testing.expect(!targets.items[0].external);
+    try std.testing.expectEqualStrings("const b = a;", targets.items[0].preview);
+    try std.testing.expect(targets.items[1].external);
+    try std.testing.expectEqualStrings(external_path, targets.items[1].path);
+}
+
+test "definition result render labels include line preview and External state" {
+    const internal: fiew.definitions.Target = .{ .path = @constCast("src/main.zig"), .line = 12, .column = 0, .source_start = 0, .preview = @constCast("pub fn main()"), .external = false };
+    const external: fiew.definitions.Target = .{ .path = @constCast("/zig/std/process.zig"), .line = 4, .column = 0, .source_start = 0, .preview = @constCast("pub const Init"), .external = true };
+    const internal_label = try definitionResultLabel(std.testing.allocator, internal);
+    defer std.testing.allocator.free(internal_label);
+    const external_label = try definitionResultLabel(std.testing.allocator, external);
+    defer std.testing.allocator.free(external_label);
+    try std.testing.expectEqualStrings("src/main.zig:12  pub fn main()", internal_label);
+    try std.testing.expectEqualStrings("/zig/std/process.zig:4  pub const Init  External", external_label);
+}
+
 test "pending continuation rows render every prefix and disabled reason" {
     var nodes: [0]fiew.project.Node = .{};
     const tree: fiew.project.Tree = .{ .allocator = std.testing.allocator, .nodes = &nodes, .file_count = 0 };
@@ -2385,7 +2934,7 @@ test "pending continuation rows render every prefix and disabled reason" {
         .{ .prefix = 'g', .rows = &.{
             "g   start — no document is open",
             "e   end — no document is open",
-            "d   definition — LSP is not available",
+            "d   definition — focus an open Zig document",
         } },
         .{ .prefix = 'z', .rows = &.{
             "c   close — Tree-sitter folds are not available",

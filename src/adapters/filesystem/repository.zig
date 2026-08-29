@@ -113,6 +113,37 @@ pub const Repository = struct {
         );
     }
 
+    pub fn loadExternalDocument(
+        self: Repository,
+        absolute_path: []const u8,
+        generation: u64,
+        segmenter: text_segmentation.Segmenter,
+    ) !document.Snapshot {
+        if (!std.fs.path.isAbsolute(absolute_path)) return error.NotAbsolute;
+        const cwd = std.Io.Dir.cwd();
+        const before = try cwd.statFile(self.io, absolute_path, .{});
+        if (before.kind != .file) return error.NotAFile;
+        const bytes = try cwd.readFileAlloc(
+            self.io,
+            absolute_path,
+            self.allocator,
+            .limited64(before.size +| 1),
+        );
+        defer self.allocator.free(bytes);
+        const after = try cwd.statFile(self.io, absolute_path, .{});
+        if (before.inode != after.inode or before.size != after.size or
+            before.mtime.nanoseconds != after.mtime.nanoseconds)
+            return error.FileChangedDuringRead;
+        return document.Snapshot.init(
+            self.allocator,
+            absolute_path,
+            bytes,
+            generation,
+            .{ .size = before.size, .modified_nanoseconds = before.mtime.nanoseconds },
+            segmenter,
+        );
+    }
+
     fn lessThan(_: void, lhs: project.Node, rhs: project.Node) bool {
         var index: usize = 0;
         while (index < lhs.path.len and index < rhs.path.len) : (index += 1) {

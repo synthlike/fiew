@@ -133,6 +133,12 @@ test "fixed-dimension RenderPlan snapshots cover wide overlay and unsupported wo
         "workspace 80x24\nmain 0,0 80x23\nsidebar overlay 0,0 24x23\nstatus 0,23 80x1\nmode command focus sidebar surface finder\n",
         try snapshot(build(80, 24, &app, &session), &buffer),
     );
+    session.surface = .definitions;
+    app.mode = .normal;
+    try std.testing.expectEqualStrings(
+        "workspace 80x24\nmain 0,0 80x23\nsidebar overlay 0,0 24x23\nstatus 0,23 80x1\nmode normal focus sidebar surface definitions\n",
+        try snapshot(build(80, 24, &app, &session), &buffer),
+    );
 }
 
 fn testApp() !app_state.App {

@@ -102,7 +102,7 @@ pub fn initializeBody(allocator: std.mem.Allocator, id: i64, root_uri: []const u
             .capabilities = .{
                 .general = .{ .positionEncodings = &.{ "utf-8", "utf-16" } },
                 .workspace = .{ .applyEdit = false, .workspaceEdit = .{ .documentChanges = false } },
-                .textDocument = @as(struct {}, .{}),
+                .textDocument = .{ .definition = .{ .dynamicRegistration = false, .linkSupport = true } },
             },
             // This narrows ZLS behavior but is not represented as a sandbox.
             .initializationOptions = .{ .enable_build_on_save = false },
@@ -131,6 +131,31 @@ pub fn didCloseBody(allocator: std.mem.Allocator, uri: []const u8) ![]u8 {
         .jsonrpc = "2.0",
         .method = "textDocument/didClose",
         .params = .{ .textDocument = .{ .uri = uri } },
+    }, .{});
+}
+
+pub fn definitionBody(
+    allocator: std.mem.Allocator,
+    id: i64,
+    uri: []const u8,
+    position: lsp.Position,
+) ![]u8 {
+    return std.json.Stringify.valueAlloc(allocator, .{
+        .jsonrpc = "2.0",
+        .id = id,
+        .method = "textDocument/definition",
+        .params = .{
+            .textDocument = .{ .uri = uri },
+            .position = position,
+        },
+    }, .{});
+}
+
+pub fn cancelRequestBody(allocator: std.mem.Allocator, id: i64) ![]u8 {
+    return std.json.Stringify.valueAlloc(allocator, .{
+        .jsonrpc = "2.0",
+        .method = "$/cancelRequest",
+        .params = .{ .id = id },
     }, .{});
 }
 
@@ -171,11 +196,14 @@ test "lifecycle transcript balances initialize open close shutdown and exit" {
     const initialize = try initializeBody(std.testing.allocator, initialize_id, "file:///repo");
     defer std.testing.allocator.free(initialize);
     try std.testing.expect(std.mem.indexOf(u8, initialize, "\"applyEdit\":false") != null);
-    try std.testing.expect(std.mem.indexOf(u8, initialize, "\"textDocument\":{}") != null);
-    try std.testing.expect(std.mem.indexOf(u8, initialize, "definition") == null);
+    try std.testing.expect(std.mem.indexOf(u8, initialize, "\"dynamicRegistration\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, initialize, "\"linkSupport\":true") != null);
     const initialized = try initializedBody(std.testing.allocator);
     defer std.testing.allocator.free(initialized);
     try std.testing.expect(std.mem.indexOf(u8, initialized, "\"params\":{}") != null);
+    const cancel = try cancelRequestBody(std.testing.allocator, 9);
+    defer std.testing.allocator.free(cancel);
+    try std.testing.expect(std.mem.indexOf(u8, cancel, "\"method\":\"$/cancelRequest\"") != null);
     try lifecycle.initialized(initialize_id, "utf-8");
     try lifecycle.open("file:///repo/main.zig");
     try lifecycle.close("file:///repo/main.zig");

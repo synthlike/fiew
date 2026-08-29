@@ -150,7 +150,7 @@ pub const definitions = [_]Definition{
     .{ .id = .bookmark_delete, .stable_id = "bookmark-delete", .title = "Delete selected bookmark", .binding = "Space b d" },
     .{ .id = .bookmark_next, .stable_id = "bookmark-next", .title = "Next bookmark", .binding = "] b", .hint = "bookmark" },
     .{ .id = .bookmark_previous, .stable_id = "bookmark-previous", .title = "Previous bookmark", .binding = "[ b", .hint = "bookmark" },
-    .{ .id = .definition, .stable_id = "definition", .title = "Go to definition", .binding = "g d", .hint = "definition", .disabled_reason = "LSP is not available" },
+    .{ .id = .definition, .stable_id = "definition", .title = "Go to definition", .binding = "g d", .hint = "definition" },
     .{ .id = .zls_status, .stable_id = "zls-status", .title = "Show ZLS status", .binding = "" },
     .{ .id = .zls_trust, .stable_id = "zls-trust-repository", .title = "Trust repository for ZLS (may execute Zig build logic)", .binding = "" },
     .{ .id = .zls_revoke, .stable_id = "zls-revoke-trust", .title = "Revoke ZLS trust for this repository", .binding = "" },
@@ -319,6 +319,21 @@ pub fn unavailableReason(app: *const state.App, id: Id) ?[]const u8 {
         else
             null,
         .zls_restart => if (!app.zls_trusted) "ZLS untrusted" else null,
+        .definition => if (app.focus != .main or app.activeDocument() == null)
+            "focus an open Zig document"
+        else if (!std.mem.endsWith(u8, app.activeDocument().?.path, ".zig") or app.activeDocument().?.encoding != .utf8)
+            "definition requires a valid UTF-8 Zig document"
+        else if (!app.zls_trusted)
+            "ZLS untrusted"
+        else switch (app.zls_status) {
+            .not_installed => "ZLS not installed",
+            .incompatible => "ZLS incompatible",
+            .starting => "ZLS starting",
+            .crashed => "ZLS crashed",
+            .unavailable => "ZLS unavailable",
+            .untrusted => "ZLS untrusted",
+            .stopped, .ready => null,
+        },
         else => null,
     };
 }
@@ -378,6 +393,10 @@ pub const Effect = union(enum) {
     zls_trust,
     zls_revoke,
     zls_restart,
+    request_definition: u64,
+    cancel_definition,
+    preview_definition,
+    activate_definition,
     quit,
 };
 
@@ -393,6 +412,7 @@ pub const Surface = enum {
     note_composer,
     bookmark_composer,
     finder,
+    definitions,
     confirm_delete,
     confirm_bookmark_delete,
 };
@@ -471,6 +491,7 @@ pub const Session = struct {
                 .note_composer => "comment",
                 .bookmark_composer => "bookmark label",
                 .finder => "find file",
+                .definitions => "definitions",
                 .confirm_delete => "confirm delete",
                 .confirm_bookmark_delete => "confirm bookmark delete",
                 .none => "",
@@ -485,7 +506,7 @@ pub const Session = struct {
     pub fn tick(self: *Session, app: *state.App) void {
         if (self.pending == .none) return;
         self.pending_ticks +|= 1;
-        if (self.pending_ticks >= 8) {
+        if (self.pending_ticks >= 20) {
             self.pending = .none;
             self.pending_ticks = 0;
             app.mode = .normal;
@@ -499,6 +520,7 @@ pub const Session = struct {
         if (self.surface == .confirm_delete) return self.handleDeleteConfirmation(app, key, dimensions);
         if (self.surface == .confirm_bookmark_delete) return self.handleBookmarkDeleteConfirmation(app, key);
         if (self.surface == .finder) return self.handleFinder(app, key, dimensions);
+        if (self.surface == .definitions) return self.handleDefinitions(app, key, dimensions);
         if (key.code == .escape) return self.execute(app, .cancel, dimensions);
         if (self.surface == .review) return self.handleReview(app, key, dimensions);
         if (self.surface == .vcs) return self.handleVcs(app, key, dimensions);
@@ -695,6 +717,11 @@ pub const Session = struct {
             .quit => return .quit,
             .cancel => {
                 app.feedback = null;
+                if (app.definition_pending) {
+                    app.cancelDefinition();
+                    self.resetTransient(app);
+                    return .cancel_definition;
+                }
                 if (self.surface != .none or self.pending != .none or app.mode == .command) {
                     self.resetTransient(app);
                 } else if (app.mode == .extend) {
@@ -761,6 +788,7 @@ pub const Session = struct {
             .zls_trust => return .zls_trust,
             .zls_revoke => return .zls_revoke,
             .zls_restart => return .zls_restart,
+            .definition => return .{ .request_definition = app.beginDefinition() },
             .note_create => {
                 if (app.beginNoteFromDiff() catch false) {
                     self.surface = .note_composer;
@@ -791,7 +819,7 @@ pub const Session = struct {
             },
             .note_next => app.moveNoteSelection(1, dimensions.sidebar_rows),
             .note_previous => app.moveNoteSelection(-1, dimensions.sidebar_rows),
-            .definition, .note_save, .note_discard, .bookmark_save, .bookmark_discard => unreachable,
+            .note_save, .note_discard, .bookmark_save, .bookmark_discard => unreachable,
         }
         // Fold and structural commands can move the cursor far from the current
         // scroll position; keep it on screen.
@@ -1048,6 +1076,37 @@ pub const Session = struct {
             return .preview_finder;
         }
         return .none;
+    }
+
+    fn handleDefinitions(self: *Session, app: *state.App, key: Key, dimensions: Dimensions) !Effect {
+        if (key.code == .escape or isCharacter(key, 'q')) {
+            app.cancelDefinition();
+            self.resetTransient(app);
+            return .cancel_definition;
+        }
+        const results = if (app.definition_results) |*value| value else {
+            self.resetTransient(app);
+            return .none;
+        };
+        if (key.code == .up or isCharacter(key, 'k')) {
+            results.move(-1, dimensions.finder_rows);
+            return .preview_definition;
+        }
+        if (key.code == .down or isCharacter(key, 'j')) {
+            results.move(1, dimensions.finder_rows);
+            return .preview_definition;
+        }
+        if (key.code == .enter) {
+            self.resetTransient(app);
+            return .activate_definition;
+        }
+        return .none;
+    }
+
+    pub fn openDefinitions(self: *Session, app: *state.App) Effect {
+        self.surface = .definitions;
+        app.mode = .normal;
+        return .preview_definition;
     }
 
     pub fn selectedFinderNode(self: *const Session, app: *const state.App) ?*const @import("../model/project.zig").Node {
@@ -1314,7 +1373,7 @@ test "goto and unavailable namespace commands report deterministic outcomes" {
     try std.testing.expectEqual(@as(usize, 2), app.activeView().?.active_grapheme);
     _ = try session.handle(&app, charKey('g'), dimensions);
     _ = try session.handle(&app, charKey('d'), dimensions);
-    try std.testing.expectEqualStrings("LSP is not available", app.feedback.?);
+    try std.testing.expectEqualStrings("definition requires a valid UTF-8 Zig document", app.feedback.?);
     _ = try session.handle(&app, charKey('z'), dimensions);
     _ = try session.handle(&app, charKey('c'), dimensions);
     try std.testing.expectEqualStrings("Tree-sitter folds are not available", app.feedback.?);
@@ -1362,7 +1421,7 @@ test "invalid and timed out sequences preserve selection" {
     try std.testing.expectEqual(before, app.selection());
     try std.testing.expectEqual(@as(usize, 0), session.pendingCommandCount());
     _ = try session.handle(&app, charKey('z'), dimensions);
-    for (0..7) |_| session.tick(&app);
+    for (0..19) |_| session.tick(&app);
     try std.testing.expectEqual(@as(usize, 5), session.pendingCommandCount());
     session.tick(&app);
     try std.testing.expectEqualStrings("key sequence timed out", app.feedback.?);
@@ -1672,6 +1731,58 @@ test "named ZLS lifecycle commands enforce durable trust state" {
     app.zls_trusted = true;
     try std.testing.expectEqual(std.meta.Tag(Effect).zls_restart, try session.execute(&app, .zls_restart, dimensions));
     try std.testing.expectEqual(std.meta.Tag(Effect).zls_revoke, try session.execute(&app, .zls_revoke, dimensions));
+}
+
+test "definition command reports exact unavailable ZLS states" {
+    var app = try testApp();
+    defer app.deinit();
+    app.pinned.?.deinit();
+    app.pinned = .{ .snapshot = try testSnapshot("main.zig", "const value = other;\n") };
+    app.zls_trusted = true;
+    var session = Session.init(std.testing.allocator);
+    defer session.deinit();
+    const dimensions: Dimensions = .{ .sidebar_rows = 20, .document_rows = 20, .document_columns = 80 };
+    const cases = [_]struct { status: @import("../model/lsp.zig").Status, message: []const u8 }{
+        .{ .status = .not_installed, .message = "ZLS not installed" },
+        .{ .status = .incompatible, .message = "ZLS incompatible" },
+        .{ .status = .starting, .message = "ZLS starting" },
+        .{ .status = .crashed, .message = "ZLS crashed" },
+    };
+    for (cases) |case| {
+        app.zls_status = case.status;
+        _ = try session.execute(&app, .definition, dimensions);
+        try std.testing.expectEqualStrings(case.message, app.feedback.?);
+    }
+}
+
+test "definition request and result list transitions are non-destructive" {
+    var app = try testApp();
+    defer app.deinit();
+    app.pinned.?.deinit();
+    app.pinned = .{ .snapshot = try testSnapshot("main.zig", "const value = other;\n") };
+    app.zls_trusted = true;
+    app.zls_status = .ready;
+    var session = Session.init(std.testing.allocator);
+    defer session.deinit();
+    const dimensions: Dimensions = .{ .sidebar_rows = 20, .document_rows = 20, .document_columns = 80, .finder_rows = 2 };
+
+    _ = try session.handle(&app, charKey('g'), dimensions);
+    const request = try session.handle(&app, charKey('d'), dimensions);
+    try std.testing.expectEqual(std.meta.Tag(Effect).request_definition, std.meta.activeTag(request));
+    try std.testing.expect(app.definition_pending);
+    try std.testing.expectEqual(std.meta.Tag(Effect).cancel_definition, std.meta.activeTag(try session.handle(&app, .{ .code = .escape }, dimensions)));
+    try std.testing.expect(!app.definition_pending);
+    _ = try session.handle(&app, charKey('g'), dimensions);
+    const replacement_request = try session.handle(&app, charKey('d'), dimensions);
+
+    const items = try std.testing.allocator.alloc(@import("definitions.zig").Target, 2);
+    items[0] = .{ .path = try std.testing.allocator.dupe(u8, "a.zig"), .line = 1, .column = 0, .source_start = 0, .preview = try std.testing.allocator.dupe(u8, "const a = 1;"), .external = false };
+    items[1] = .{ .path = try std.testing.allocator.dupe(u8, "/tmp/b.zig"), .line = 2, .column = 1, .source_start = 4, .preview = try std.testing.allocator.dupe(u8, "const b = 2;"), .external = true };
+    try std.testing.expect(app.installDefinitions(replacement_request.request_definition, .init(std.testing.allocator, items)));
+    try std.testing.expectEqual(std.meta.Tag(Effect).preview_definition, std.meta.activeTag(session.openDefinitions(&app)));
+    try std.testing.expectEqual(std.meta.Tag(Effect).preview_definition, std.meta.activeTag(try session.handle(&app, charKey('j'), dimensions)));
+    try std.testing.expectEqual(@as(usize, 1), app.definition_results.?.selected);
+    try std.testing.expectEqual(std.meta.Tag(Effect).activate_definition, std.meta.activeTag(try session.handle(&app, .{ .code = .enter }, dimensions)));
 }
 
 fn scalarNext(_: ?*const anyopaque, text: []const u8, start: usize) usize {
