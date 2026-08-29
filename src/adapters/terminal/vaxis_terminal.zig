@@ -1904,7 +1904,7 @@ fn lineHasNote(app: *const fiew.app.App, change_notes: []fiew.notes.NoteRef, lin
     return false;
 }
 
-fn wrappedReviewRows(allocator: std.mem.Allocator, text: []const u8, width: u16) ![][]const u8 {
+fn wrappedTextRows(allocator: std.mem.Allocator, text: []const u8, width: u16, prefix: []const u8) ![][]const u8 {
     var safe: std.ArrayList(u8) = .empty;
     defer safe.deinit(allocator);
     var index: usize = 0;
@@ -1927,30 +1927,59 @@ fn wrappedReviewRows(allocator: std.mem.Allocator, text: []const u8, width: u16)
         index += length;
     }
 
-    const available: usize = @max(width -| 2, 1);
+    const prefix_columns: u16 = @intCast(vaxis.gwidth.gwidth(prefix, .unicode));
+    const available: usize = @max(width -| prefix_columns -| 1, 1);
     var rows: std.ArrayList([]const u8) = .empty;
-    var iterator = vaxis.unicode.graphemeIterator(safe.items);
     var row_start: usize = 0;
-    var offset: usize = 0;
-    var columns: usize = 0;
-    while (iterator.next()) |grapheme| {
-        const grapheme_columns: usize = vaxis.gwidth.gwidth(grapheme.bytes(safe.items), .unicode);
-        if (columns != 0 and columns + grapheme_columns > available) {
-            try rows.append(allocator, try std.fmt.allocPrint(allocator, "▏ {s}", .{safe.items[row_start..offset]}));
-            row_start = offset;
-            columns = 0;
+    while (row_start < safe.items.len) {
+        const remaining = safe.items[row_start..];
+        var iterator = vaxis.unicode.graphemeIterator(remaining);
+        var offset: usize = 0;
+        var columns: usize = 0;
+        var break_start: ?usize = null;
+        var break_end: usize = 0;
+        var in_spaces = false;
+        var emitted = false;
+
+        while (iterator.next()) |grapheme| {
+            const bytes = grapheme.bytes(remaining);
+            const grapheme_columns: usize = vaxis.gwidth.gwidth(bytes, .unicode);
+            if (columns != 0 and columns + grapheme_columns > available) {
+                var row_end = offset;
+                var next_start = row_start + offset;
+                if (break_start) |space_start| if (space_start != 0) {
+                    row_end = space_start;
+                    next_start = row_start + break_end;
+                    while (next_start < safe.items.len and safe.items[next_start] == ' ') next_start += 1;
+                };
+                try rows.append(allocator, try std.fmt.allocPrint(allocator, "{s}{s}", .{ prefix, remaining[0..row_end] }));
+                row_start = next_start;
+                emitted = true;
+                break;
+            }
+
+            const grapheme_start = offset;
+            offset += grapheme.len;
+            columns += grapheme_columns;
+            const is_space = bytes.len == 1 and bytes[0] == ' ';
+            if (is_space) {
+                if (!in_spaces) break_start = grapheme_start;
+                break_end = offset;
+            }
+            in_spaces = is_space;
         }
-        offset += grapheme.len;
-        columns += grapheme_columns;
-        if (columns >= available) {
-            try rows.append(allocator, try std.fmt.allocPrint(allocator, "▏ {s}", .{safe.items[row_start..offset]}));
-            row_start = offset;
-            columns = 0;
+
+        if (!emitted) {
+            try rows.append(allocator, try std.fmt.allocPrint(allocator, "{s}{s}", .{ prefix, remaining }));
+            row_start = safe.items.len;
         }
     }
-    if (row_start < safe.items.len or rows.items.len == 0)
-        try rows.append(allocator, try std.fmt.allocPrint(allocator, "▏ {s}", .{safe.items[row_start..]}));
+    if (rows.items.len == 0) try rows.append(allocator, try allocator.dupe(u8, prefix));
     return rows.toOwnedSlice(allocator);
+}
+
+fn wrappedReviewRows(allocator: std.mem.Allocator, text: []const u8, width: u16) ![][]const u8 {
+    return wrappedTextRows(allocator, text, width, "▏ ");
 }
 
 fn reviewCommentStyle(author: fiew.review.Author, resolved: bool, bold: bool) vaxis.Cell.Style {
@@ -2445,23 +2474,33 @@ fn drawNoteDetail(allocator: std.mem.Allocator, window: vaxis.Window, app: *cons
         }
     }
     row += 1;
+    const resolved = note.projectedStatus() == .resolved;
     var skipped: usize = 0;
     for (note.comments) |comment| {
         if (skipped < state_notes.detail_scroll) {
             skipped += 1;
         } else if (row < window.height -| 1) {
-            _ = window.printSegment(.{ .text = reviewAuthorLabel(comment.author), .style = .{ .bold = true, .fg = .{ .index = 6 } } }, .{ .row_offset = row, .col_offset = 2, .wrap = .none });
+            _ = window.printSegment(.{
+                .text = reviewAuthorLabel(comment.author),
+                .style = reviewCommentStyle(comment.author, resolved, true),
+            }, .{ .row_offset = row, .col_offset = 2, .wrap = .none });
             row += 1;
         }
         var body_lines = std.mem.splitScalar(u8, comment.body, '\n');
         while (body_lines.next()) |line| {
-            if (skipped < state_notes.detail_scroll) {
-                skipped += 1;
-                continue;
+            const body_rows = try wrappedTextRows(allocator, line, window.width -| 4, "");
+            for (body_rows) |body_row| {
+                if (skipped < state_notes.detail_scroll) {
+                    skipped += 1;
+                    continue;
+                }
+                if (row >= window.height -| 1) continue;
+                _ = window.printSegment(.{
+                    .text = body_row,
+                    .style = reviewCommentStyle(comment.author, resolved, false),
+                }, .{ .row_offset = row, .col_offset = 4, .wrap = .none });
+                row += 1;
             }
-            if (row >= window.height -| 1) break;
-            _ = window.printSegment(.{ .text = try sanitizeLine(allocator, line, window.width -| 4), .style = .{} }, .{ .row_offset = row, .col_offset = 4, .wrap = .none });
-            row += 1;
         }
     }
 }
@@ -3022,6 +3061,64 @@ test "review render labels distinguish statuses and comment roles" {
     try std.testing.expectEqualStrings("agent:", reviewAuthorLabel(.agent));
 }
 
+test "Review Threads renders long comment continuation rows" {
+    const allocator = std.testing.allocator;
+    var nodes: [0]fiew.project.Node = .{};
+    const tree: fiew.project.Tree = .{ .allocator = allocator, .nodes = &nodes, .file_count = 0 };
+    var app = try fiew.app.App.init(allocator, &tree);
+    defer app.deinit();
+    app.sidebar_context = .review;
+    app.notes = .{ .allocator = allocator };
+
+    const comments = try allocator.alloc(fiew.review.Comment, 1);
+    comments[0] = .{ .author = .reviewer, .body = try allocator.dupe(u8, "abcdefghijklmno") };
+    try app.notes.?.addThread(.reviewer, .{
+        .filename = "review.md",
+        .base_ref = "HEAD",
+        .base_sha = "abc",
+        .created = "now",
+    }, .{
+        .id = try allocator.dupe(u8, "t1"),
+        .path = try allocator.dupe(u8, "a.zig"),
+        .group = .unstaged,
+        .status = .open,
+        .lifecycle = .open,
+        .validity = .current,
+        .context = .{
+            .bytes = try allocator.dupe(u8, "change\n"),
+            .original_start = 0,
+            .target_start = 0,
+            .target_end = 6,
+        },
+        .comments = comments,
+    });
+
+    var screen = try vaxis.Screen.init(allocator, .{ .rows = 8, .cols = 14, .x_pixel = 0, .y_pixel = 0 });
+    defer screen.deinit(allocator);
+    const window: vaxis.Window = .{
+        .x_off = 0,
+        .y_off = 0,
+        .parent_x_off = 0,
+        .parent_y_off = 0,
+        .width = screen.width,
+        .height = screen.height,
+        .screen = &screen,
+    };
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    try drawNoteDetail(arena.allocator(), window, &app);
+
+    try std.testing.expectEqualStrings("a", screen.readCell(4, 4).?.char.grapheme);
+    try std.testing.expectEqualStrings("j", screen.readCell(4, 5).?.char.grapheme);
+    try std.testing.expectEqualStrings(" ", screen.readCell(13, 4).?.char.grapheme);
+
+    screen.clear();
+    app.notes.?.detail_scroll = 2;
+    try drawNoteDetail(arena.allocator(), window, &app);
+    try std.testing.expectEqualStrings("j", screen.readCell(4, 3).?.char.grapheme);
+}
+
 test "narrow inline review comments wrap by grapheme for both authors" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -3029,13 +3126,18 @@ test "narrow inline review comments wrap by grapheme for both authors" {
 
     const reviewer_rows = try wrappedReviewRows(allocator, "abcdefghij", 8);
     try std.testing.expectEqual(@as(usize, 2), reviewer_rows.len);
-    try std.testing.expectEqualStrings("▏ abcdef", reviewer_rows[0]);
-    try std.testing.expectEqualStrings("▏ ghij", reviewer_rows[1]);
+    try std.testing.expectEqualStrings("▏ abcde", reviewer_rows[0]);
+    try std.testing.expectEqualStrings("▏ fghij", reviewer_rows[1]);
 
-    const agent_rows = try wrappedReviewRows(allocator, "ab👩‍💻cd", 6);
+    const agent_rows = try wrappedReviewRows(allocator, "ab👩‍💻cd", 7);
     try std.testing.expectEqual(@as(usize, 2), agent_rows.len);
     try std.testing.expectEqualStrings("▏ ab👩‍💻", agent_rows[0]);
     try std.testing.expectEqualStrings("▏ cd", agent_rows[1]);
+
+    const word_rows = try wrappedReviewRows(allocator, "alpha beta", 10);
+    try std.testing.expectEqual(@as(usize, 2), word_rows.len);
+    try std.testing.expectEqualStrings("▏ alpha", word_rows[0]);
+    try std.testing.expectEqualStrings("▏ beta", word_rows[1]);
 
     const reviewer_style = reviewCommentStyle(.reviewer, false, false);
     const agent_style = reviewCommentStyle(.agent, false, false);
@@ -3051,7 +3153,7 @@ test "inline review comment layout reflows and exposes scrolled rows" {
     const allocator = arena.allocator();
 
     try std.testing.expectEqual(@as(usize, 2), (try wrappedReviewRows(allocator, "abcdefghij", 8)).len);
-    try std.testing.expectEqual(@as(usize, 1), (try wrappedReviewRows(allocator, "abcdefghij", 12)).len);
+    try std.testing.expectEqual(@as(usize, 1), (try wrappedReviewRows(allocator, "abcdefghij", 13)).len);
     try std.testing.expectEqual(@as(?u16, 1), visibleDiffRow(5, 5, 3));
     try std.testing.expectEqual(@as(?u16, 3), visibleDiffRow(7, 5, 3));
     try std.testing.expectEqual(@as(?u16, null), visibleDiffRow(8, 5, 3));

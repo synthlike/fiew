@@ -40,6 +40,17 @@ Related to ISSUE-0033, which introduced reviewer-owned review threads, and commi
 None identified. This is required v0.1 presentation work.
 
 ## Comments
+
+### 2026-08-29T10:07:11Z — agent
+
+Follow-up verification found that Review Threads still truncated long logical comment lines even though inline Review Diff comments wrapped. The Thread detail renderer used bounded single-row output with wrapping disabled, and its scroll offset counted logical rather than wrapped visual rows.
+
+Extended the shared review-comment layout to both surfaces. Comments now wrap at word boundaries with grapheme-safe splitting only for words wider than a row, reserve a one-column right margin, reflow on resize, and expose continuation rows through visual-row scrolling. Review Threads now also retains author-specific styling and resolved dimming.
+
+Added a narrow in-memory terminal regression that failed on the absent continuation row before the repair and now covers continuation scrolling and right-margin behavior. Existing ASCII, Unicode, resize, and clipping coverage remains green.
+
+Verification passed with `zig fmt --check src build.zig`, `zig build test`, `zig build`, and `git diff --check`.
+
 ## Resolution
 
 Completed the inline review-comment wrapping fix.
