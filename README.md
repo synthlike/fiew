@@ -43,7 +43,7 @@ can inspect related source between review passes.
   <img src="docs/images/project-browser-light.png" alt="Light Project sidebar and welcome view" width="49%">
 </p>
 
-## Install v0.1
+## Installation
 
 fiew v0.1 is an unsigned, unnotarized Apple Silicon macOS binary for Ghostty.
 Git must be installed for Review Diff; non-Git directories remain browsable.
@@ -170,13 +170,23 @@ blocks task completion while waiting for a review.
 | `] c` / `[ c` | Next / previous changed line |
 | `Enter` | Pin a preview or open source from a diff line |
 | `Ctrl-o` / `Ctrl-i` | Back / forward through locations |
+| `g d` | Go to the selected Zig definition through ZLS |
+| `g r` | Find references to the selected Zig symbol through ZLS |
 | `Space ?` | Generated key help |
 | `:quit` or `Space q` | Quit |
 
 The status line shows the current mode (`NOR`, `EXT`, or `CMD`) and active
 leader path, such as `LDR r d`.
 
-### Trust ZLS for Zig definitions
+### LSP support for code review
+
+fiew intentionally supports only the read-only parts of LSP that help reviewers
+understand code: definitions, references, and hover information. It is not a
+general-purpose LSP client and does not support editing features such as
+completion, rename, formatting, or code actions.
+
+For now, Zig is the only supported language, through a user-installed ZLS
+0.16.x executable. Support for more languages is planned for v0.3.
 
 Install ZLS 0.16.x and ensure `zls` is available on `PATH`. Because ZLS may
 evaluate repository-controlled Zig build logic, fiew requires explicit trust
@@ -185,8 +195,11 @@ for each repository before launching it.
 1. Open the repository in fiew.
 2. Press `:` and enter `zls-trust-repository`.
 3. Select **Trust repository for ZLS** and press `Enter`.
-4. Open a UTF-8 Zig file and press `g d` to go to the selected definition.
+4. Open a UTF-8 Zig file.
+5. Press `g d` to go to the selected definition, or `g r` to list references.
 
+Definition and reference targets are opened read-only. Valid targets outside
+the repository, such as Zig standard-library files, are labeled **External**.
 Trust is persisted for the canonical repository identity. Use the named
 commands `zls-status`, `zls-restart`, or `zls-revoke-trust` to inspect, restart,
 or revoke the integration.
