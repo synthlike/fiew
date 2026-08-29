@@ -162,11 +162,11 @@ pub const definitions = [_]Definition{
     .{ .id = .bookmark_next, .stable_id = "bookmark-next", .title = "Next bookmark", .binding = "] b", .hint = "bookmark" },
     .{ .id = .bookmark_previous, .stable_id = "bookmark-previous", .title = "Previous bookmark", .binding = "[ b", .hint = "bookmark" },
     .{ .id = .bookmark_find, .stable_id = "bookmark-find", .title = "Find bookmarks", .binding = "Space b f" },
-    .{ .id = .trail_open, .stable_id = "trail-open", .title = "Open review Trails", .binding = "Space t" },
-    .{ .id = .trail_find, .stable_id = "trail-find", .title = "Find Trails by title", .binding = "Space t f" },
-    .{ .id = .trail_record, .stable_id = "trail-record", .title = "Start or stop Trail recording", .binding = "Space t r" },
-    .{ .id = .trail_add, .stable_id = "trail-add", .title = "Add current Trail point", .binding = "Space t a" },
-    .{ .id = .trail_delete, .stable_id = "trail-delete", .title = "Delete selected Trail", .binding = "Space t d" },
+    .{ .id = .trail_open, .stable_id = "trail-open", .title = "Open review trails", .binding = "Space t" },
+    .{ .id = .trail_find, .stable_id = "trail-find", .title = "Find trails by title", .binding = "Space t f" },
+    .{ .id = .trail_record, .stable_id = "trail-record", .title = "Start or stop trail recording", .binding = "Space t r" },
+    .{ .id = .trail_add, .stable_id = "trail-add", .title = "Add current trail point", .binding = "Space t a" },
+    .{ .id = .trail_delete, .stable_id = "trail-delete", .title = "Delete selected trail", .binding = "Space t d" },
     .{ .id = .definition, .stable_id = "definition", .title = "Go to definition", .binding = "g d", .hint = "definition" },
     .{ .id = .references, .stable_id = "references", .title = "Find references", .binding = "g r", .hint = "references" },
     .{ .id = .hover, .stable_id = "hover", .title = "Show hover information", .binding = "K" },
@@ -193,8 +193,8 @@ pub const definitions = [_]Definition{
     .{ .id = .note_discard, .stable_id = "note-discard", .title = "Discard note", .binding = "Esc", .disabled_reason = "note composer is not open" },
     .{ .id = .bookmark_save, .stable_id = "bookmark-save", .title = "Save bookmark", .binding = "Ctrl-Enter", .disabled_reason = "bookmark composer is not open" },
     .{ .id = .bookmark_discard, .stable_id = "bookmark-discard", .title = "Discard bookmark", .binding = "Esc", .disabled_reason = "bookmark composer is not open" },
-    .{ .id = .trail_save, .stable_id = "trail-save", .title = "Save Trail", .binding = "Ctrl-Enter", .disabled_reason = "Trail composer is not open" },
-    .{ .id = .trail_discard, .stable_id = "trail-discard", .title = "Cancel Trail composition", .binding = "Esc", .disabled_reason = "Trail composer is not open" },
+    .{ .id = .trail_save, .stable_id = "trail-save", .title = "Save trail", .binding = "Ctrl-Enter", .disabled_reason = "trail composer is not open" },
+    .{ .id = .trail_discard, .stable_id = "trail-discard", .title = "Cancel trail composition", .binding = "Esc", .disabled_reason = "trail composer is not open" },
 };
 
 pub fn definition(id: Id) *const Definition {
@@ -327,22 +327,22 @@ pub fn unavailableReason(app: *const state.App, id: Id) ?[]const u8 {
         else
             null,
         .bookmark_delete, .bookmark_next, .bookmark_previous => if (!app.hasBookmarks()) "no bookmarks yet" else null,
-        .trail_open, .trail_find => if (!app.trails_available) "Trails require an active named review" else null,
+        .trail_open, .trail_find => if (!app.trails_available) "trails require an active named review" else null,
         .trail_record => if (!app.trails_available)
-            "Trails require an active named review"
+            "trails require an active named review"
         else if (!app.trailRecording() and (app.activeView() == null or app.activeView().?.external or app.sidebar_context == .review or (app.sidebar_context == .git and !app.viewing_source)))
             "open a valid repository source location first"
         else
             null,
         .trail_add => if (!app.trails_available)
-            "Trails require an active named review"
+            "trails require an active named review"
         else if (!app.trailRecording())
-            "Trail recording is not active"
+            "trail recording is not active"
         else if (app.activeView() == null or app.activeView().?.external or app.sidebar_context == .review or (app.sidebar_context == .git and !app.viewing_source))
             "open a valid repository source location first"
         else
             null,
-        .trail_delete => if (!app.hasTrails()) "no Trails yet" else null,
+        .trail_delete => if (!app.hasTrails()) "no trails yet" else null,
         .zls_trust => if (!app.zls_trust_available)
             "global state unavailable; ZLS trust cannot be persisted"
         else if (app.zls_trusted)
@@ -543,13 +543,13 @@ pub const Session = struct {
                 .files => "LDR f",
                 .note_composer => "comment",
                 .bookmark_composer => "bookmark label",
-                .trail_composer => "Trail title / note",
+                .trail_composer => "trail title / note",
                 .finder => "find file",
                 .definitions => "definitions",
                 .hover => "hover",
                 .confirm_delete => "confirm delete",
                 .confirm_bookmark_delete => "confirm bookmark delete",
-                .confirm_trail_delete => "confirm Trail delete",
+                .confirm_trail_delete => "confirm trail delete",
                 .none => "",
             },
             .goto => "g",
@@ -777,7 +777,7 @@ pub const Session = struct {
             },
             .quit => {
                 if (app.trailRecording() or app.trail_composer != null) {
-                    app.feedback = "unfinished Trail recording; save or finish it before quitting";
+                    app.feedback = "unfinished trail recording; save or finish it before quitting";
                     self.resetTransient(app);
                     return .none;
                 }
@@ -1104,7 +1104,7 @@ pub const Session = struct {
             self.resetTransient(app);
             return .none;
         }
-        app.feedback = "use j/k, Enter, r, a, d, or q on Trails";
+        app.feedback = "use j/k, Enter, r, a, d, or q on trails";
         return .none;
     }
 
@@ -1152,10 +1152,10 @@ pub const Session = struct {
         if (normalizedCharacter(key) == 'n' or key.code == .escape) {
             self.surface = .trails;
             app.mode = .normal;
-            app.feedback = "Trail deletion cancelled";
+            app.feedback = "trail deletion cancelled";
             return .none;
         }
-        app.feedback = "press y to delete the Trail or n to cancel";
+        app.feedback = "press y to delete the trail or n to cancel";
         return .none;
     }
 
@@ -2096,7 +2096,7 @@ fn testApp() !state.App {
     return app;
 }
 
-test "Trail commands guard, record, compose, preview, pin, and confirm deletion" {
+test "trail commands guard, record, compose, preview, pin, and confirm deletion" {
     const trails_mod = @import("trails.zig");
     var app = try testApp();
     defer app.deinit();
@@ -2104,7 +2104,7 @@ test "Trail commands guard, record, compose, preview, pin, and confirm deletion"
     defer session.deinit();
     const dimensions: Dimensions = .{ .sidebar_rows = 20, .document_rows = 20, .document_columns = 80 };
 
-    try std.testing.expectEqualStrings("Trails require an active named review", unavailableReason(&app, .trail_open).?);
+    try std.testing.expectEqualStrings("trails require an active named review", unavailableReason(&app, .trail_open).?);
     app.trails = try trails_mod.Trails.init(std.testing.allocator, "20260829-120000-review.json");
     app.trails_available = true;
     app.pinned.?.external = true;
@@ -2122,7 +2122,7 @@ test "Trail commands guard, record, compose, preview, pin, and confirm deletion"
     _ = try session.handle(&app, charKey(' '), dimensions);
     _ = try session.handle(&app, charKey('t'), dimensions);
     _ = try session.handle(&app, charKey('r'), dimensions);
-    try std.testing.expectEqualStrings("a Trail requires at least two points", app.feedback.?);
+    try std.testing.expectEqualStrings("a trail requires at least two points", app.feedback.?);
     try std.testing.expect(app.trailRecording());
 
     _ = try session.handle(&app, charKey(' '), dimensions);

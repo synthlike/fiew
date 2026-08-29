@@ -21,9 +21,10 @@ questions that need answers.
 5. Use **Review · Threads** to revisit, resolve, or delete complete threads.
 6. Approve only when every thread is current and explicitly resolved.
 
-fiew also supports bookmarks for source locations you need to revisit while
-reviewing. Zig files receive Tree-sitter-powered syntax highlighting, code
-folding, and basic structural navigation; other files remain plain text.
+fiew also supports private bookmarks and review-local trails for source
+locations you need to revisit. Zig files receive Tree-sitter-powered syntax
+highlighting, code folding, and structural navigation; other files remain plain
+text.
 
 ## Screenshots
 
@@ -89,6 +90,10 @@ Start the review workflow inside fiew:
 ```text
 Space r d    open Review · Diff · Git
 Space r t    open Review · Threads
+Space b      open Bookmarks
+Space b f    fuzzy-find a bookmark by label or path
+Space t      open trails for the active review
+Space t f    fuzzy-find a trail by title
 ```
 
 In Review Diff, select a changed line or a one-side range and press `Space r n`
@@ -128,9 +133,11 @@ current-review pointer per repository, so routine `show` and `reply` commands do
 not need to guess which review is active.
 
 Bookmarks are canonical private repository-local `fiew.bookmark/v1` JSON in
-`.bookmarks/bookmarks.json` and never appear in agent review output. Ensure both
-`.reviews/` and `.bookmarks/` are ignored using your repository's preferred Git
-configuration. fiew does not inspect or modify `.gitignore` or Git metadata.
+`.bookmarks/bookmarks.json`. Saved trails are private review-keyed
+`fiew.trail/v1` companion records under `.reviews/`. Neither appears in agent
+review output. Ensure both `.reviews/` and `.bookmarks/` are ignored using your
+repository's preferred Git configuration. fiew does not inspect or modify
+`.gitignore` or Git metadata.
 
 ### Install the agent cooperation skill
 
@@ -169,6 +176,10 @@ blocks task completion while waiting for a review.
 | `Space f a` | Find any repository file by path |
 | `Space f g` | Find tracked and non-ignored untracked Git files |
 | `Space b` | Open Bookmarks |
+| `Space b f` | Fuzzy-find a bookmark by label or path |
+| `Space t` | Open trails for the active review |
+| `Space t f` | Fuzzy-find a trail by title |
+| `Space t r` / `Space t a` | Start or stop recording / add a trail point |
 | `] f` / `[ f` | Next / previous changed file |
 | `] h` / `[ h` | Next / previous hunk |
 | `] c` / `[ c` | Next / previous changed line |
@@ -177,6 +188,8 @@ blocks task completion while waiting for a review.
 | `g d` | Go to the selected Zig definition through ZLS |
 | `g r` | Find references to the selected Zig symbol through ZLS |
 | `K` | Show hover information for the selected Zig symbol through ZLS |
+| `Alt-o` / `Alt-i` | Select the enclosing structural node / its first child |
+| `Alt-n` / `Alt-p` | Select the next / previous structural sibling |
 | `Space ?` | Generated key help |
 | `:quit` or `Space q` | Quit |
 

@@ -534,7 +534,7 @@ pub const App = struct {
         const point = (try self.captureTrailPoint()) orelse return false;
         errdefer trails_state.freePoint(self.allocator, point);
         try self.trails.?.start(point);
-        self.feedback = "Trail recording started (1 point)";
+        self.feedback = "trail recording started (1 point)";
         return true;
     }
 
@@ -542,14 +542,14 @@ pub const App = struct {
         const point = (try self.captureTrailPoint()) orelse return false;
         errdefer trails_state.freePoint(self.allocator, point);
         try self.trails.?.appendPoint(point);
-        self.feedback = "Trail point added";
+        self.feedback = "trail point added";
         return true;
     }
 
     pub fn beginTrailComposer(self: *App) bool {
         const state_trails = if (self.trails) |*value| value else return false;
         if (state_trails.pointCount() < 2) {
-            self.feedback = "a Trail requires at least two points";
+            self.feedback = "a trail requires at least two points";
             return false;
         }
         if (self.trail_composer) |*previous| previous.deinit(self.allocator);
@@ -564,7 +564,7 @@ pub const App = struct {
         const target = if (composer.field == .title) &composer.title else &composer.note;
         const limit = if (composer.field == .title) trail_model.max_title_bytes else trail_model.max_note_bytes;
         if (target.items.len + length > limit) {
-            self.feedback = if (composer.field == .title) "Trail title is limited to 80 bytes" else "Trail note is limited to 4096 bytes";
+            self.feedback = if (composer.field == .title) "trail title is limited to 80 bytes" else "trail note is limited to 4096 bytes";
             return;
         }
         target.appendSlice(self.allocator, buffer[0..length]) catch return;
@@ -592,13 +592,13 @@ pub const App = struct {
     pub fn cancelTrailComposer(self: *App) void {
         if (self.trail_composer) |*composer| composer.deinit(self.allocator);
         self.trail_composer = null;
-        self.feedback = "Trail composition cancelled; recording resumed";
+        self.feedback = "trail composition cancelled; recording resumed";
     }
 
     pub fn saveTrailComposer(self: *App) !bool {
         const composer = if (self.trail_composer) |*value| value else return false;
         if (!trail_model.validTitle(composer.title.items)) {
-            self.feedback = "Trail title is required and limited to 80 bytes";
+            self.feedback = "trail title is required and limited to 80 bytes";
             return false;
         }
         try self.trails.?.saveDraft(composer.title.items, composer.note.items);

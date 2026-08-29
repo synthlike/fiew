@@ -959,28 +959,28 @@ pub fn run(init: std.process.Init, options: Options) !u8 {
     trail_setup: {
         const active_review = if (app.notes) |state_notes| state_notes.sessionFilename() orelse break :trail_setup else break :trail_setup;
         var result = fiew.trail_store.load(allocator, init.io, repository.root_dir, active_review) catch {
-            app.feedback = "Trail storage unreadable";
+            app.feedback = "trail storage unreadable";
             break :trail_setup;
         };
         switch (result) {
             .loaded => |*loaded| {
                 defer loaded.deinit();
                 app.trails = fiew.trails.Trails.fromStored(allocator, active_review, loaded.value().*) catch {
-                    app.feedback = "Trail storage unavailable";
+                    app.feedback = "trail storage unavailable";
                     break :trail_setup;
                 };
-                if (loaded.source == .backup) app.feedback = "Trail storage recovered from backup";
+                if (loaded.source == .backup) app.feedback = "trail storage recovered from backup";
             },
             .absent => app.trails = fiew.trails.Trails.init(allocator, active_review) catch {
-                app.feedback = "Trail storage unavailable";
+                app.feedback = "trail storage unavailable";
                 break :trail_setup;
             },
             .future_schema => {
-                app.feedback = "future Trail schema refused";
+                app.feedback = "future trail schema refused";
                 break :trail_setup;
             },
             .unrecoverable => {
-                app.feedback = "Trail state is unrecoverable";
+                app.feedback = "trail state is unrecoverable";
                 break :trail_setup;
             },
         }
@@ -1560,7 +1560,7 @@ fn applyEffect(
         .activate_trail => |source| try openTrailPoint(app, repository, segmenter, generation, source, true, dimensions.document_rows),
         .persist_trails => {
             if (app.trails) |*state_trails| {
-                if (!persistTrails(repository, state_trails)) app.feedback = "Trail persistence failed; changes remain dirty";
+                if (!persistTrails(repository, state_trails)) app.feedback = "trail persistence failed; changes remain dirty";
             }
         },
         .save_bookmark => {
@@ -1751,7 +1751,7 @@ fn applyEffect(
             }
             if (app.trails) |*state_trails| {
                 if (!persistTrails(repository, state_trails)) {
-                    app.feedback = "Trail persistence failed; quit cancelled";
+                    app.feedback = "trail persistence failed; quit cancelled";
                     return false;
                 }
             }
@@ -1894,7 +1894,7 @@ fn openTrailPoint(
             state_trails.markSelectedOutdated();
             _ = persistTrails(repository, state_trails);
         }
-        app.feedback = if (err == error.FileNotFound) "Trail point is Outdated: file was deleted" else @errorName(err);
+        app.feedback = if (err == error.FileNotFound) "trail point is Outdated: file was deleted" else @errorName(err);
         return;
     };
     var effective_line = source.line;
@@ -1909,7 +1909,7 @@ fn openTrailPoint(
     };
     app.showPreview(snapshot);
     app.positionPreviewAtLine(effective_line, effective_column);
-    if (outdated) app.feedback = "Trail point is Outdated";
+    if (outdated) app.feedback = "trail point is Outdated";
     if (activate) {
         _ = try app.pinPreview();
         if (app.activeViewMut()) |view| view.scroll_line = effective_line -| 1 -| (document_rows / 2);
@@ -2892,7 +2892,7 @@ fn drawTrailComposer(allocator: std.mem.Allocator, window: vaxis.Window, app: *c
     const box = window.child(.{ .y_off = window.height - height, .height = height });
     box.clear();
     const points = if (app.trails) |value| value.pointCount() else 0;
-    const heading = try std.fmt.allocPrint(allocator, " Trail — {d} points · {s} ", .{ points, @tagName(composer.field) });
+    const heading = try std.fmt.allocPrint(allocator, " trail — {d} points · {s} ", .{ points, @tagName(composer.field) });
     _ = box.printSegment(.{ .text = try sanitizeLine(allocator, heading, box.width), .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
     const title = try std.fmt.allocPrint(allocator, "Title: {s}", .{composer.title.items});
     _ = box.printSegment(.{ .text = try sanitizeLine(allocator, title, box.width -| 2), .style = .{ .bold = composer.field == .title } }, .{ .row_offset = 1, .col_offset = 1, .wrap = .none });
@@ -2943,9 +2943,9 @@ fn drawTrails(allocator: std.mem.Allocator, window: vaxis.Window, app: *const fi
     box.clear();
     const recording = if (state_trails.recording) |draft| try std.fmt.allocPrint(allocator, " · recording {d} points", .{draft.points.items.len}) else "";
     const heading = if (session.collection_search)
-        try std.fmt.allocPrint(allocator, " Find Trails · {s} ", .{session.query.items})
+        try std.fmt.allocPrint(allocator, " Find trails · {s} ", .{session.query.items})
     else
-        try std.fmt.allocPrint(allocator, " Trails · {s}{s} ", .{ state_trails.review, recording });
+        try std.fmt.allocPrint(allocator, " trails · {s}{s} ", .{ state_trails.review, recording });
     _ = box.printSegment(.{ .text = try sanitizeLine(allocator, heading, box.width), .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
     if (state_trails.detail) {
         if (state_trails.selected_trail < state_trails.items.items.len) {
@@ -2962,7 +2962,7 @@ fn drawTrails(allocator: std.mem.Allocator, window: vaxis.Window, app: *const fi
     } else {
         const count = if (session.collection_search) session.collection_matches.items.len else state_trails.items.items.len;
         if (count == 0) {
-            _ = box.printSegment(.{ .text = if (session.collection_search) "No matching Trails" else "No saved Trails", .style = .{ .dim = true } }, .{ .row_offset = 2, .col_offset = 1, .wrap = .none });
+            _ = box.printSegment(.{ .text = if (session.collection_search) "No matching trails" else "No saved trails", .style = .{ .dim = true } }, .{ .row_offset = 2, .col_offset = 1, .wrap = .none });
         } else {
             const scroll = if (session.collection_search) session.collection_scroll else 0;
             var row: usize = 0;
@@ -3016,7 +3016,7 @@ fn drawCommandSurface(
             menu.clear();
             _ = menu.printSegment(.{ .text = " Leader ", .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
             _ = menu.printSegment(.{
-                .text = "p Project  f Files  r Review  b Bookmarks  t Trails  ? help  q quit",
+                .text = "p Project  f Files  r Review  b Bookmarks  t trails  ? help  q quit",
             }, .{ .row_offset = 1, .col_offset = 1, .wrap = .none });
         },
         .vcs => {
@@ -3150,7 +3150,7 @@ fn drawCommandSurface(
         .confirm_trail_delete => {
             const menu = window.child(.{ .y_off = window.height -| 2, .height = 2 });
             menu.clear();
-            _ = menu.printSegment(.{ .text = " Delete Trail? ", .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
+            _ = menu.printSegment(.{ .text = " Delete trail? ", .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
             _ = menu.printSegment(.{ .text = "y delete  n/Esc cancel" }, .{ .row_offset = 1, .col_offset = 1, .wrap = .none });
         },
         .command => {
