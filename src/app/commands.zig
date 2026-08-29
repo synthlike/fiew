@@ -46,6 +46,10 @@ pub const Id = enum {
     bookmark_next,
     bookmark_previous,
     definition,
+    zls_status,
+    zls_trust,
+    zls_revoke,
+    zls_restart,
     fold_close,
     fold_open,
     fold_toggle,
@@ -147,6 +151,10 @@ pub const definitions = [_]Definition{
     .{ .id = .bookmark_next, .stable_id = "bookmark-next", .title = "Next bookmark", .binding = "] b", .hint = "bookmark" },
     .{ .id = .bookmark_previous, .stable_id = "bookmark-previous", .title = "Previous bookmark", .binding = "[ b", .hint = "bookmark" },
     .{ .id = .definition, .stable_id = "definition", .title = "Go to definition", .binding = "g d", .hint = "definition", .disabled_reason = "LSP is not available" },
+    .{ .id = .zls_status, .stable_id = "zls-status", .title = "Show ZLS status", .binding = "" },
+    .{ .id = .zls_trust, .stable_id = "zls-trust-repository", .title = "Trust repository for ZLS (may execute Zig build logic)", .binding = "" },
+    .{ .id = .zls_revoke, .stable_id = "zls-revoke-trust", .title = "Revoke ZLS trust for this repository", .binding = "" },
+    .{ .id = .zls_restart, .stable_id = "zls-restart", .title = "Restart ZLS", .binding = "" },
     .{ .id = .fold_close, .stable_id = "fold-close", .title = "Close fold", .binding = "z c", .hint = "close" },
     .{ .id = .fold_open, .stable_id = "fold-open", .title = "Open fold", .binding = "z o", .hint = "open" },
     .{ .id = .fold_toggle, .stable_id = "fold-toggle", .title = "Toggle fold", .binding = "z a", .hint = "toggle" },
@@ -298,6 +306,19 @@ pub fn unavailableReason(app: *const state.App, id: Id) ?[]const u8 {
         else
             null,
         .bookmark_delete, .bookmark_next, .bookmark_previous => if (!app.hasBookmarks()) "no bookmarks yet" else null,
+        .zls_trust => if (!app.zls_trust_available)
+            "global state unavailable; ZLS trust cannot be persisted"
+        else if (app.zls_trusted)
+            "repository is already trusted for ZLS"
+        else
+            null,
+        .zls_revoke => if (!app.zls_trust_available)
+            "global state unavailable; ZLS trust cannot be changed"
+        else if (!app.zls_trusted)
+            "repository is not trusted for ZLS"
+        else
+            null,
+        .zls_restart => if (!app.zls_trusted) "ZLS untrusted" else null,
         else => null,
     };
 }
@@ -353,6 +374,10 @@ pub const Effect = union(enum) {
     persist_bookmarks,
     preview_bookmark: SourceLocation,
     activate_bookmark: SourceLocation,
+    zls_status,
+    zls_trust,
+    zls_revoke,
+    zls_restart,
     quit,
 };
 
@@ -732,6 +757,10 @@ pub const Session = struct {
                 app.moveBookmarkSelection(-1, dimensions.sidebar_rows);
                 return bookmarkEffect(app, false);
             },
+            .zls_status => return .zls_status,
+            .zls_trust => return .zls_trust,
+            .zls_revoke => return .zls_revoke,
+            .zls_restart => return .zls_restart,
             .note_create => {
                 if (app.beginNoteFromDiff() catch false) {
                     self.surface = .note_composer;
@@ -1626,6 +1655,23 @@ fn testApp() !state.App {
     ) };
     app.focus = .main;
     return app;
+}
+
+test "named ZLS lifecycle commands enforce durable trust state" {
+    var app = try testApp();
+    defer app.deinit();
+    var session = Session.init(std.testing.allocator);
+    defer session.deinit();
+    const dimensions: Dimensions = .{ .sidebar_rows = 20, .document_rows = 20, .document_columns = 80 };
+
+    _ = try session.execute(&app, .zls_trust, dimensions);
+    try std.testing.expectEqualStrings("global state unavailable; ZLS trust cannot be persisted", app.feedback.?);
+
+    app.zls_trust_available = true;
+    try std.testing.expectEqual(std.meta.Tag(Effect).zls_trust, try session.execute(&app, .zls_trust, dimensions));
+    app.zls_trusted = true;
+    try std.testing.expectEqual(std.meta.Tag(Effect).zls_restart, try session.execute(&app, .zls_restart, dimensions));
+    try std.testing.expectEqual(std.meta.Tag(Effect).zls_revoke, try session.execute(&app, .zls_revoke, dimensions));
 }
 
 fn scalarNext(_: ?*const anyopaque, text: []const u8, start: usize) usize {

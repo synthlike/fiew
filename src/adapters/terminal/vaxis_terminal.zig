@@ -19,6 +19,115 @@ const Event = union(enum) {
 const Completion = fiew.parse_job.Completion;
 const ParseFuture = std.Io.Future(void);
 const GitFuture = std.Io.Future(void);
+const ZlsFuture = std.Io.Future(void);
+
+const ZlsState = struct {
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    status: std.atomic.Value(fiew.lsp.Status) = .init(.untrusted),
+    future: ?ZlsFuture = null,
+    root_uri: ?[]u8 = null,
+    document_uri: ?[]u8 = null,
+    document_text: ?[]u8 = null,
+    document_generation: ?u64 = null,
+    starting_ticks: u8 = 0,
+    last_published: fiew.lsp.Status,
+
+    fn init(io: std.Io, allocator: std.mem.Allocator, initial: fiew.lsp.Status) ZlsState {
+        return .{ .io = io, .allocator = allocator, .status = .init(initial), .last_published = initial };
+    }
+
+    fn deinit(self: *ZlsState) void {
+        self.stop(.stopped);
+        self.* = undefined;
+    }
+
+    fn start(self: *ZlsState, repository: fiew.filesystem.Repository, canonical_path: []const u8, app: *const fiew.app.App) void {
+        self.stop(.stopped);
+        self.root_uri = fiew.zls_process.fileUri(self.allocator, canonical_path) catch {
+            self.status.store(.crashed, .release);
+            return;
+        };
+        var document_version: u64 = 0;
+        if (app.activeDocument()) |snapshot| {
+            if (snapshot.encoding == .utf8 and std.mem.endsWith(u8, snapshot.path, ".zig")) {
+                const absolute = std.fs.path.join(self.allocator, &.{ canonical_path, snapshot.path }) catch null;
+                if (absolute) |path| {
+                    defer self.allocator.free(path);
+                    self.document_uri = fiew.zls_process.fileUri(self.allocator, path) catch null;
+                }
+                self.document_text = self.allocator.dupe(u8, snapshot.bytes) catch null;
+                document_version = snapshot.generation;
+                self.document_generation = snapshot.generation;
+            }
+        }
+        self.starting_ticks = 0;
+        self.status.store(.starting, .release);
+        self.future = self.io.concurrent(fiew.zls_process.serve, .{
+            self.allocator,    repository.io,    repository.root_dir, self.root_uri.?,
+            self.document_uri, document_version, self.document_text,  &self.status,
+        }) catch {
+            self.allocator.free(self.root_uri.?);
+            self.root_uri = null;
+            if (self.document_uri) |uri| self.allocator.free(uri);
+            if (self.document_text) |text| self.allocator.free(text);
+            self.document_uri = null;
+            self.document_text = null;
+            self.document_generation = null;
+            self.status.store(.crashed, .release);
+            return;
+        };
+    }
+
+    fn stop(self: *ZlsState, target: fiew.lsp.Status) void {
+        if (self.future) |*future| _ = future.cancel(self.io);
+        self.future = null;
+        if (self.root_uri) |uri| self.allocator.free(uri);
+        if (self.document_uri) |uri| self.allocator.free(uri);
+        if (self.document_text) |text| self.allocator.free(text);
+        self.root_uri = null;
+        self.document_uri = null;
+        self.document_text = null;
+        self.document_generation = null;
+        self.starting_ticks = 0;
+        self.status.store(target, .release);
+    }
+
+    fn syncDocument(self: *ZlsState, repository: fiew.filesystem.Repository, canonical_path: []const u8, app: *const fiew.app.App) void {
+        if (self.status.load(.acquire) != .ready) return;
+        const active_generation: ?u64 = if (app.activeDocument()) |snapshot|
+            if (snapshot.encoding == .utf8 and std.mem.endsWith(u8, snapshot.path, ".zig")) snapshot.generation else null
+        else
+            null;
+        if (active_generation == self.document_generation) return;
+        // The lifecycle worker owns its pipes. Replacing the immutable active
+        // snapshot therefore closes the previous document and establishes a
+        // fresh, single ZLS lifecycle for the new snapshot.
+        self.start(repository, canonical_path, app);
+    }
+
+    fn publish(self: *ZlsState, app: *fiew.app.App) void {
+        const current = self.status.load(.acquire);
+        if (current == .starting) {
+            self.starting_ticks +|= 1;
+            // The shared timer ticks every 250 ms. Bound version validation and
+            // initialization together to two seconds.
+            if (self.starting_ticks >= 8) {
+                self.stop(.crashed);
+                app.zls_status = .crashed;
+                app.feedback = "ZLS startup timed out";
+                return;
+            }
+        } else {
+            self.starting_ticks = 0;
+        }
+        app.zls_status = current;
+        if (current != self.last_published) {
+            self.last_published = current;
+            app.feedback = fiew.lsp.statusText(current);
+        }
+    }
+};
 
 /// Owns the single bounded Git worker slot. New requests supersede old
 /// generations; obsolete completions are destroyed without publishing.
@@ -330,6 +439,22 @@ pub fn run(init: std.process.Init, options: Options) !u8 {
     if (global_store == null)
         app.feedback = "global state unavailable; persistence disabled";
 
+    var canonical_root_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const canonical_root_length = try repository.root_dir.realPath(init.io, &canonical_root_buffer);
+    var repository_identity = try fiew.repository_identity.RepositoryIdentity.fromCanonicalPath(
+        allocator,
+        canonical_root_buffer[0..canonical_root_length],
+    );
+    defer repository_identity.deinit();
+    var zls_trust = try fiew.zls_trust.Trust.load(
+        allocator,
+        if (global_store) |*store| store else null,
+    );
+    defer zls_trust.deinit();
+    app.zls_trust_available = zls_trust.available;
+    app.zls_trusted = zls_trust.contains(repository_identity.slug());
+    app.zls_status = if (app.zls_trusted) .stopped else .untrusted;
+
     const quote_time = std.Io.Timestamp.now(init.io, .real).nanoseconds;
     app.welcome_quote = fiew.welcome.selectSeed(quote_time);
 
@@ -441,6 +566,8 @@ pub fn run(init: std.process.Init, options: Options) !u8 {
     defer parse_state.deinit();
     var git_state = GitLoadState.init(init.io, allocator, &loop);
     defer git_state.deinit();
+    var zls_state = ZlsState.init(init.io, allocator, app.zls_status);
+    defer zls_state.deinit();
 
     try vx.enterAltScreen(tty.writer());
     try tty.writer().flush();
@@ -476,6 +603,11 @@ pub fn run(init: std.process.Init, options: Options) !u8 {
                         effect,
                         review_name,
                         &git_state,
+                        if (global_store) |*store| store else null,
+                        &zls_trust,
+                        repository_identity.slug(),
+                        repository_identity.canonical_path,
+                        &zls_state,
                     )) {
                         // Exit code reports whether the named review has blocking
                         // threads or unsaved state. Cleanup
@@ -508,6 +640,7 @@ pub fn run(init: std.process.Init, options: Options) !u8 {
             .tick => {
                 command_session.tick(&app);
                 parse_state.onTick();
+                zls_state.publish(&app);
             },
             .parse_done => |box| parse_state.onCompletion(&app, box),
             .git_done => |box| git_state.onCompletion(&app, repository, box),
@@ -515,6 +648,7 @@ pub fn run(init: std.process.Init, options: Options) !u8 {
         }
 
         parse_state.drive(&app);
+        zls_state.syncDocument(repository, repository_identity.canonical_path, &app);
         _ = frame_arena.reset(.retain_capacity);
         try draw(frame_arena.allocator(), vx.window(), &app, &command_session, repository.root_path);
         try vx.render(tty.writer());
@@ -610,6 +744,11 @@ fn applyEffect(
     effect: fiew.commands.Effect,
     review_name: ?[]const u8,
     git_state: *GitLoadState,
+    global_store: ?*fiew.state_store.StateStore,
+    zls_trust: *fiew.zls_trust.Trust,
+    repository_slug: []const u8,
+    canonical_path: []const u8,
+    zls_state: *ZlsState,
 ) !bool {
     switch (effect) {
         .none => {},
@@ -741,6 +880,42 @@ fn applyEffect(
                 if (!persistBookmarks(repository, state_bookmarks))
                     app.feedback = "bookmark persistence failed; changes remain dirty";
             }
+        },
+        .zls_status => app.feedback = fiew.lsp.statusText(app.zls_status),
+        .zls_trust => {
+            const store = global_store orelse {
+                app.feedback = "global state unavailable; ZLS trust cannot be persisted";
+                return false;
+            };
+            zls_trust.grant(store, repository_slug) catch |err| {
+                app.feedback = @errorName(err);
+                return false;
+            };
+            zls_state.stop(.stopped);
+            zls_state.last_published = .stopped;
+            app.zls_trusted = true;
+            app.zls_status = .stopped;
+            app.feedback = "repository trusted for ZLS; ZLS may evaluate repository Zig build logic";
+        },
+        .zls_revoke => {
+            const store = global_store orelse {
+                app.feedback = "global state unavailable; ZLS trust cannot be changed";
+                return false;
+            };
+            zls_trust.revoke(store, repository_slug) catch |err| {
+                app.feedback = @errorName(err);
+                return false;
+            };
+            zls_state.stop(.untrusted);
+            zls_state.last_published = .untrusted;
+            app.zls_trusted = false;
+            app.zls_status = .untrusted;
+            app.feedback = "ZLS trust revoked";
+        },
+        .zls_restart => {
+            zls_state.start(repository, canonical_path, app);
+            app.zls_status = .starting;
+            app.feedback = "ZLS starting";
         },
         .save_note => {
             const state_notes = if (app.notes) |*value| value else {

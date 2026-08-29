@@ -10,6 +10,7 @@ const review = @import("../model/review.zig");
 const bookmark_model = @import("../model/bookmark.zig");
 const bookmarks_state = @import("bookmarks.zig");
 const anchor_model = @import("../model/anchor.zig");
+const lsp = @import("../model/lsp.zig");
 
 /// Which structural relation to move the selection toward.
 pub const StructuralMove = enum { parent, child, next_sibling, previous_sibling };
@@ -209,6 +210,10 @@ pub const App = struct {
     /// The active Note Composer, when open.
     composer: ?Composer = null,
     bookmark_composer: ?BookmarkComposer = null,
+    /// Trusted ZLS lifecycle is optional and never impairs document viewing.
+    zls_status: lsp.Status = .unavailable,
+    zls_trusted: bool = false,
+    zls_trust_available: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, tree: *const project.Tree) !App {
         return .{
