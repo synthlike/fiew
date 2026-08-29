@@ -12,6 +12,7 @@ const bookmarks_state = @import("bookmarks.zig");
 const anchor_model = @import("../model/anchor.zig");
 const lsp = @import("../model/lsp.zig");
 const definitions_state = @import("definitions.zig");
+const hover_state = @import("hover.zig");
 
 /// Which structural relation to move the selection toward.
 pub const StructuralMove = enum { parent, child, next_sibling, previous_sibling };
@@ -222,6 +223,7 @@ pub const App = struct {
     semantic_operation: lsp.Operation = .definition,
     definition_results: ?definitions_state.Results = null,
     definition_origin_preview: ?View = null,
+    hover: ?hover_state.Content = null,
 
     pub fn init(allocator: std.mem.Allocator, tree: *const project.Tree) !App {
         return .{
@@ -240,6 +242,7 @@ pub const App = struct {
         if (self.bookmark_composer) |*composer| composer.deinit(self.allocator);
         if (self.definition_results) |*results| results.deinit();
         if (self.definition_origin_preview) |*view| view.deinit();
+        if (self.hover) |*content| content.deinit();
         for (self.history.items) |location| self.allocator.free(location.path);
         self.history.deinit(self.allocator);
         self.browser.deinit();
@@ -253,7 +256,37 @@ pub const App = struct {
         self.feedback = null;
         if (self.definition_results != null or self.definition_origin_preview != null)
             self.dismissDefinitions(true);
+        self.dismissHover();
         return self.definition_generation;
+    }
+
+    pub fn installHover(self: *App, generation: u64, content: hover_state.Content) bool {
+        if (generation != self.definition_generation) {
+            var stale = content;
+            stale.deinit();
+            return false;
+        }
+        self.dismissHover();
+        self.hover = content;
+        self.definition_pending = false;
+        self.feedback = null;
+        return true;
+    }
+
+    pub fn dismissHover(self: *App) void {
+        if (self.hover) |*content| content.deinit();
+        self.hover = null;
+    }
+
+    pub fn dismissHoverIfDocumentChanged(self: *App) bool {
+        const content = if (self.hover) |*value| value else return false;
+        const active = self.activeDocument() orelse {
+            self.dismissHover();
+            return true;
+        };
+        if (active.generation == content.document_generation) return false;
+        self.dismissHover();
+        return true;
     }
 
     pub fn failDefinition(self: *App, generation: u64, message: []const u8) void {
@@ -1432,6 +1465,26 @@ test "pinning and history preserve source locations" {
     try std.testing.expectEqualStrings("second.txt", next.path);
     app.installHistorySnapshot(try testSnapshot("second.txt", "second"), next);
     try std.testing.expectEqualStrings("second.txt", app.activeDocument().?.path);
+}
+
+test "snapshot replacement dismisses visible hover without changing history" {
+    var app = try testApp();
+    defer app.deinit();
+    app.pinned = .{ .snapshot = try testSnapshot("main.zig", "const value = 1;") };
+    const content = try hover_state.Content.init(std.testing.allocator, "value: comptime_int", 1);
+    try std.testing.expect(app.installHover(app.definition_generation, content));
+    const replacement = try document.Snapshot.init(
+        std.testing.allocator,
+        "main.zig",
+        "const value = 2;",
+        2,
+        .{ .size = 16 },
+        .{ .next_fn = scalarNext, .width_fn = scalarWidth },
+    );
+    try std.testing.expect(app.replaceActiveSnapshot(replacement));
+    try std.testing.expect(app.dismissHoverIfDocumentChanged());
+    try std.testing.expect(app.hover == null);
+    try std.testing.expectEqual(@as(usize, 0), app.history.items.len);
 }
 
 test "definition preview cancellation restores an unpinned origin" {

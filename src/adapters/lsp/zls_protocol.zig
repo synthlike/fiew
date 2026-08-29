@@ -105,6 +105,7 @@ pub fn initializeBody(allocator: std.mem.Allocator, id: i64, root_uri: []const u
                 .textDocument = .{
                     .definition = .{ .dynamicRegistration = false, .linkSupport = true },
                     .references = .{ .dynamicRegistration = false },
+                    .hover = .{ .dynamicRegistration = false, .contentFormat = &.{ "markdown", "plaintext" } },
                 },
             },
             // This narrows ZLS behavior but is not represented as a sandbox.
@@ -170,6 +171,23 @@ pub fn referencesBody(
             // The declaration is not synthesized by fiew. It appears only if
             // ZLS includes it in this requested result set.
             .context = .{ .includeDeclaration = true },
+        },
+    }, .{});
+}
+
+pub fn hoverBody(
+    allocator: std.mem.Allocator,
+    id: i64,
+    uri: []const u8,
+    position: lsp.Position,
+) ![]u8 {
+    return std.json.Stringify.valueAlloc(allocator, .{
+        .jsonrpc = "2.0",
+        .id = id,
+        .method = "textDocument/hover",
+        .params = .{
+            .textDocument = .{ .uri = uri },
+            .position = position,
         },
     }, .{});
 }
@@ -252,6 +270,16 @@ test "reference request asks ZLS to decide whether to include the declaration" {
     defer std.testing.allocator.free(body);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"method\":\"textDocument/references\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"includeDeclaration\":true") != null);
+}
+
+test "hover capability and request advertise only readable content" {
+    const initialize = try initializeBody(std.testing.allocator, 1, "file:///repo");
+    defer std.testing.allocator.free(initialize);
+    try std.testing.expect(std.mem.indexOf(u8, initialize, "\"hover\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, initialize, "\"markdown\"") != null);
+    const request = try hoverBody(std.testing.allocator, 2, "file:///repo/main.zig", .{ .line = 3, .character = 4 });
+    defer std.testing.allocator.free(request);
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"method\":\"textDocument/hover\"") != null);
 }
 
 test "initialize response negotiates UTF-8 and defaults to UTF-16" {

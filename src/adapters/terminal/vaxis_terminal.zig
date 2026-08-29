@@ -34,10 +34,11 @@ const DefinitionFailure = enum {
             .not_installed => "ZLS not installed",
             .incompatible => "ZLS incompatible",
             .unavailable => "ZLS crashed",
-            .malformed => if (operation == .references)
-                "ZLS returned a malformed references response"
-            else
-                "ZLS returned a malformed definition response",
+            .malformed => switch (operation) {
+                .definition => "ZLS returned a malformed definition response",
+                .references => "ZLS returned a malformed references response",
+                .hover => "ZLS returned a malformed hover response",
+            },
         };
     }
 };
@@ -49,12 +50,14 @@ const DefinitionCompletion = struct {
     operation: fiew.lsp.Operation,
     result: union(enum) {
         success: fiew.zls_process.DefinitionResponse,
+        hover_success: ?fiew.hover.Content,
         failure: DefinitionFailure,
     },
 
     fn deinit(self: *DefinitionCompletion) void {
         switch (self.result) {
             .success => |*response| response.deinit(),
+            .hover_success => |*maybe_content| if (maybe_content.*) |*content| content.deinit(),
             .failure => {},
         }
         self.* = undefined;
@@ -224,11 +227,11 @@ const DefinitionState = struct {
         };
         const selection = app.activeView().?.selection();
         const utf8_position = fiew.lsp.positionAt(snapshot.*, selection.start, .utf8) catch {
-            app.failDefinition(generation, if (app.semantic_operation == .references) "references require a valid UTF-8 position" else "definition requires a valid UTF-8 position");
+            app.failDefinition(generation, semanticPositionFailure(app.semantic_operation, "UTF-8"));
             return;
         };
         const utf16_position = fiew.lsp.positionAt(snapshot.*, selection.start, .utf16) catch {
-            app.failDefinition(generation, if (app.semantic_operation == .references) "references require a valid UTF-16 position" else "definition requires a valid UTF-16 position");
+            app.failDefinition(generation, semanticPositionFailure(app.semantic_operation, "UTF-16"));
             return;
         };
         const absolute = if (std.fs.path.isAbsolute(snapshot.path))
@@ -321,7 +324,11 @@ const DefinitionState = struct {
         if (self.future == null) return;
         const elapsed = std.Io.Timestamp.now(self.io, .real).nanoseconds - self.started_nanoseconds;
         if (elapsed >= std.time.ns_per_ms * 100 and app.definition_pending and !self.pending_shown) {
-            app.feedback = if (app.semantic_operation == .references) "ZLS references pending" else "ZLS definition pending";
+            app.feedback = switch (app.semantic_operation) {
+                .definition => "ZLS definition pending",
+                .references => "ZLS references pending",
+                .hover => "ZLS hover pending",
+            };
             self.pending_shown = true;
         }
         const timeout: i96 = if (app.semantic_operation == .references) std.time.ns_per_s * 5 else std.time.ns_per_s * 2;
@@ -329,7 +336,11 @@ const DefinitionState = struct {
             const generation = app.definition_generation;
             const operation = app.semantic_operation;
             self.cancel();
-            app.failDefinition(generation, if (operation == .references) "ZLS references timed out" else "ZLS definition timed out");
+            app.failDefinition(generation, switch (operation) {
+                .definition => "ZLS definition timed out",
+                .references => "ZLS references timed out",
+                .hover => "ZLS hover timed out",
+            });
         }
     }
 
@@ -377,7 +388,17 @@ fn definitionWorker(
             request.utf8_position,
             request.utf16_position,
         ),
-        .hover => unreachable,
+        .hover => fiew.zls_process.requestHover(
+            allocator,
+            io,
+            repository_dir,
+            request.root_uri,
+            request.document_uri,
+            request.document_generation,
+            request.text,
+            request.utf8_position,
+            request.utf16_position,
+        ),
     };
     const box = allocator.create(DefinitionCompletion) catch {
         if (result) |response| {
@@ -391,36 +412,87 @@ fn definitionWorker(
         .document_generation = request.document_generation,
         .selection = request.selection,
         .operation = request.operation,
-        .result = if (result) |response|
-            .{ .success = response }
-        else |err|
-            .{ .failure = definitionFailure(err) },
+        .result = undefined,
     };
+    if (result) |response_value| {
+        var response = response_value;
+        if (request.operation == .hover) {
+            box.result = if (buildHoverContent(
+                allocator,
+                response.hover_text,
+                request.document_generation,
+            )) |content|
+                .{ .hover_success = content }
+            else |_|
+                .{ .failure = .unavailable };
+            response.deinit();
+        } else {
+            box.result = .{ .success = response };
+        }
+    } else |err| {
+        box.result = .{ .failure = definitionFailure(err) };
+    }
     loop.postEvent(.{ .definition_done = box }) catch {
         box.deinit();
         allocator.destroy(box);
     };
 }
 
+fn buildHoverContent(
+    allocator: std.mem.Allocator,
+    wire_text: ?[]const u8,
+    document_generation: u64,
+) !?fiew.hover.Content {
+    const text = wire_text orelse return null;
+    var content = try fiew.hover.Content.init(allocator, text, document_generation);
+    errdefer content.deinit();
+    if (content.text.len == 0) {
+        content.deinit();
+        return null;
+    }
+
+    // Hover parsing stays on the semantic worker. Rendering only reads the
+    // immutable fiew-owned spans, matching normal document highlighting.
+    var engine = fiew.markdown_syntax.Engine.init(allocator) catch return content;
+    defer engine.deinit();
+    if (engine.analyze(allocator, content.text, null)) |data| content.setSyntax(data);
+    return content;
+}
+
 fn semanticDiscardedDocument(operation: fiew.lsp.Operation) []const u8 {
-    return if (operation == .references)
-        "references discarded because the document changed"
-    else
-        "definition discarded because the document changed";
+    return switch (operation) {
+        .definition => "definition discarded because the document changed",
+        .references => "references discarded because the document changed",
+        .hover => "hover discarded because the document changed",
+    };
 }
 
 fn semanticDiscardedSelection(operation: fiew.lsp.Operation) []const u8 {
-    return if (operation == .references)
-        "references discarded because the selection changed"
-    else
-        "definition discarded because the selection changed";
+    return switch (operation) {
+        .definition => "definition discarded because the selection changed",
+        .references => "references discarded because the selection changed",
+        .hover => "hover discarded because the selection changed",
+    };
+}
+
+fn semanticPositionFailure(operation: fiew.lsp.Operation, encoding: []const u8) []const u8 {
+    if (std.mem.eql(u8, encoding, "UTF-8")) return switch (operation) {
+        .definition => "definition requires a valid UTF-8 position",
+        .references => "references require a valid UTF-8 position",
+        .hover => "hover requires a valid UTF-8 position",
+    };
+    return switch (operation) {
+        .definition => "definition requires a valid UTF-16 position",
+        .references => "references require a valid UTF-16 position",
+        .hover => "hover requires a valid UTF-16 position",
+    };
 }
 
 fn definitionFailure(err: anyerror) DefinitionFailure {
     return switch (err) {
         error.NotInstalled, error.FileNotFound => .not_installed,
         error.Incompatible => .incompatible,
-        error.MalformedResponse, error.InvalidCharacter, error.UnexpectedEndOfInput => .malformed,
+        error.MalformedResponse, error.InvalidCharacter, error.SyntaxError, error.UnexpectedEndOfInput => .malformed,
         else => .unavailable,
     };
 }
@@ -920,14 +992,21 @@ pub fn run(init: std.process.Init, options: Options) !u8 {
                     }
                 }
             },
-            .mouse => |mouse| try handleMouse(
-                &app,
-                repository,
-                segmenter,
-                &generation,
-                mouse,
-                vx.window(),
-            ),
+            .mouse => |mouse| {
+                if (app.hover != null) {
+                    app.dismissHover();
+                    command_session.surface = .none;
+                    app.mode = .normal;
+                }
+                try handleMouse(
+                    &app,
+                    repository,
+                    segmenter,
+                    &generation,
+                    mouse,
+                    vx.window(),
+                );
+            },
             .winsize => |winsize| {
                 try vx.resize(allocator, tty.writer(), winsize);
                 const dimensions = fiew.workspace.layout(winsize.cols, winsize.rows, app.sidebar_visible);
@@ -977,6 +1056,15 @@ pub fn run(init: std.process.Init, options: Options) !u8 {
                         zls_state.last_published = status;
                         app.zls_status = status;
                         app.failDefinition(box.generation, failure.message(box.operation));
+                    },
+                    .hover_success => |*maybe_content| {
+                        const content = maybe_content.* orelse {
+                            app.failDefinition(box.generation, "hover information unavailable");
+                            continue;
+                        };
+                        maybe_content.* = null;
+                        if (app.installHover(box.generation, content))
+                            _ = command_session.openHover(&app);
                     },
                     .success => |*response| {
                         var results = validateDefinitionTargets(
@@ -1031,6 +1119,10 @@ pub fn run(init: std.process.Init, options: Options) !u8 {
         }
 
         definition_state.sync(&app);
+        if (app.dismissHoverIfDocumentChanged() and command_session.surface == .hover) {
+            command_session.surface = .none;
+            app.mode = .normal;
+        }
         parse_state.drive(&app);
         zls_state.syncDocument(repository, repository_identity.canonical_path, &app);
         _ = frame_arena.reset(.retain_capacity);
@@ -1435,6 +1527,7 @@ fn applyEffect(
             };
             definition_state.cancel();
             if (app.definition_pending or app.definition_results != null) app.cancelDefinition();
+            app.dismissHover();
             zls_state.stop(.untrusted);
             zls_state.last_published = .untrusted;
             app.zls_trusted = false;
@@ -1452,6 +1545,7 @@ fn applyEffect(
             definition_state.submit(repository, canonical_path, app, definition_generation);
         },
         .cancel_definition => definition_state.cancel(),
+        .show_hover => {},
         .preview_definition => {
             const target = app.definition_results.?.selectedTarget() orelse return false;
             openDefinitionTarget(app, repository, segmenter, generation, target.*, false) catch |err| {
@@ -2761,6 +2855,31 @@ fn drawCommandSurface(
                 .wrap = .none,
             });
         },
+        .hover => {
+            const width: u16 = @min(window.width -| 4, 80);
+            const height: u16 = @min(window.height -| 2, 20);
+            const box = window.child(.{
+                .x_off = (window.width - width) / 2,
+                .y_off = (window.height - height) / 2,
+                .width = width,
+                .height = height,
+                .border = .{ .where = .all, .style = .{ .bold = true } },
+            });
+            box.clear();
+            _ = box.printSegment(.{ .text = " Zig hover ", .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
+            if (app.hover) |content| {
+                const available: usize = box.height -| 3;
+                for (0..available) |row| {
+                    const line = content.line(content.scroll + row) orelse break;
+                    try drawHoverLine(allocator, box, content, line, @intCast(row + 2));
+                }
+            }
+            _ = box.printSegment(.{ .text = "j/k or Up/Down scroll - Esc/q dismiss", .style = .{ .dim = true } }, .{
+                .row_offset = box.height -| 1,
+                .col_offset = 1,
+                .wrap = .none,
+            });
+        },
         .confirm_delete => {
             const menu = window.child(.{ .y_off = window.height -| 2, .height = 2 });
             menu.clear();
@@ -2888,6 +3007,36 @@ fn drawStatus(
     else
         try std.fmt.allocPrint(allocator, " {s}  {s}  {s}  {s}", .{ mode, input_path, location, feedback });
     _ = window.printSegment(.{ .text = text, .style = .{ .reverse = true } }, .{ .wrap = .none });
+}
+
+fn drawHoverLine(
+    allocator: std.mem.Allocator,
+    window: vaxis.Window,
+    content: fiew.hover.Content,
+    line: fiew.hover.Content.Line,
+    row: u16,
+) !void {
+    const safe = try sanitizeLine(allocator, line.text, window.width -| 2);
+    const data = content.syntax_data orelse {
+        _ = window.printSegment(.{ .text = safe }, .{ .row_offset = row, .col_offset = 1, .wrap = .none });
+        return;
+    };
+
+    var iterator = vaxis.unicode.graphemeIterator(safe);
+    var column: u16 = 1;
+    while (iterator.next()) |grapheme| {
+        const bytes = grapheme.bytes(safe);
+        var style: vaxis.Cell.Style = .{};
+        if (highlightKindAt(data.highlights, line.source_start + grapheme.start)) |kind|
+            style.fg = highlightColor(kind);
+        _ = window.printSegment(.{ .text = bytes, .style = style }, .{
+            .row_offset = row,
+            .col_offset = column,
+            .wrap = .none,
+        });
+        column +|= window.gwidth(bytes);
+        if (column >= window.width -| 1) break;
+    }
 }
 
 fn highlightKindAt(spans: []const fiew.syntax.HighlightSpan, position: usize) ?fiew.syntax.HighlightKind {
@@ -3145,6 +3294,19 @@ test "terminal presentation stays usable without optional capabilities" {
     try std.testing.expect(fiew.commands.definition(.quit).binding.len != 0);
     try std.testing.expect(fiew.commands.definition(.focus_next).binding.len != 0);
     try std.testing.expect(fiew.commands.definition(.activate).binding.len != 0);
+}
+
+test "hover Markdown carries injected Zig highlights from the worker" {
+    const source = "Hover docs\n\n```zig\nconst answer = 42;\n```\n";
+    const maybe_content = try buildHoverContent(std.testing.allocator, source, 9);
+    var content = maybe_content.?;
+    defer content.deinit();
+    const data = content.syntax_data orelse return error.ParseFailed;
+    const number = std.mem.indexOf(u8, content.text, "42").?;
+    try std.testing.expectEqual(fiew.syntax.HighlightKind.number, highlightKindAt(data.highlights, number).?);
+    const code_line = content.line(3).?;
+    try std.testing.expectEqualStrings("const answer = 42;", code_line.text);
+    try std.testing.expectEqual(std.mem.indexOf(u8, content.text, "const").?, code_line.source_start);
 }
 
 test "Markdown and injected Zig highlights reach the cell-style seam" {

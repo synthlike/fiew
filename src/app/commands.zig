@@ -1,6 +1,7 @@
 const std = @import("std");
 const state = @import("state.zig");
 const file_finder = @import("file_finder.zig");
+const lsp = @import("../model/lsp.zig");
 const HandleError = std.mem.Allocator.Error || error{ PermissionDenied, InvalidComment };
 
 pub const Id = enum {
@@ -47,6 +48,7 @@ pub const Id = enum {
     bookmark_previous,
     definition,
     references,
+    hover,
     zls_status,
     zls_trust,
     zls_revoke,
@@ -153,6 +155,7 @@ pub const definitions = [_]Definition{
     .{ .id = .bookmark_previous, .stable_id = "bookmark-previous", .title = "Previous bookmark", .binding = "[ b", .hint = "bookmark" },
     .{ .id = .definition, .stable_id = "definition", .title = "Go to definition", .binding = "g d", .hint = "definition" },
     .{ .id = .references, .stable_id = "references", .title = "Find references", .binding = "g r", .hint = "references" },
+    .{ .id = .hover, .stable_id = "hover", .title = "Show hover information", .binding = "K" },
     .{ .id = .zls_status, .stable_id = "zls-status", .title = "Show ZLS status", .binding = "" },
     .{ .id = .zls_trust, .stable_id = "zls-trust-repository", .title = "Trust repository for ZLS (may execute Zig build logic)", .binding = "" },
     .{ .id = .zls_revoke, .stable_id = "zls-revoke-trust", .title = "Revoke ZLS trust for this repository", .binding = "" },
@@ -321,10 +324,10 @@ pub fn unavailableReason(app: *const state.App, id: Id) ?[]const u8 {
         else
             null,
         .zls_restart => if (!app.zls_trusted) "ZLS untrusted" else null,
-        .definition, .references => if (app.focus != .main or app.activeDocument() == null)
+        .definition, .references, .hover => if (app.focus != .main or app.activeDocument() == null)
             "focus an open Zig document"
         else if (!std.mem.endsWith(u8, app.activeDocument().?.path, ".zig") or app.activeDocument().?.encoding != .utf8)
-            if (id == .definition) "definition requires a valid UTF-8 Zig document" else "references require a valid UTF-8 Zig document"
+            if (id == .definition) "definition requires a valid UTF-8 Zig document" else if (id == .references) "references require a valid UTF-8 Zig document" else "hover requires a valid UTF-8 Zig document"
         else if (!app.zls_trusted)
             "ZLS untrusted"
         else switch (app.zls_status) {
@@ -398,6 +401,7 @@ pub const Effect = union(enum) {
     request_definition: u64,
     cancel_definition,
     preview_definition,
+    show_hover,
     activate_definition,
     quit,
 };
@@ -415,6 +419,7 @@ pub const Surface = enum {
     bookmark_composer,
     finder,
     definitions,
+    hover,
     confirm_delete,
     confirm_bookmark_delete,
 };
@@ -494,6 +499,7 @@ pub const Session = struct {
                 .bookmark_composer => "bookmark label",
                 .finder => "find file",
                 .definitions => "definitions",
+                .hover => "hover",
                 .confirm_delete => "confirm delete",
                 .confirm_bookmark_delete => "confirm bookmark delete",
                 .none => "",
@@ -523,6 +529,7 @@ pub const Session = struct {
         if (self.surface == .confirm_bookmark_delete) return self.handleBookmarkDeleteConfirmation(app, key);
         if (self.surface == .finder) return self.handleFinder(app, key, dimensions);
         if (self.surface == .definitions) return self.handleDefinitions(app, key, dimensions);
+        if (self.surface == .hover) return self.handleHover(app, key, dimensions);
         if (key.code == .escape) return self.execute(app, .cancel, dimensions);
         if (self.surface == .review) return self.handleReview(app, key, dimensions);
         if (self.surface == .vcs) return self.handleVcs(app, key, dimensions);
@@ -570,6 +577,7 @@ pub const Session = struct {
             if (isCharacter(key, 'p')) return self.execute(app, .structural_previous, dimensions);
         }
         if (key.code != .character) return .none;
+        if (isHoverKey(key)) return self.execute(app, .hover, dimensions);
 
         return switch (normalizedCharacter(key)) {
             'h' => self.execute(app, if (app.focus == .sidebar) .project_collapse else .move_left, dimensions),
@@ -720,8 +728,14 @@ pub const Session = struct {
             .cancel => {
                 app.feedback = null;
                 if (app.definition_pending) {
+                    const operation = app.semantic_operation;
                     app.cancelDefinition();
                     self.resetTransient(app);
+                    app.feedback = switch (operation) {
+                        .definition => "definition request cancelled",
+                        .references => "references request cancelled",
+                        .hover => "hover request cancelled",
+                    };
                     return .cancel_definition;
                 }
                 if (self.surface != .none or self.pending != .none or app.mode == .command) {
@@ -792,6 +806,7 @@ pub const Session = struct {
             .zls_restart => return .zls_restart,
             .definition => return .{ .request_definition = app.beginDefinition(.definition) },
             .references => return .{ .request_definition = app.beginDefinition(.references) },
+            .hover => return .{ .request_definition = app.beginDefinition(.hover) },
             .note_create => {
                 if (app.beginNoteFromDiff() catch false) {
                     self.surface = .note_composer;
@@ -1113,6 +1128,40 @@ pub const Session = struct {
         return .preview_definition;
     }
 
+    fn handleHover(self: *Session, app: *state.App, key: Key, dimensions: Dimensions) !Effect {
+        if (key.code == .escape or isCharacter(key, 'q')) {
+            app.dismissHover();
+            self.resetTransient(app);
+            return .none;
+        }
+        const content = if (app.hover) |*value| value else {
+            self.resetTransient(app);
+            return .none;
+        };
+        // The popup is capped at 20 rows; border, header, spacer, and footer
+        // consume five of them.
+        const viewport_rows = @min(dimensions.document_rows, 20) -| 5;
+        if (key.code == .up or isCharacter(key, 'k') and !isHoverKey(key)) {
+            content.move(-1, viewport_rows);
+            return .none;
+        }
+        if (key.code == .down or isCharacter(key, 'j')) {
+            content.move(1, viewport_rows);
+            return .none;
+        }
+        // Any document/navigation command first dismisses the transient hover,
+        // then receives the same key normally. A second K supersedes it.
+        app.dismissHover();
+        self.resetTransient(app);
+        return self.handle(app, key, dimensions);
+    }
+
+    pub fn openHover(self: *Session, app: *state.App) Effect {
+        self.surface = .hover;
+        app.mode = .normal;
+        return .show_hover;
+    }
+
     pub fn selectedFinderNode(self: *const Session, app: *const state.App) ?*const @import("../model/project.zig").Node {
         return self.finder.selectedNode(app.browser.tree);
     }
@@ -1293,6 +1342,10 @@ fn normalizedCharacter(key: Key) u21 {
 
 fn isCharacter(key: Key, character: u21) bool {
     return key.code == .character and normalizedCharacter(key) == character;
+}
+
+fn isHoverKey(key: Key) bool {
+    return key.code == .character and (key.character == 'K' or (key.shift and normalizedCharacter(key) == 'k'));
 }
 
 test "registry stable identifiers are unique" {
@@ -1757,6 +1810,61 @@ test "definition command reports exact unavailable ZLS states" {
         _ = try session.execute(&app, .definition, dimensions);
         try std.testing.expectEqualStrings(case.message, app.feedback.?);
     }
+}
+
+test "hover request overlay scroll dismissal and supersession are non-destructive" {
+    var app = try testApp();
+    defer app.deinit();
+    app.pinned.?.deinit();
+    app.pinned = .{ .snapshot = try testSnapshot("main.zig", "const value = other;\n") };
+    app.zls_trusted = true;
+    app.zls_status = .ready;
+    var session = Session.init(std.testing.allocator);
+    defer session.deinit();
+    const dimensions: Dimensions = .{ .sidebar_rows = 20, .document_rows = 6, .document_columns = 80 };
+    const selection = app.activeView().?.selection();
+    const history_count = app.history.items.len;
+
+    const request = try session.handle(&app, .{ .code = .character, .character = 'K', .shift = true }, dimensions);
+    try std.testing.expectEqual(lsp.Operation.hover, app.semantic_operation);
+    var content = try @import("hover.zig").Content.init(std.testing.allocator, "one\ntwo\nthree\nfour", app.activeDocument().?.generation);
+    try std.testing.expect(app.installHover(request.request_definition, content));
+    _ = session.openHover(&app);
+    _ = try session.handle(&app, charKey('j'), dimensions);
+    try std.testing.expectEqual(@as(usize, 1), app.hover.?.scroll);
+    try std.testing.expectEqual(selection, app.activeView().?.selection());
+    try std.testing.expectEqual(history_count, app.history.items.len);
+
+    // A second K closes the old content and starts a newer generation.
+    const replacement = try session.handle(&app, .{ .code = .character, .character = 'K', .shift = true }, dimensions);
+    try std.testing.expect(app.hover == null);
+    content = try @import("hover.zig").Content.init(std.testing.allocator, "replacement", app.activeDocument().?.generation);
+    try std.testing.expect(app.installHover(replacement.request_definition, content));
+    _ = session.openHover(&app);
+    _ = try session.handle(&app, charKey('q'), dimensions);
+    try std.testing.expect(app.hover == null);
+    try std.testing.expectEqual(Surface.none, session.surface);
+}
+
+test "hover cancellation is explicit and stale content is discarded" {
+    var app = try testApp();
+    defer app.deinit();
+    app.pinned.?.deinit();
+    app.pinned = .{ .snapshot = try testSnapshot("main.zig", "const value = other;\n") };
+    app.zls_trusted = true;
+    app.zls_status = .ready;
+    var session = Session.init(std.testing.allocator);
+    defer session.deinit();
+    const dimensions: Dimensions = .{ .sidebar_rows = 20, .document_rows = 20, .document_columns = 80 };
+
+    const first = try session.execute(&app, .hover, dimensions);
+    const second = try session.execute(&app, .hover, dimensions);
+    const stale = try @import("hover.zig").Content.init(std.testing.allocator, "stale", app.activeDocument().?.generation);
+    try std.testing.expect(!app.installHover(first.request_definition, stale));
+    try std.testing.expect(app.hover == null);
+    _ = second;
+    _ = try session.handle(&app, .{ .code = .escape }, dimensions);
+    try std.testing.expectEqualStrings("hover request cancelled", app.feedback.?);
 }
 
 test "definition request and result list transitions are non-destructive" {

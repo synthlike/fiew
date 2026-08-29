@@ -172,6 +172,7 @@ blocks task completion while waiting for a review.
 | `Ctrl-o` / `Ctrl-i` | Back / forward through locations |
 | `g d` | Go to the selected Zig definition through ZLS |
 | `g r` | Find references to the selected Zig symbol through ZLS |
+| `K` | Show hover information for the selected Zig symbol through ZLS |
 | `Space ?` | Generated key help |
 | `:quit` or `Space q` | Quit |
 
@@ -196,7 +197,9 @@ for each repository before launching it.
 2. Press `:` and enter `zls-trust-repository`.
 3. Select **Trust repository for ZLS** and press `Enter`.
 4. Open a UTF-8 Zig file.
-5. Press `g d` to go to the selected definition, or `g r` to list references.
+5. Press `g d` to go to the selected definition, `g r` to list references,
+   or `K` to show hover information. Use `j`/`k` to scroll hover content and
+   `Esc` or `q` to dismiss it.
 
 Definition and reference targets are opened read-only. Valid targets outside
 the repository, such as Zig standard-library files, are labeled **External**.

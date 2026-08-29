@@ -25,17 +25,20 @@ pub const SemanticResponse = struct {
     allocator: std.mem.Allocator,
     encoding: lsp.PositionEncoding,
     locations: []WireLocation,
+    hover_text: ?[]u8 = null,
 
     pub fn deinit(self: *SemanticResponse) void {
         for (self.locations) |*location| location.deinit(self.allocator);
         self.allocator.free(self.locations);
+        if (self.hover_text) |text| self.allocator.free(text);
         self.* = undefined;
     }
 };
 
 pub const DefinitionResponse = SemanticResponse;
 pub const ReferenceResponse = SemanticResponse;
-const SemanticOperation = enum { definition, references };
+pub const HoverResponse = SemanticResponse;
+const SemanticOperation = enum { definition, references, hover };
 
 pub fn fileUri(allocator: std.mem.Allocator, absolute_path: []const u8) ![]u8 {
     if (!std.fs.path.isAbsolute(absolute_path)) return error.NotAbsolute;
@@ -240,6 +243,20 @@ pub fn requestReferences(
     return requestLocations(allocator, io, repository, root_uri, document_uri, document_version, document_text, utf8_position, utf16_position, .references);
 }
 
+pub fn requestHover(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    repository: std.Io.Dir,
+    root_uri: []const u8,
+    document_uri: []const u8,
+    document_version: u64,
+    document_text: []const u8,
+    utf8_position: lsp.Position,
+    utf16_position: lsp.Position,
+) !HoverResponse {
+    return requestLocations(allocator, io, repository, root_uri, document_uri, document_version, document_text, utf8_position, utf16_position, .hover);
+}
+
 fn requestLocations(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -301,6 +318,7 @@ fn requestLocations(
     const request = switch (operation) {
         .definition => try zls_protocol.definitionBody(allocator, request_id, document_uri, position),
         .references => try zls_protocol.referencesBody(allocator, request_id, document_uri, position),
+        .hover => try zls_protocol.hoverBody(allocator, request_id, document_uri, position),
     };
     defer allocator.free(request);
     try writeFrame(&writer.interface, request);
@@ -314,6 +332,19 @@ fn requestLocations(
         };
         defer allocator.free(body);
         if (handleServerRequest(allocator, &writer.interface, body)) continue;
+        if (operation == .hover) {
+            const hover_text = parseHoverResponse(allocator, body, request_id) catch |err| switch (err) {
+                error.NotResponse => continue,
+                else => return err,
+            };
+            errdefer if (hover_text) |text| allocator.free(text);
+            return .{
+                .allocator = allocator,
+                .encoding = encoding,
+                .locations = try allocator.alloc(WireLocation, 0),
+                .hover_text = hover_text,
+            };
+        }
         const locations = parseDefinitionResponse(allocator, body, request_id) catch |err| switch (err) {
             error.NotResponse => continue,
             else => return err,
@@ -466,6 +497,55 @@ pub fn parseDefinitionResponse(allocator: std.mem.Allocator, body: []const u8, e
     return locations.toOwnedSlice(allocator);
 }
 
+pub fn parseHoverResponse(allocator: std.mem.Allocator, body: []const u8, expected_id: i64) !?[]u8 {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    const object = switch (parsed.value) {
+        .object => |value| value,
+        else => return error.MalformedResponse,
+    };
+    const id_value = object.get("id") orelse return error.NotResponse;
+    const id = switch (id_value) {
+        .integer => |value| value,
+        else => return error.MalformedResponse,
+    };
+    if (id != expected_id) return error.NotResponse;
+    if (object.get("error") != null) return error.ServerError;
+    const result = object.get("result") orelse return error.MalformedResponse;
+    if (result == .null) return null;
+    const result_object = switch (result) {
+        .object => |value| value,
+        else => return error.MalformedResponse,
+    };
+    const contents = result_object.get("contents") orelse return error.MalformedResponse;
+    var output: std.ArrayList(u8) = .empty;
+    errdefer output.deinit(allocator);
+    try appendHoverContents(allocator, &output, contents);
+    if (output.items.len == 0) {
+        output.deinit(allocator);
+        return null;
+    }
+    return try output.toOwnedSlice(allocator);
+}
+
+fn appendHoverContents(allocator: std.mem.Allocator, output: *std.ArrayList(u8), contents: std.json.Value) !void {
+    switch (contents) {
+        .string => |value| try output.appendSlice(allocator, value),
+        .object => |object| {
+            const value = switch (object.get("value") orelse return error.MalformedResponse) {
+                .string => |text| text,
+                else => return error.MalformedResponse,
+            };
+            try output.appendSlice(allocator, value);
+        },
+        .array => |values| for (values.items, 0..) |value, index| {
+            if (index != 0) try output.appendSlice(allocator, "\n\n");
+            try appendHoverContents(allocator, output, value);
+        },
+        else => return error.MalformedResponse,
+    }
+}
+
 fn appendWireLocation(
     allocator: std.mem.Allocator,
     locations: *std.ArrayList(WireLocation),
@@ -524,6 +604,22 @@ test "definition responses accept Location and LocationLink variants" {
     try std.testing.expectEqual(@as(usize, 2), locations.len);
     try std.testing.expectEqualStrings("file:///repo/b.zig", locations[1].uri);
     try std.testing.expectEqual(lsp.Position{ .line = 4, .character = 5 }, locations[1].start);
+}
+
+test "hover responses accept markup marked strings arrays and null" {
+    const markdown = try parseHoverResponse(std.testing.allocator, "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"contents\":{\"kind\":\"markdown\",\"value\":\"**const** value\"}}}", 2);
+    defer std.testing.allocator.free(markdown.?);
+    try std.testing.expectEqualStrings("**const** value", markdown.?);
+
+    const marked = try parseHoverResponse(std.testing.allocator, "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"contents\":[\"type\",{\"language\":\"zig\",\"value\":\"const x: u8\"}]}}", 2);
+    defer std.testing.allocator.free(marked.?);
+    try std.testing.expectEqualStrings("type\n\nconst x: u8", marked.?);
+    try std.testing.expect((try parseHoverResponse(std.testing.allocator, "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":null}", 2)) == null);
+}
+
+test "hover responses reject malformed and mismatched output" {
+    try std.testing.expectError(error.NotResponse, parseHoverResponse(std.testing.allocator, "{\"id\":3,\"result\":null}", 2));
+    try std.testing.expectError(error.MalformedResponse, parseHoverResponse(std.testing.allocator, "{\"id\":2,\"result\":{\"contents\":9}}", 2));
 }
 
 test "definition responses reject malformed and mismatched output" {
