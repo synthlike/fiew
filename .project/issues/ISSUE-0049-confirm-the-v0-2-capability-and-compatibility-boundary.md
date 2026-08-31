@@ -20,6 +20,11 @@ Which deferred capabilities, operating systems, architectures, and terminals def
 v0.2 adds Markdown structure, terminal-text Mermaid preview, fuzzy file finding, and Zig/ZLS definition, references, and hover documentation while remaining source-read-only. It requires Apple Silicon macOS and x86_64 Linux releases, supports ARM64 Linux builds from source without making them a release gate, and smoke-tests Ghostty, Kitty, and WezTerm. Other xterm-compatible terminals are best-effort.
 
 ## Comments
+
+### 2026-08-31T11:56:41Z — agent
+
+Current scope update: [Keep Mermaid rendering outside fiew](<docs/decisions/ARP-0012.md>) supersedes this record's Mermaid-specific planning statements. Mermaid rendering is removed from fiew rather than deferred; the record's other accepted outcomes remain unchanged.
+
 ## Resolution
 
 Accepted by the decision owner during the roadmap clarification session on 2026-08-27. The answer in this ticket is the confirmed release boundary and is indexed by its initiative map.

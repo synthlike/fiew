@@ -30,6 +30,11 @@ Use libvaxis runtime capability detection. Prefer the Kitty keyboard protocol an
 Ghostty, Kitty, and WezTerm must pass the same behavioral smoke suite across the required operating-system targets.
 
 ## Comments
+
+### 2026-08-31T11:56:41Z — agent
+
+Current scope update: [Keep Mermaid rendering outside fiew](<docs/decisions/ARP-0012.md>) supersedes this record's Mermaid-specific planning statements. Mermaid rendering is removed from fiew rather than deferred; the record's other accepted outcomes remain unchanged.
+
 ## Resolution
 
 Decision owner approved the complete portable operating-system and terminal behavior contract on 2026-08-28.

@@ -2,7 +2,7 @@
 id: ISSUE-0062
 title: "Preview Mermaid fences as terminal text"
 kind: "implementation"
-status: open
+status: cancelled
 created: 2026-08-28
 assignee:
 parent: "ISSUE-0057-implement-fiew-v0-2.md"
@@ -39,5 +39,6 @@ Managed by native issue relationships.
 Full Mermaid compatibility, standalone Mermaid files, graphical output, browser runtimes, images, and interactivity.
 
 ## Comments
-
 ## Resolution
+
+Cancelled because Mermaid rendering no longer fits fiew's source-first design and product premise. [Keep Mermaid rendering outside fiew](<docs/decisions/ARP-0012.md>) removes Mermaid-specific preview behavior and dependencies from current scope; Mermaid fences remain ordinary Markdown source. This work is removed rather than deferred.

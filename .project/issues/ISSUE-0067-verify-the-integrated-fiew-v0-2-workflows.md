@@ -10,7 +10,6 @@ blocked_by:
   - "ISSUE-0058-fuzzy-find-and-open-repository-files.md"
   - "ISSUE-0060-normalize-terminal-and-subprocess-behavior.md"
   - "ISSUE-0061-add-markdown-syntax-and-fenced-code-structure.md"
-  - "ISSUE-0062-preview-mermaid-fences-as-terminal-text.md"
   - "ISSUE-0064-navigate-to-zig-definitions-through-trusted-zls.md"
   - "ISSUE-0065-find-zig-references-through-trusted-zls.md"
   - "ISSUE-0066-show-zig-hover-information-through-trusted-zls.md"
@@ -30,9 +29,9 @@ Deliver an integrated conformance pass demonstrating that every approved v0.2 ca
 ## Acceptance criteria
 
 - [ ] The complete deterministic offline suite covers all accepted matcher, parser, subprocess, protocol, reducer, persistence, and render seams.
-- [ ] Opt-in Git, ZLS, and Mermaid integrations pass when their executables are installed.
+- [ ] Opt-in Git and ZLS integrations pass when their executables are installed.
 - [ ] Unavailable optional tools are verified separately from successful integration behavior.
-- [ ] Ghostty, Kitty, and WezTerm smoke evidence covers required macOS and Linux startup, restoration, input, resize, fallback, Markdown, Mermaid, finder, and Zig navigation behavior.
+- [ ] Ghostty, Kitty, and WezTerm smoke evidence covers required macOS and Linux startup, restoration, input, resize, fallback, Markdown, finder, and Zig navigation behavior.
 - [ ] No v0.1 review, bookmark, persistence, or agent-authority contract regresses.
 
 ## Blocked by

@@ -1,5 +1,5 @@
 <!-- agent-workflows-record
-{"archived":false,"created":"2026-08-25T20:21:26Z","id":"fiew-v0-1-engineering-baseline","modified":"2026-08-28T14:55:58Z","record_type":"technical_baselines","title":"fiew v0.1 engineering baseline"}
+{"archived":false,"created":"2026-08-25T20:21:26Z","id":"fiew-v0-1-engineering-baseline","modified":"2026-08-31T11:56:00Z","record_type":"technical_baselines","title":"fiew v0.1 engineering baseline"}
 -->
 # fiew v0.1 engineering baseline
 
@@ -31,7 +31,7 @@ This baseline indexes the minimal production-compatible foundation for the appro
 - Development and release verification require Apple Silicon macOS and Ghostty.
 - Git is required only for VCS and review workflows. Non-Git directories remain browsable with those capabilities disabled.
 - Tree-sitter core and the selected Zig grammar use the accepted compatible ABI inputs.
-- Markdown parsing, Mermaid rendering, fuzzy file finding, ZLS, Linux, and additional terminals are not v0.1 prerequisites. They are planned under [Plan fiew v0.2](<.project/issues/ISSUE-0030-plan-fiew-v0-2.md>).
+- Markdown parsing, fuzzy file finding, ZLS, Linux, and additional terminals are not v0.1 prerequisites. They are planned under [Plan fiew v0.2](<.project/issues/ISSUE-0030-plan-fiew-v0-2.md>).
 - `.reviews/` and `.bookmarks/` are the only repository-local write boundaries. fiew does not edit `.gitignore`; the user or invoking workflow must ensure both directories are ignored.
 - Canonical reviews use `fiew.review/v1`; canonical bookmarks use `fiew.bookmark/v1`. Legacy Markdown reviews, unreleased bookmark data, and unknown future schemas are refused rather than migrated or overwritten.
 
@@ -91,7 +91,7 @@ None.
 ## Deferred product questions
 
 - Behavior above the 10,000-tracked-file guarantee remains outside v0.1.
-- Markdown, Mermaid, fuzzy finding, expanded Zig navigation, Linux distribution compatibility, and additional terminal behavior are owned by [Plan fiew v0.2](<.project/issues/ISSUE-0030-plan-fiew-v0-2.md>).
+- Markdown, fuzzy finding, expanded Zig navigation, Linux distribution compatibility, and additional terminal behavior are owned by [Plan fiew v0.2](<.project/issues/ISSUE-0030-plan-fiew-v0-2.md>).
 - Go and TypeScript/React language behavior is owned by [Plan fiew v0.3](<.project/issues/ISSUE-0031-plan-fiew-v0-3.md>).
 - GitHub pull-request review is owned by [Plan fiew v0.4](<.project/issues/ISSUE-0032-plan-fiew-v0-4.md>).
 

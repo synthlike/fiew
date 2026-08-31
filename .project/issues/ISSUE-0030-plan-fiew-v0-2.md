@@ -46,6 +46,11 @@ None. Implementation planning now owns executable scope and dependencies.
 - Windows releases, package-manager distribution, source editing, and generic VCS abstraction.
 
 ## Comments
+
+### 2026-08-31T11:56:41Z — agent
+
+Current scope update: [Keep Mermaid rendering outside fiew](<docs/decisions/ARP-0012.md>) supersedes this record's Mermaid-specific planning statements. Mermaid rendering is removed from fiew rather than deferred; the record's other accepted outcomes remain unchanged.
+
 ## Resolution
 
 Planning completed on 2026-08-28. All decision tickets are resolved and the decision owner approved the resulting fiew v0.2 specification. Implementation planning now owns decomposition and execution order.
