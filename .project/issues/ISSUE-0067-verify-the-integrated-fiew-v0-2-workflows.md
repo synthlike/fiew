@@ -15,6 +15,7 @@ blocked_by:
   - "ISSUE-0066-show-zig-hover-information-through-trusted-zls.md"
   - "ISSUE-0073-record-and-revisit-review-local-trails.md"
   - "ISSUE-0083-move-v0-2-trails-to-standalone-trails-artifacts.md"
+  - "ISSUE-0087-transition-repository-hosting-and-verify-the-complete-skaut-identity.md"
 labels: []
 ---
 # Verify the integrated fiew v0.2 workflows
