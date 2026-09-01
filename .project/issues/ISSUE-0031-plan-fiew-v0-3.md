@@ -1,19 +1,19 @@
 ---
 id: ISSUE-0031
-title: "Plan fiew v0.3"
+title: "Plan fiew v0.4"
 kind: "initiative"
 status: open
 created: 2026-08-27
-assignee:
-parent:
+assignee: 
+parent: 
 blocked_by:
 labels: []
 ---
-# Plan fiew v0.3
+# Plan fiew v0.4
 
 ## Destination
 
-Settle a shared read-only language-capability model and the Go and TypeScript/React behavior needed to author a coherent multi-language fiew v0.3 specification.
+Settle a shared read-only language-capability model and the Go and TypeScript/React behavior needed to author a coherent multi-language fiew v0.4 specification.
 
 ## Notes
 
@@ -23,7 +23,7 @@ The shared boundary must support language-aware diffs and semantic anchors where
 
 ## Decisions so far
 
-- [Confirm the v0.3 multi-language destination](<.project/issues/ISSUE-0050-confirm-the-v0-3-multi-language-destination.md>) — Go and the JS/TS/React family define a read-only multi-language release with optional trusted servers, graceful fallback, language-aware diffs, and reliable semantic anchors.
+- [Confirm the v0.3 multi-language destination](<.project/issues/ISSUE-0050-confirm-the-v0-3-multi-language-destination.md>) — originally confirmed the multi-language destination for v0.3; the roadmap now schedules that unchanged destination for v0.4.
 
 ## Not yet specified
 
@@ -33,7 +33,7 @@ None beyond the open decision tickets.
 
 - Source editing, formatting, rename, code actions, workspace edits, and server commands.
 - A promise to support arbitrary language servers.
-- Remote GitHub review synchronization, which belongs to v0.4.
+- Remote GitHub review synchronization, which belongs to v0.5.
 - Making every candidate navigation or diagnostic capability a release gate before prioritization.
 
 ## Comments

@@ -1,19 +1,19 @@
 ---
 id: ISSUE-0032
-title: "Plan fiew v0.4"
+title: "Plan fiew v0.5"
 kind: "initiative"
 status: open
 created: 2026-08-27
-assignee:
-parent:
+assignee: 
+parent: 
 blocked_by:
 labels: []
 ---
-# Plan fiew v0.4
+# Plan fiew v0.5
 
 ## Destination
 
-Resolve the authority, synchronization, and publication decisions needed to author a coherent specification for local-first GitHub pull-request review.
+Resolve the authority, synchronization, and publication decisions needed to author a coherent specification for local-first GitHub pull-request review in fiew v0.5.
 
 ## Notes
 
@@ -23,7 +23,7 @@ The accepted direction is local-first. fiew may import a GitHub pull request's d
 
 ## Decisions so far
 
-- [Confirm the v0.4 GitHub review destination](<.project/issues/ISSUE-0051-confirm-the-v0-4-github-review-destination.md>) — v0.4 is local-first GitHub pull-request review with explicit remote publication and no source or local Git mutation.
+- [Confirm the v0.4 GitHub review destination](<.project/issues/ISSUE-0051-confirm-the-v0-4-github-review-destination.md>) — originally confirmed the local-first GitHub pull-request review destination for v0.4; the roadmap now schedules that unchanged destination for v0.5.
 
 ## Not yet specified
 

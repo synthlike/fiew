@@ -4,7 +4,7 @@ title: "Choose language-aware diff and semantic anchor behavior"
 kind: "clarification"
 status: open
 created: 2026-08-27
-assignee:
+assignee: 
 parent: "ISSUE-0031-plan-fiew-v0-3.md"
 blocked_by:
   - "ISSUE-0040-define-the-shared-read-only-language-capability-boundary.md"

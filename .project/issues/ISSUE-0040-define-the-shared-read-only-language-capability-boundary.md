@@ -4,7 +4,7 @@ title: "Define the shared read-only language capability boundary"
 kind: "clarification"
 status: open
 created: 2026-08-27
-assignee:
+assignee: 
 parent: "ISSUE-0031-plan-fiew-v0-3.md"
 blocked_by:
 labels: []
