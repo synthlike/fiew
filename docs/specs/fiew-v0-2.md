@@ -1,5 +1,5 @@
 <!-- agent-workflows-record
-{"archived":false,"created":"2026-08-28T15:46:11Z","id":"fiew-v0-2","modified":"2026-08-31T11:55:59Z","record_type":"specs","title":"fiew v0.2"}
+{"archived":false,"created":"2026-08-28T15:46:11Z","id":"fiew-v0-2","modified":"2026-09-01T16:16:35Z","record_type":"specs","title":"fiew v0.2"}
 -->
 # fiew v0.2
 
@@ -23,7 +23,7 @@ Unless this specification explicitly supersedes a v0.1 requirement, fiew v0.2 re
 2. Markdown, fuzzy finding, ZLS, and Trails must not modify source or Git state.
 3. fiew must refuse language-server workspace edits, formatting, rename, code actions, file operations, server commands, and other source-writing requests.
 4. Failures, cancellation, malformed external output, unavailable global persistence, and stale asynchronous work must preserve the read-only boundary and the last valid view.
-5. v0.2 must preserve the canonical `fiew.review/v1` and `fiew.bookmark/v1` contracts and the reviewer/agent authority boundary unless separately superseded by an accepted specification. Trail persistence must not alter those contracts or appear in agent review projections.
+5. v0.2 must preserve the canonical `fiew.review/v1` and `fiew.bookmark/v1` contracts and the reviewer/agent authority boundary unless separately superseded by an accepted specification. The repository-local write boundary adds `.trails/` only for private Trail artifacts; Trail persistence must not alter Review or Bookmark contracts or appear in agent review projections.
 
 ### 2. Supported platforms and terminals
 
@@ -38,7 +38,7 @@ Unless this specification explicitly supersedes a v0.1 requirement, fiew v0.2 re
 
 1. Global state must use `$HOME/Library/Application Support/fiew` on macOS.
 2. Global state must use `$XDG_STATE_HOME/fiew` on Linux, falling back to `$HOME/.local/state/fiew` when `XDG_STATE_HOME` is unset or empty.
-3. Reviews and private Trail companion records must remain repository-local under `.reviews/`; bookmarks must remain repository-local under `.bookmarks/`.
+3. Reviews must remain repository-local under `.reviews/`; private Trails must remain repository-local under `.trails/`; bookmarks must remain repository-local under `.bookmarks/`.
 4. If no valid global state directory is available, fiew must continue with repository browsing and review behavior, report a diagnostic, and disable capabilities that require persisted global state rather than inventing another location.
 5. v0.2 must not depend on FSEvents, inotify, polling, or terminal-focus events. Git refresh remains explicit. Source changes are detected when opening or explicitly reloading a document.
 6. A reload must retain the immutable current snapshot until a complete replacement succeeds. Deleted, replaced, or unreadable files must be reported without crashing.
@@ -127,12 +127,12 @@ Unless this specification explicitly supersedes a v0.1 requirement, fiew v0.2 re
 4. Each point must preserve its order, repository path, one-based line, trimmed captured line content, and conservative contextual anchor.
 5. A Trail must contain at least two points. Attempting to stop earlier must keep recording active and report an exact reason.
 6. Stopping must open a composer for a required bounded title and an optional bounded multiline note. Cancelling the composer must resume recording with every point intact; saving must persist the completed Trail.
-7. Trails must use private schema-versioned `fiew.trail/v1` companion records keyed to the active review identity under the existing `.reviews/` write boundary. They must not alter `fiew.review/v1`, `fiew.bookmark/v1`, or agent review projections.
+7. Each saved Trail must use one private schema-versioned `fiew.trail/v1` JSON artifact under `.trails/`, with an opaque stable Trail identity and explicit immutable ownership by the active review. Adapter-controlled filenames are not relationship identity. Trail artifacts must not alter `fiew.review/v1`, `fiew.bookmark/v1`, or agent review projections.
 8. Saved Trails must be listed for the active review. Opening one must expose its ordered points; `j`/`k` must change preview without changing history, and `Enter` must pin the selected point and add exactly one navigation entry.
 9. `Space t d` must delete the selected saved Trail only after confirmation.
 10. Re-anchoring must follow the conservative bookmark boundary. A uniquely matched point may update; an unresolved point must become **Outdated** while preserving its originally captured path, line, and content.
 11. Recording and composition drafts must remain memory-only. Quit must warn while either is unfinished.
-12. Missing storage, malformed or future schema, stale anchors, deleted files, persistence failure, and invalid points must preserve source viewing and existing review state.
+12. Missing storage, malformed or future schema, stale anchors, deleted files, persistence failure, and invalid points must preserve source viewing and existing review state. A malformed or future individual Trail must not disable unrelated valid Trails.
 13. Automatic ZLS capture, External points, one-point Trails, metadata editing, point reordering or deletion, and printing Trails into comments are excluded from v0.2.
 
 ### 12. Release and installation
@@ -157,7 +157,7 @@ Unless this specification explicitly supersedes a v0.1 requirement, fiew v0.2 re
 - Tree-sitter adapter fixtures must cover Markdown block/inline included ranges, highlights, section and fence folds, one-level Zig injection, malformed input, cancellation, ABI/query failure, and plain-text fallback.
 - ZLS transcript tests must cover trust and revocation, version validation, initialize/open/close/shutdown order, UTF-8/UTF-16 mapping, definition/reference/hover variants, External targets, cancellation, timeout, crash, malformed messages, stale generations, result bounds, and read-only request refusal without requiring ZLS.
 - Pure reducer and command tests must verify finder, result-list, hover, pending, cancellation, preview, pin, dismissal, history, disabled-reason, capability-fallback, and Trail start/add/stop/composer/save/cancel transitions.
-- Trail tests must verify active-review and valid-location guards, minimum point count, ordered `fiew.trail/v1` serialization, future-schema refusal, conservative re-anchoring, Outdated preservation, list/open/preview/pin/delete behavior, unfinished quit warning, and unchanged agent review projections.
+- Trail tests must verify active-review and valid-location guards, minimum point count, one-file-per-Trail `fiew.trail/v1` serialization, opaque identity, immutable Review ownership, artifact isolation, future-schema refusal, backup recovery, conservative re-anchoring, Outdated preservation, list/open/preview/pin/delete behavior, unfinished quit warning, and unchanged agent review projections.
 - Fixed-dimension ViewModel and RenderPlan snapshots must verify fuzzy finder, Markdown, definition/reference lists, hover, Trails, External labels, exact failure states, terminal fallback, and unsupported-size behavior.
 - `zig build test` must remain deterministic, offline, and independent of Git and ZLS. External-tool integration tests remain opt-in.
 - Linux CI must verify native deterministic tests, release ELF properties, clean archive execution, checksum behavior, and non-gating ARM64 compilation.
@@ -195,4 +195,4 @@ Unless this specification explicitly supersedes a v0.1 requirement, fiew v0.2 re
 - [Linux binary portability boundary for fiew v0.2](<docs/research/linux-binary-portability-boundary-for-fiew-v0-2.md>)
 - [Terminal compatibility boundary for fiew v0.2](<docs/research/terminal-compatibility-boundary-for-fiew-v0-2.md>)
 - [Trails for review-local reading paths](<docs/product/trails-for-review-local-reading-paths.md>)
-- [Store Trails as review-keyed private companion records](<docs/decisions/ARP-0011.md>)
+- [Store containers, Trails, and Spots as independent repository artifacts](<docs/decisions/ARP-0014.md>)

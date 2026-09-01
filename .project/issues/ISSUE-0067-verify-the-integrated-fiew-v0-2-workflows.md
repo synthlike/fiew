@@ -4,7 +4,7 @@ title: "Verify the integrated fiew v0.2 workflows"
 kind: "implementation"
 status: open
 created: 2026-08-28
-assignee:
+assignee: 
 parent: "ISSUE-0057-implement-fiew-v0-2.md"
 blocked_by:
   - "ISSUE-0058-fuzzy-find-and-open-repository-files.md"
@@ -14,6 +14,7 @@ blocked_by:
   - "ISSUE-0065-find-zig-references-through-trusted-zls.md"
   - "ISSUE-0066-show-zig-hover-information-through-trusted-zls.md"
   - "ISSUE-0073-record-and-revisit-review-local-trails.md"
+  - "ISSUE-0083-move-v0-2-trails-to-standalone-trails-artifacts.md"
 labels: []
 ---
 # Verify the integrated fiew v0.2 workflows
