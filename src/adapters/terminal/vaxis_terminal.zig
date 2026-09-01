@@ -958,32 +958,26 @@ pub fn run(init: std.process.Init, options: Options) !u8 {
     }
     trail_setup: {
         const active_review = if (app.notes) |state_notes| state_notes.sessionFilename() orelse break :trail_setup else break :trail_setup;
-        var result = fiew.trail_store.load(allocator, init.io, repository.root_dir, active_review) catch {
+        var loaded = fiew.trail_store.loadAll(allocator, init.io, repository.root_dir) catch {
             app.feedback = "trail storage unreadable";
             break :trail_setup;
         };
-        switch (result) {
-            .loaded => |*loaded| {
-                defer loaded.deinit();
-                app.trails = fiew.trails.Trails.fromStored(allocator, active_review, loaded.value().*) catch {
-                    app.feedback = "trail storage unavailable";
-                    break :trail_setup;
-                };
-                if (loaded.source == .backup) app.feedback = "trail storage recovered from backup";
-            },
-            .absent => app.trails = fiew.trails.Trails.init(allocator, active_review) catch {
-                app.feedback = "trail storage unavailable";
-                break :trail_setup;
-            },
-            .future_schema => {
-                app.feedback = "future trail schema refused";
-                break :trail_setup;
-            },
-            .unrecoverable => {
-                app.feedback = "trail state is unrecoverable";
-                break :trail_setup;
-            },
+        defer loaded.deinit();
+        const stored = try allocator.alloc(fiew.trail.Trail, loaded.entries.len);
+        defer allocator.free(stored);
+        var recovered = false;
+        for (loaded.entries, 0..) |entry, index| {
+            stored[index] = entry.parsed.value().*;
+            recovered = recovered or entry.recovered;
         }
+        app.trails = fiew.trails.Trails.fromStored(allocator, init.io, active_review, stored) catch {
+            app.feedback = "trail storage unavailable";
+            break :trail_setup;
+        };
+        if (loaded.future_count != 0 or loaded.unrecoverable_count != 0)
+            app.feedback = "one or more Trail artifacts are unavailable"
+        else if (recovered)
+            app.feedback = "one or more Trail artifacts recovered from backup";
         app.trails_available = true;
     }
     var command_session = fiew.commands.Session.init(allocator);
@@ -1874,8 +1868,15 @@ fn persistBookmarks(repository: fiew.filesystem.Repository, state_bookmarks: *fi
 
 fn persistTrails(repository: fiew.filesystem.Repository, state_trails: *fiew.trails.Trails) bool {
     if (!state_trails.dirty) return true;
-    fiew.trail_store.save(repository.allocator, repository.io, repository.root_dir, state_trails.review, state_trails.stored()) catch return false;
-    state_trails.markClean();
+    while (state_trails.nextDirty()) |item| {
+        const id = item.id;
+        fiew.trail_store.save(repository.allocator, repository.io, repository.root_dir, item.*) catch return false;
+        state_trails.markTrailClean(id);
+    }
+    while (state_trails.nextDeleted()) |id| {
+        fiew.trail_store.delete(repository.allocator, repository.io, repository.root_dir, id, state_trails.review) catch return false;
+        state_trails.markDeleted(id);
+    }
     return true;
 }
 

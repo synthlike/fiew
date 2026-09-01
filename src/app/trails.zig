@@ -16,27 +16,28 @@ pub const Draft = struct {
 
 pub const Trails = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     review: []u8,
     items: std.ArrayListUnmanaged(trail.Trail) = .empty,
-    next_id: u64 = 1,
+    dirty_items: std.ArrayListUnmanaged(bool) = .empty,
+    deleted_ids: std.ArrayListUnmanaged([]u8) = .empty,
     selected_trail: usize = 0,
     selected_point: usize = 0,
     detail: bool = false,
     recording: ?Draft = null,
     dirty: bool = false,
 
-    pub fn init(allocator: std.mem.Allocator, review: []const u8) !Trails {
-        return .{ .allocator = allocator, .review = try allocator.dupe(u8, review) };
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, review: []const u8) !Trails {
+        return .{ .allocator = allocator, .io = io, .review = try allocator.dupe(u8, review) };
     }
 
-    pub fn fromStored(allocator: std.mem.Allocator, expected_review: []const u8, persisted: trail.Stored) !Trails {
-        if (!std.mem.eql(u8, expected_review, persisted.review)) return error.ReviewMismatch;
-        var self = try init(allocator, expected_review);
+    pub fn fromStored(allocator: std.mem.Allocator, io: std.Io, expected_review: []const u8, persisted: []const trail.Trail) !Trails {
+        var self = try init(allocator, io, expected_review);
         errdefer self.deinit();
-        self.next_id = persisted.next_id;
-        for (persisted.trails) |item| {
+        for (persisted) |item| {
+            if (!std.mem.eql(u8, expected_review, item.owner.review)) continue;
             try self.items.append(allocator, try cloneTrail(allocator, item));
-            self.next_id = @max(self.next_id, item.id +| 1);
+            try self.dirty_items.append(allocator, false);
         }
         return self;
     }
@@ -45,12 +46,11 @@ pub const Trails = struct {
         if (self.recording) |*draft| draft.deinit(self.allocator);
         for (self.items.items) |item| freeTrail(self.allocator, item);
         self.items.deinit(self.allocator);
+        self.dirty_items.deinit(self.allocator);
+        for (self.deleted_ids.items) |id| self.allocator.free(id);
+        self.deleted_ids.deinit(self.allocator);
         self.allocator.free(self.review);
         self.* = undefined;
-    }
-
-    pub fn stored(self: Trails) trail.Stored {
-        return .{ .review = self.review, .next_id = self.next_id, .trails = self.items.items };
     }
 
     pub fn start(self: *Trails, point: trail.Point) !void {
@@ -80,10 +80,15 @@ pub const Trails = struct {
         const owned_note = try self.allocator.dupe(u8, note);
         errdefer self.allocator.free(owned_note);
         try self.items.ensureUnusedCapacity(self.allocator, 1);
+        try self.dirty_items.ensureUnusedCapacity(self.allocator, 1);
+        const id = try newId(self.allocator, self.io);
+        errdefer self.allocator.free(id);
+        const owner = try self.allocator.dupe(u8, self.review);
+        errdefer self.allocator.free(owner);
         const points = try draft.points.toOwnedSlice(self.allocator);
         draft.* = .{};
-        self.items.appendAssumeCapacity(.{ .id = self.next_id, .title = owned_title, .note = owned_note, .points = points });
-        self.next_id +|= 1;
+        self.items.appendAssumeCapacity(.{ .id = id, .owner = .{ .review = owner }, .title = owned_title, .note = owned_note, .points = points });
+        self.dirty_items.appendAssumeCapacity(true);
         self.selected_trail = self.items.items.len - 1;
         self.selected_point = 0;
         self.detail = false;
@@ -92,10 +97,13 @@ pub const Trails = struct {
         self.dirty = true;
     }
 
-    pub fn deleteSelected(self: *Trails) void {
+    pub fn deleteSelected(self: *Trails) !void {
         if (self.selected_trail >= self.items.items.len) return;
+        try self.deleted_ids.ensureUnusedCapacity(self.allocator, 1);
         const removed = self.items.orderedRemove(self.selected_trail);
-        freeTrail(self.allocator, removed);
+        _ = self.dirty_items.orderedRemove(self.selected_trail);
+        self.deleted_ids.appendAssumeCapacity(@constCast(removed.id));
+        freeTrailExceptId(self.allocator, removed);
         if (self.selected_trail >= self.items.items.len and self.selected_trail > 0) self.selected_trail -= 1;
         self.selected_point = 0;
         self.detail = false;
@@ -136,7 +144,7 @@ pub const Trails = struct {
         const point = self.selectedPoint() orelse return;
         if (point.status != .outdated) {
             point.status = .outdated;
-            self.dirty = true;
+            self.markSelectedDirty();
         }
     }
 
@@ -144,24 +152,56 @@ pub const Trails = struct {
         switch (anchor.match(point.context, source)) {
             .retained => if (point.status == .outdated) {
                 point.status = .current;
-                self.dirty = true;
+                self.markSelectedDirty();
             },
             .relocated => |context_start| {
                 point.context.original_start = context_start;
                 point.source_offset = point.context.targetOffset(context_start) + point.line_offset;
                 point.anchored_line = 1 + std.mem.count(u8, source[0..point.source_offset], "\n");
                 point.status = .current;
-                self.dirty = true;
+                self.markSelectedDirty();
             },
             .outdated => if (point.status != .outdated) {
                 point.status = .outdated;
-                self.dirty = true;
+                self.markSelectedDirty();
             },
         }
     }
 
-    pub fn markClean(self: *Trails) void {
-        self.dirty = false;
+    fn markSelectedDirty(self: *Trails) void {
+        if (self.selected_trail < self.dirty_items.items.len) self.dirty_items.items[self.selected_trail] = true;
+        self.dirty = true;
+    }
+
+    pub fn nextDirty(self: *Trails) ?*trail.Trail {
+        for (self.dirty_items.items, 0..) |is_dirty, index| if (is_dirty) return &self.items.items[index];
+        return null;
+    }
+
+    pub fn markTrailClean(self: *Trails, id: []const u8) void {
+        for (self.items.items, 0..) |item, index| if (std.mem.eql(u8, item.id, id)) {
+            self.dirty_items.items[index] = false;
+            break;
+        };
+        self.refreshDirty();
+    }
+
+    pub fn nextDeleted(self: *Trails) ?[]const u8 {
+        return if (self.deleted_ids.items.len == 0) null else self.deleted_ids.items[0];
+    }
+
+    pub fn markDeleted(self: *Trails, id: []const u8) void {
+        if (self.deleted_ids.items.len == 0 or !std.mem.eql(u8, self.deleted_ids.items[0], id)) return;
+        self.allocator.free(self.deleted_ids.orderedRemove(0));
+        self.refreshDirty();
+    }
+
+    fn refreshDirty(self: *Trails) void {
+        self.dirty = self.deleted_ids.items.len != 0;
+        if (!self.dirty) for (self.dirty_items.items) |value| if (value) {
+            self.dirty = true;
+            break;
+        };
     }
 };
 
@@ -175,7 +215,23 @@ pub fn clonePoint(allocator: std.mem.Allocator, point: trail.Point) !trail.Point
     return .{ .path = path, .line = point.line, .anchored_line = point.anchored_line, .column = point.column, .source_offset = point.source_offset, .line_offset = point.line_offset, .content = content, .context = .{ .bytes = context, .original_start = point.context.original_start, .target_start = point.context.target_start, .target_end = point.context.target_end }, .status = point.status };
 }
 
+fn newId(allocator: std.mem.Allocator, io: std.Io) ![]u8 {
+    var random: [16]u8 = undefined;
+    io.random(&random);
+    const id = try allocator.alloc(u8, trail.id_bytes);
+    const hex = "0123456789abcdef";
+    for (random, 0..) |byte, index| {
+        id[index * 2] = hex[byte >> 4];
+        id[index * 2 + 1] = hex[byte & 0x0f];
+    }
+    return id;
+}
+
 fn cloneTrail(allocator: std.mem.Allocator, item: trail.Trail) !trail.Trail {
+    const id = try allocator.dupe(u8, item.id);
+    errdefer allocator.free(id);
+    const owner = try allocator.dupe(u8, item.owner.review);
+    errdefer allocator.free(owner);
     const title = try allocator.dupe(u8, item.title);
     errdefer allocator.free(title);
     const note = try allocator.dupe(u8, item.note);
@@ -186,7 +242,7 @@ fn cloneTrail(allocator: std.mem.Allocator, item: trail.Trail) !trail.Trail {
         points.deinit(allocator);
     }
     for (item.points) |point| try points.append(allocator, try clonePoint(allocator, point));
-    return .{ .id = item.id, .title = title, .note = note, .points = try points.toOwnedSlice(allocator) };
+    return .{ .id = id, .owner = .{ .review = owner }, .title = title, .note = note, .points = try points.toOwnedSlice(allocator) };
 }
 
 pub fn freePoint(allocator: std.mem.Allocator, point: trail.Point) void {
@@ -195,15 +251,21 @@ pub fn freePoint(allocator: std.mem.Allocator, point: trail.Point) void {
     allocator.free(point.context.bytes);
 }
 
-fn freeTrail(allocator: std.mem.Allocator, item: trail.Trail) void {
+fn freeTrailExceptId(allocator: std.mem.Allocator, item: trail.Trail) void {
+    allocator.free(item.owner.review);
     allocator.free(item.title);
     allocator.free(item.note);
     for (item.points) |point| freePoint(allocator, point);
     allocator.free(item.points);
 }
 
+fn freeTrail(allocator: std.mem.Allocator, item: trail.Trail) void {
+    allocator.free(item.id);
+    freeTrailExceptId(allocator, item);
+}
+
 test "record save select delete and conservative re-anchor" {
-    var state = try Trails.init(std.testing.allocator, "review.json");
+    var state = try Trails.init(std.testing.allocator, std.testing.io, "review.json");
     defer state.deinit();
     const p: trail.Point = .{ .path = try std.testing.allocator.dupe(u8, "a.zig"), .line = 1, .source_offset = 0, .line_offset = 0, .content = try std.testing.allocator.dupe(u8, "target"), .context = .{ .bytes = try std.testing.allocator.dupe(u8, "target\n"), .original_start = 0, .target_start = 0, .target_end = 6 } };
     try state.start(p);
@@ -219,6 +281,6 @@ test "record save select delete and conservative re-anchor" {
     try std.testing.expectEqualStrings("a.zig", state.selectedPoint().?.path);
     try std.testing.expectEqualStrings("target", state.selectedPoint().?.content);
     try std.testing.expectEqual(@as(usize, 1), state.selectedPoint().?.line);
-    state.deleteSelected();
+    try state.deleteSelected();
     try std.testing.expectEqual(@as(usize, 0), state.items.items.len);
 }

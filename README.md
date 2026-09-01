@@ -133,11 +133,11 @@ current-review pointer per repository, so routine `show` and `reply` commands do
 not need to guess which review is active.
 
 Bookmarks are canonical private repository-local `fiew.bookmark/v1` JSON in
-`.bookmarks/bookmarks.json`. Saved trails are private review-keyed
-`fiew.trail/v1` companion records under `.reviews/`. Neither appears in agent
-review output. Ensure both `.reviews/` and `.bookmarks/` are ignored using your
-repository's preferred Git configuration. fiew does not inspect or modify
-`.gitignore` or Git metadata.
+`.bookmarks/bookmarks.json`. Each saved Trail is an independent private
+`fiew.trail/v1` JSON artifact under `.trails/` with immutable Review ownership.
+Neither appears in agent review output. Ensure `.reviews/`, `.bookmarks/`, and
+`.trails/` are ignored using your repository's preferred Git configuration.
+fiew does not inspect or modify `.gitignore` or Git metadata.
 
 ### Install the agent cooperation skill
 

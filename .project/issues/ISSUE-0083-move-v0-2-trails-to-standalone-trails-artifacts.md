@@ -2,9 +2,9 @@
 id: ISSUE-0083
 title: "Move v0.2 Trails to standalone .trails artifacts"
 kind: "implementation"
-status: open
+status: resolved
 created: 2026-09-01
-assignee: 
+assignee: "agent"
 parent: "ISSUE-0057-implement-fiew-v0-2.md"
 blocked_by:
 labels: []
@@ -38,6 +38,12 @@ None.
 Discovery, Spots, agent-proposed Trails, Trail attachments, `fiew.review/v2`, migration of development Trail companions, and changes to Trail interaction or command bindings.
 
 ## Comments
-
-
 ## Resolution
+
+Implemented standalone one-file-per-Trail persistence under `.trails/`.
+
+Redesigned `fiew.trail/v1` around one bounded artifact with a random opaque identity and immutable Review owner. Trail startup now loads valid artifacts independently, filters the in-memory list to the active Review, recovers each validated backup independently, and reports unavailable individual artifacts without disabling valid Trails or source browsing.
+
+Create, re-anchor, and confirmed deletion now track and persist only affected Trail identities. Updates validate new data before atomic replacement and retain one validated previous backup. Development `.reviews/*.trails` companions are ignored. Review bytes and projections remain unchanged, and README storage guidance now includes `.trails/`.
+
+Verification: `zig build test`, `zig build`, and `git diff --check` pass.

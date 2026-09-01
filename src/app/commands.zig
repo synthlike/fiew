@@ -1155,7 +1155,7 @@ pub const Session = struct {
 
     fn handleTrailDeleteConfirmation(self: *Session, app: *state.App, key: Key) !Effect {
         if (normalizedCharacter(key) == 'y') {
-            if (app.trails) |*state_trails| state_trails.deleteSelected();
+            if (app.trails) |*state_trails| try state_trails.deleteSelected();
             self.resetTransient(app);
             return .persist_trails;
         }
@@ -2145,7 +2145,7 @@ test "trail commands guard, record, compose, preview, pin, and confirm deletion"
     const dimensions: Dimensions = .{ .sidebar_rows = 20, .document_rows = 20, .document_columns = 80 };
 
     try std.testing.expectEqualStrings("trails require an active named review", unavailableReason(&app, .trail_open).?);
-    app.trails = try trails_mod.Trails.init(std.testing.allocator, "20260829-120000-review.json");
+    app.trails = try trails_mod.Trails.init(std.testing.allocator, std.testing.io, "20260829-120000-review.json");
     app.trails_available = true;
     app.pinned.?.external = true;
     try std.testing.expectEqualStrings("open a valid repository source location first", unavailableReason(&app, .trail_record).?);
