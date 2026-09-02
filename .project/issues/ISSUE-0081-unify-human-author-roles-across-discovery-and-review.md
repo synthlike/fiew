@@ -4,8 +4,8 @@ title: "Unify human author roles across Discovery and Review"
 kind: "clarification"
 status: open
 created: 2026-09-01
-assignee: 
-parent: 
+assignee:
+parent:
 blocked_by:
 labels: []
 ---
@@ -17,7 +17,7 @@ Should a future schema evolution replace the Review-specific `reviewer` author r
 
 ## Notes
 
-fiew v0.3 should use `human` for new Discovery projections while preserving `reviewer` in the established `fiew.review/v1` compatibility surface. Any unification must define schema compatibility and migration explicitly rather than silently changing public Review output.
+Skaut v0.3 should use `human` for new Discovery projections while preserving `reviewer` in the established `skaut.review/v1` compatibility surface. Any unification must define schema compatibility and migration explicitly rather than silently changing public Review output.
 
 This follow-up has no assigned release and does not block the v0.3 Discovery behavior decision.
 

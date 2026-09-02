@@ -1,19 +1,19 @@
 ---
 id: ISSUE-0074
-title: "Plan fiew v0.3"
+title: "Plan Skaut v0.3"
 kind: "initiative"
 status: open
 created: 2026-09-01
-assignee: 
-parent: 
+assignee:
+parent:
 blocked_by:
 labels: []
 ---
-# Plan fiew v0.3
+# Plan Skaut v0.3
 
 ## Destination
 
-Settle the observable Discovery behavior and shared Review/Discovery boundaries needed to author a coherent fiew v0.3 specification centered on fiew's main human-agent code-understanding workflow.
+Settle the observable Discovery behavior and shared Review/Discovery boundaries needed to author a coherent Skaut v0.3 specification centered on Skaut's main human-agent code-understanding workflow.
 
 ## Notes
 

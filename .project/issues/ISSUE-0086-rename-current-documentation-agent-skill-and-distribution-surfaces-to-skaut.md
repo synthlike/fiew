@@ -2,9 +2,9 @@
 id: ISSUE-0086
 title: "Rename current documentation, Agent Skill, and distribution surfaces to Skaut"
 kind: "implementation"
-status: open
+status: resolved
 created: 2026-09-01
-assignee: 
+assignee: "agent"
 parent: "ISSUE-0084-rename-fiew-to-skaut-before-v0-2.md"
 blocked_by:
   - "ISSUE-0085-rename-the-executable-and-persistence-contracts-to-skaut.md"
@@ -42,6 +42,12 @@ The executable and persistence contract rename.
 GitHub repository administration, rewriting opaque record paths, relabeling old release bytes, publishing v0.2, migrating state, and changing domain vocabulary.
 
 ## Comments
-
-
 ## Resolution
+
+Renamed the current documentation, Agent Skill, and distribution identity to Skaut while preserving historical fiew v0.1 artifacts and immutable record paths.
+
+The public skill now lives at `skills/skaut`, identifies itself as `skaut`, and uses the `skaut` CLI. README installation examples point to `synthlike/skaut --skill skaut`. Current README, Skaut v0.2 specification, domain terminology, engineering smoke guidance, active plans, and open implementation/release issues use the Skaut identity. Active issue changes were applied through the issue adapter, and adapter serialization was corrected to avoid trailing whitespace on empty frontmatter values.
+
+Release metadata is now v0.2.0. Packaging emits `skaut-v0.2.0-darwin-arm64.tar.gz` and its checksum with a `skaut` executable. The accepted ARP-0015 records the clean-break identity, Skaut schemas and paths, no-compatibility boundary, unchanged domain vocabulary, historical treatment, repository transition, and scoped-only future npm naming.
+
+Verification passed: `zig fmt --check build.zig src`, `zig build test`, `zig build test-binaries`, `zig build`, exact version/help smoke checks, Python compilation, archive checksum/content/execution checks, skill metadata and old-path checks, current source/tool identity audit, and `git diff --check`. Historical fiew references remain only where they truthfully describe v0.1 or preserve immutable record and research references.

@@ -1,10 +1,10 @@
 ---
 id: ISSUE-0079
-title: "Set the fiew v0.3 Discovery release boundary"
+title: "Set the Skaut v0.3 Discovery release boundary"
 kind: "clarification"
 status: open
 created: 2026-09-01
-assignee: 
+assignee:
 parent: "ISSUE-0074-plan-fiew-v0-3.md"
 blocked_by:
   - "ISSUE-0075-define-the-complete-discovery-interaction-and-lifecycle.md"
@@ -14,7 +14,7 @@ blocked_by:
   - "ISSUE-0082-adopt-spot-as-the-saved-single-anchor-vocabulary.md"
 labels: []
 ---
-# Set the fiew v0.3 Discovery release boundary
+# Set the Skaut v0.3 Discovery release boundary
 
 ## Question
 

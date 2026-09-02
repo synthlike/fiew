@@ -13,7 +13,7 @@ labels: []
 
 ## Question
 
-Should fiew rely on authenticated `gh api`, implement its own GitHub credential flow, or support both, and how is the remote acting identity shown before publication?
+Should Skaut rely on authenticated `gh api`, implement its own GitHub credential flow, or support both, and how is the remote acting identity shown before publication?
 
 ## Comments
 

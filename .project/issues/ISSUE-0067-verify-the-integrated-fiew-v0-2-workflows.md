@@ -1,10 +1,10 @@
 ---
 id: ISSUE-0067
-title: "Verify the integrated fiew v0.2 workflows"
+title: "Verify the integrated Skaut v0.2 workflows"
 kind: "implementation"
 status: open
 created: 2026-08-28
-assignee: 
+assignee:
 parent: "ISSUE-0057-implement-fiew-v0-2.md"
 blocked_by:
   - "ISSUE-0058-fuzzy-find-and-open-repository-files.md"
@@ -18,11 +18,11 @@ blocked_by:
   - "ISSUE-0087-transition-repository-hosting-and-verify-the-complete-skaut-identity.md"
 labels: []
 ---
-# Verify the integrated fiew v0.2 workflows
+# Verify the integrated Skaut v0.2 workflows
 
 ## Parent
 
-[fiew v0.2](<docs/specs/fiew-v0-2.md>)
+[Skaut v0.2](<docs/specs/fiew-v0-2.md>)
 
 ## What to build
 

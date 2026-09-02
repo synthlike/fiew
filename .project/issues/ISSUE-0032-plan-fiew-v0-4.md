@@ -1,25 +1,25 @@
 ---
 id: ISSUE-0032
-title: "Plan fiew v0.5"
+title: "Plan Skaut v0.5"
 kind: "initiative"
 status: open
 created: 2026-08-27
-assignee: 
-parent: 
+assignee:
+parent:
 blocked_by:
 labels: []
 ---
-# Plan fiew v0.5
+# Plan Skaut v0.5
 
 ## Destination
 
-Resolve the authority, synchronization, and publication decisions needed to author a coherent specification for local-first GitHub pull-request review in fiew v0.5.
+Resolve the authority, synchronization, and publication decisions needed to author a coherent specification for local-first GitHub pull-request review in Skaut v0.5.
 
 ## Notes
 
 GitHub's official APIs can represent file, line, and multiline comments, replies, review-thread resolution, pending reviews, and explicit COMMENT, REQUEST_CHANGES, and APPROVE submissions. Consult [GitHub pull-request review API feasibility for fiew v0.4](<docs/research/github-pull-request-review-api-feasibility-for-fiew-v0-4.md>).
 
-The accepted direction is local-first. fiew may import a GitHub pull request's diff and thread state into its VCS and Review surfaces, but every remote mutation requires an explicit publish or submit action. The source repository and local Git state remain read-only.
+The accepted direction is local-first. Skaut may import a GitHub pull request's diff and thread state into its VCS and Review surfaces, but every remote mutation requires an explicit publish or submit action. The source repository and local Git state remain read-only.
 
 ## Decisions so far
 

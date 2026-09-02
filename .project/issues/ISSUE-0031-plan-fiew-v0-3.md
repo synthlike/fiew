@@ -1,19 +1,19 @@
 ---
 id: ISSUE-0031
-title: "Plan fiew v0.4"
+title: "Plan Skaut v0.4"
 kind: "initiative"
 status: open
 created: 2026-08-27
-assignee: 
-parent: 
+assignee:
+parent:
 blocked_by:
 labels: []
 ---
-# Plan fiew v0.4
+# Plan Skaut v0.4
 
 ## Destination
 
-Settle a shared read-only language-capability model and the Go and TypeScript/React behavior needed to author a coherent multi-language fiew v0.4 specification.
+Settle a shared read-only language-capability model and the Go and TypeScript/React behavior needed to author a coherent multi-language Skaut v0.4 specification.
 
 ## Notes
 

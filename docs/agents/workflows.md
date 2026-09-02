@@ -1,6 +1,6 @@
 # Engineering workflows
 
-This repository develops `fiew`, a Zig-based editor for agentic workflows. It focuses on viewing code and diffs and navigating codebases. Its design draws inspiration from the fx agent harness and flow editor.
+This repository develops **Skaut**, a Zig-based editor for agentic workflows. It focuses on viewing code and diffs and navigating codebases. Its design draws inspiration from the fx agent harness and flow editor.
 
 Read `.agents/workflows.yaml` for installed workflows and route configuration. Perform all semantic record operations according to `docs/agents/records.md` ([record routing and operations](records.md)).
 

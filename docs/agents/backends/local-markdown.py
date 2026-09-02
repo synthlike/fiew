@@ -357,8 +357,8 @@ class LocalMarkdownAdapter:
             f"kind: {json.dumps(issue.kind)}",
             f"status: {issue.status}",
             f"created: {issue.created}",
-            f"assignee: {json.dumps(issue.assignee) if issue.assignee else ''}",
-            f"parent: {json.dumps(parent) if parent else ''}",
+            "assignee:" + (f" {json.dumps(issue.assignee)}" if issue.assignee else ""),
+            "parent:" + (f" {json.dumps(parent)}" if parent else ""),
             "blocked_by:",
         ]
         lines.extend(f"  - {json.dumps(value)}" for value in blockers)

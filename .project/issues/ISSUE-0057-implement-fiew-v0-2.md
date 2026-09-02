@@ -1,6 +1,6 @@
 ---
 id: ISSUE-0057
-title: "Implement fiew v0.2"
+title: "Implement Skaut v0.2"
 kind: "initiative"
 status: open
 created: 2026-08-28
@@ -9,15 +9,15 @@ parent:
 blocked_by:
 labels: []
 ---
-# Implement fiew v0.2
+# Implement Skaut v0.2
 
 ## Source
 
-[fiew v0.2](<docs/specs/fiew-v0-2.md>)
+[Skaut v0.2](<docs/specs/fiew-v0-2.md>)
 
 ## Destination
 
-Deliver the approved v0.2 behavior as independently verifiable vertical slices while preserving fiew's read-only boundary and deterministic offline test suite.
+Deliver the approved v0.2 behavior as independently verifiable vertical slices while preserving Skaut's read-only boundary and deterministic offline test suite.
 
 ## Execution
 

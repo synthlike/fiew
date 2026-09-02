@@ -4,8 +4,8 @@ title: "Consider container-owned activity streams and a merged Activity view"
 kind: "clarification"
 status: open
 created: 2026-09-01
-assignee: 
-parent: 
+assignee:
+parent:
 blocked_by:
 labels: []
 ---
@@ -19,7 +19,7 @@ Should each durable Discovery or Review own a typed append-only activity stream 
 
 A merged editor-wide log should not become a second source of truth. Container ownership would preserve repository scope, archival history, privacy, recovery, and artifact authority while permitting a future chronological Activity surface.
 
-This is not part of fiew v0.2 and has no assigned release. Capture it without expanding the current release boundary.
+This is not part of Skaut v0.2 and has no assigned release. Capture it without expanding the current release boundary.
 
 ## Comments
 

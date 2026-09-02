@@ -1,5 +1,5 @@
 <!-- agent-workflows-record
-{"archived":false,"created":"2026-09-01T09:39:25Z","id":"human-agent-code-understanding","modified":"2026-09-01T16:03:04Z","record_type":"domain","title":"Human-agent code understanding"}
+{"archived":false,"created":"2026-09-01T09:39:25Z","id":"human-agent-code-understanding","modified":"2026-09-02T22:22:34Z","record_type":"domain","title":"Human-agent code understanding"}
 -->
 # Human-agent code understanding
 
@@ -28,7 +28,7 @@ An immutable ordered human or agent contribution to a Discovery Thread or Review
 _Avoid_: Editable note
 
 **Anchor Validity**:
-The independent Current or Outdated state describing whether fiew can validate an artifact's repository location without guessing. Anchor Validity does not answer, resolve, or archive its owning conversation.
+The independent Current or Outdated state describing whether Skaut can validate an artifact's repository location without guessing. Anchor Validity does not answer, resolve, or archive its owning conversation.
 _Avoid_: Thread status
 
 **Trail**:

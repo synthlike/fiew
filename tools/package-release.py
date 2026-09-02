@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the deterministic fiew Apple Silicon release archive."""
+"""Build the deterministic Skaut Apple Silicon release archive."""
 
 import argparse
 import gzip
@@ -24,13 +24,13 @@ def run(command, *, cwd, capture=False):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--version", default="0.1.0")
+    parser.add_argument("--version", default="0.2.0")
     parser.add_argument("--output-dir", default="dist")
     args = parser.parse_args()
 
     root = Path(__file__).resolve().parent.parent
     output_dir = root / args.output_dir
-    artifact_name = f"fiew-v{args.version}-darwin-arm64.tar.gz"
+    artifact_name = f"skaut-v{args.version}-darwin-arm64.tar.gz"
     artifact = output_dir / artifact_name
     checksum = output_dir / f"{artifact_name}.sha256"
 
@@ -44,9 +44,9 @@ def main():
         ],
         cwd=root,
     )
-    binary = root / "zig-out/bin/fiew"
+    binary = root / "zig-out/bin/skaut"
     version_output = run([str(binary), "--version"], cwd=root, capture=True)
-    if version_output.splitlines()[0] != f"fiew {args.version}":
+    if version_output.splitlines()[0] != f"skaut {args.version}":
         raise SystemExit("requested version does not match the built executable")
     architecture = run(["file", str(binary)], cwd=root, capture=True)
     if "Mach-O 64-bit executable arm64" not in architecture:
@@ -63,7 +63,7 @@ def main():
     with temporary.open("wb") as raw:
         with gzip.GzipFile(filename="", mode="wb", fileobj=raw, compresslevel=9, mtime=epoch) as compressed:
             with tarfile.open(fileobj=compressed, mode="w", format=tarfile.GNU_FORMAT) as archive:
-                info = tarfile.TarInfo("fiew")
+                info = tarfile.TarInfo("skaut")
                 info.size = len(binary_bytes)
                 info.mode = 0o755
                 info.uid = 0

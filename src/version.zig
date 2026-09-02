@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-pub const semantic = "0.1.0";
+pub const semantic = "0.2.0";
 pub const libvaxis_revision = "c060d314930c5552b99a89278a6a695baf0352da";
 pub const tree_sitter_version = "0.26.13";
 pub const tree_sitter_revision = "d97971e24500218865c05ed1febdee2acf41bae1";
@@ -29,7 +29,7 @@ pub fn write(writer: *std.Io.Writer) !void {
 }
 
 test "release version and dependency revisions are inspectable" {
-    try std.testing.expectEqualStrings("0.1.0", semantic);
+    try std.testing.expectEqualStrings("0.2.0", semantic);
     try std.testing.expectEqual(@as(usize, 40), libvaxis_revision.len);
     try std.testing.expectEqual(@as(usize, 40), tree_sitter_revision.len);
     try std.testing.expectEqual(@as(usize, 40), tree_sitter_zig_revision.len);
