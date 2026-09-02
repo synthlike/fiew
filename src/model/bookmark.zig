@@ -3,7 +3,7 @@
 const std = @import("std");
 const anchor = @import("anchor.zig");
 
-pub const schema = "fiew.bookmark/v1";
+pub const schema = "skaut.bookmark/v1";
 pub const max_label_bytes: usize = 48;
 
 pub const Status = enum { current, outdated };
@@ -54,7 +54,7 @@ pub fn parse(allocator: std.mem.Allocator, bytes: []const u8) ParseError!Parsed 
         return error.MalformedBookmarks;
     defer probe.deinit();
     if (!std.mem.eql(u8, probe.value.schema, schema)) {
-        if (std.mem.startsWith(u8, probe.value.schema, "fiew.bookmark/v")) return error.FutureSchema;
+        if (std.mem.startsWith(u8, probe.value.schema, "skaut.bookmark/v")) return error.FutureSchema;
         return error.InvalidSchema;
     }
     const parsed = std.json.parseFromSlice(Envelope, allocator, bytes, .{ .allocate = .alloc_always }) catch return error.MalformedBookmarks;
@@ -78,12 +78,12 @@ test "bookmark envelope round trips and future schemas are refused" {
     const items = [_]Bookmark{.{ .id = 1, .path = "src/main.zig", .line = 3, .column = 2, .source_offset = 8, .line_offset = 0, .context = .{ .bytes = "line\n", .original_start = 8, .target_start = 0, .target_end = 4 }, .label = "later" }};
     const bytes = try serialize(testing.allocator, .{ .next_id = 2, .bookmarks = &items });
     defer testing.allocator.free(bytes);
-    try testing.expect(std.mem.indexOf(u8, bytes, "\"schema\": \"fiew.bookmark/v1\"") != null);
+    try testing.expect(std.mem.indexOf(u8, bytes, "\"schema\": \"skaut.bookmark/v1\"") != null);
     var parsed = try parse(testing.allocator, bytes);
     defer parsed.deinit();
     try testing.expectEqualStrings("later", parsed.value().bookmarks[0].label);
-    try testing.expectError(error.FutureSchema, parse(testing.allocator, "{\"schema\":\"fiew.bookmark/v2\",\"data\":{}}"));
-    const missing_context = "{\"schema\":\"fiew.bookmark/v1\",\"data\":{\"next_id\":2,\"bookmarks\":[{\"id\":1,\"path\":\"a\",\"line\":1,\"column\":0,\"source_offset\":0,\"label\":\"\",\"status\":\"current\"}]}}";
+    try testing.expectError(error.FutureSchema, parse(testing.allocator, "{\"schema\":\"skaut.bookmark/v2\",\"data\":{}}"));
+    const missing_context = "{\"schema\":\"skaut.bookmark/v1\",\"data\":{\"next_id\":2,\"bookmarks\":[{\"id\":1,\"path\":\"a\",\"line\":1,\"column\":0,\"source_offset\":0,\"label\":\"\",\"status\":\"current\"}]}}";
     try testing.expectError(error.MalformedBookmarks, parse(testing.allocator, missing_context));
 }
 

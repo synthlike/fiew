@@ -1,4 +1,4 @@
-//! Parse git's unified diff output into fiew-owned `FileDiff` values. No git is
+//! Parse git's unified diff output into Skaut-owned `FileDiff` values. No git is
 //! invoked here; the parser is driven entirely by fixture text.
 
 const std = @import("std");

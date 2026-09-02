@@ -1,6 +1,6 @@
 //! State for the Git review context: the grouped change list shown in the
 //! sidebar and the cursor used to navigate the selected change's diff. Pure and
-//! fiew-owned; it takes ownership of a loaded `ChangeSet` and never touches git.
+//! Skaut-owned; it takes ownership of a loaded `ChangeSet` and never touches git.
 
 const std = @import("std");
 const git = @import("../model/git.zig");

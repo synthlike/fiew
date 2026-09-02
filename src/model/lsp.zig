@@ -1,4 +1,4 @@
-//! Fiew-owned Language Server Protocol values.
+//! Skaut-owned Language Server Protocol values.
 //!
 //! Wire JSON and process handles stay in adapters. These values bind semantic
 //! work to immutable repository and document identities.

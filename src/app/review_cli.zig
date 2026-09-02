@@ -1,4 +1,4 @@
-//! `fiew review` command contract and non-interactive review operations.
+//! `skaut review` command contract and non-interactive review operations.
 //! Parsing and rendering are terminal-independent so agents never need to
 //! scrape or mutate the interactive TUI.
 
@@ -532,6 +532,6 @@ test "agent reply appends one comment and stable output includes history" {
     try testing.expect(!std.mem.eql(u8, canonical, json));
     const markdown = try render(testing.allocator, created.id, after.entries[0].review, .markdown);
     defer testing.allocator.free(markdown);
-    try testing.expect(std.mem.indexOf(u8, markdown, "fiew-comment agent 4") != null);
+    try testing.expect(std.mem.indexOf(u8, markdown, "skaut-comment agent 4") != null);
     try testing.expectError(error.ThreadNotFound, appendAgentReply(testing.allocator, testing.io, tmp.dir, created.id, "missing", "no"));
 }

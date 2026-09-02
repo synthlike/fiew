@@ -1,4 +1,4 @@
-//! Stable identity for a repository's fiew-owned state.
+//! Stable identity for a repository's Skaut-owned state.
 //!
 //! Per-repository state lives in files named by a deterministic, filesystem-safe
 //! slug derived from the repository's canonical path. The slug is a 128-bit hash

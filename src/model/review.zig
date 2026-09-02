@@ -1,12 +1,12 @@
 //! Reviewer-owned review threads. Canonical storage is private JSON using the
-//! `fiew.review/v1` envelope; JSON and Markdown command renderings are public
+//! `skaut.review/v1` envelope; JSON and Markdown command renderings are public
 //! projections rather than canonical files.
 
 const std = @import("std");
 const git = @import("git.zig");
 const anchor = @import("anchor.zig");
 
-pub const schema = "fiew.review/v1";
+pub const schema = "skaut.review/v1";
 
 pub const Side = enum {
     old,
@@ -130,7 +130,7 @@ pub fn renderMarkdown(allocator: std.mem.Allocator, value: Review) ![]u8 {
         }
         try out.appendSlice(allocator, "### Comments\n");
         for (thread.comments) |comment| {
-            try print(allocator, &out, "<!-- fiew-comment {s} {d} -->\n", .{ @tagName(comment.author), comment.body.len });
+            try print(allocator, &out, "<!-- skaut-comment {s} {d} -->\n", .{ @tagName(comment.author), comment.body.len });
             try out.appendSlice(allocator, comment.body);
             try out.append(allocator, '\n');
         }
@@ -171,7 +171,7 @@ pub fn parse(allocator: std.mem.Allocator, bytes: []const u8) ParseError!Review 
         return error.MalformedReview;
     defer probe.deinit();
     if (!std.mem.eql(u8, probe.value.schema, schema)) {
-        if (std.mem.startsWith(u8, probe.value.schema, "fiew.review/v")) return error.FutureSchema;
+        if (std.mem.startsWith(u8, probe.value.schema, "skaut.review/v")) return error.FutureSchema;
         return error.InvalidSchema;
     }
 
@@ -280,7 +280,7 @@ fn parseMarkdownLegacy(allocator: std.mem.Allocator, bytes: []const u8) ParseErr
     }
     if (found_schema.len == 0) return error.InvalidSchema;
     if (!std.mem.eql(u8, found_schema, schema)) {
-        if (std.mem.startsWith(u8, found_schema, "fiew.review/")) return error.FutureSchema;
+        if (std.mem.startsWith(u8, found_schema, "skaut.review/")) return error.FutureSchema;
         return error.InvalidSchema;
     }
     if (created.len == 0) return error.MissingField;
@@ -355,9 +355,9 @@ fn parseThread(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) 
         for (comments.items) |comment| allocator.free(comment.body);
         comments.deinit(allocator);
     }
-    while (std.mem.startsWith(u8, bytes[cursor.*..], "<!-- fiew-comment ")) {
+    while (std.mem.startsWith(u8, bytes[cursor.*..], "<!-- skaut-comment ")) {
         const marker = try nextLine(bytes, cursor);
-        const prefix = "<!-- fiew-comment ";
+        const prefix = "<!-- skaut-comment ";
         if (!std.mem.endsWith(u8, marker, " -->")) return error.MalformedReview;
         const fields = marker[prefix.len .. marker.len - " -->".len];
         const space = std.mem.indexOfScalar(u8, fields, ' ') orelse return error.MalformedReview;
@@ -524,18 +524,18 @@ test "thread format is v1 and future schemas are refused" {
     var comments = [_]Comment{.{ .author = .reviewer, .body = "body" }};
     const text = try serialize(testing.allocator, sampleReview(&comments));
     defer testing.allocator.free(text);
-    try testing.expect(std.mem.indexOf(u8, text, "\"schema\": \"fiew.review/v1\"") != null);
+    try testing.expect(std.mem.indexOf(u8, text, "\"schema\": \"skaut.review/v1\"") != null);
 
-    const future = "{\"schema\":\"fiew.review/v2\",\"data\":{}}";
+    const future = "{\"schema\":\"skaut.review/v2\",\"data\":{}}";
     try testing.expectError(error.FutureSchema, parse(testing.allocator, future));
     const superseded_layout =
-        "---\nschema: fiew.review/v1\ncreated: now\nbase: { ref: HEAD, sha: x }\n---\n" ++
+        "---\nschema: skaut.review/v1\ncreated: now\nbase: { ref: HEAD, sha: x }\n---\n" ++
         "\n## old note\n- id: n1\n- path: a.zig\n- group: unstaged\n- status: open\n\nbody\n";
     try testing.expectError(error.MalformedReview, parse(testing.allocator, superseded_layout));
 }
 
 test "v1 rejects threads without exact context and independent lifecycle" {
-    const missing = "{\"schema\":\"fiew.review/v1\",\"data\":{\"base_ref\":\"HEAD\",\"base_sha\":\"x\",\"created\":\"now\",\"threads\":[{\"id\":\"t1\",\"path\":\"a\",\"group\":\"unstaged\",\"status\":\"open\",\"comments\":[{\"author\":\"reviewer\",\"body\":\"x\"}]}]}}";
+    const missing = "{\"schema\":\"skaut.review/v1\",\"data\":{\"base_ref\":\"HEAD\",\"base_sha\":\"x\",\"created\":\"now\",\"threads\":[{\"id\":\"t1\",\"path\":\"a\",\"group\":\"unstaged\",\"status\":\"open\",\"comments\":[{\"author\":\"reviewer\",\"body\":\"x\"}]}]}}";
     try testing.expectError(error.MalformedReview, parse(testing.allocator, missing));
 }
 

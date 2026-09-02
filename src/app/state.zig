@@ -224,7 +224,7 @@ pub const App = struct {
     viewing_source: bool = false,
     /// Loaded review notes (from `.reviews/`), when a repository is open.
     notes: ?notes_state.Notes = null,
-    /// Private bookmarks for this repository, loaded from fiew-owned state.
+    /// Private bookmarks for this repository, loaded from Skaut-owned state.
     bookmarks: ?bookmarks_state.Bookmarks = null,
     bookmarks_available: bool = false,
     /// Trails exist only for the explicitly active named review.

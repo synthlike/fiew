@@ -1,9 +1,9 @@
-//! fiew-owned model of the current Git working-tree review. No git wire formats
+//! Skaut-owned model of the current Git working-tree review. No git wire formats
 //! appear here; adapters translate git output into these values.
 
 const std = @import("std");
 
-/// The three change groups fiew reviews. A path may appear in more than one.
+/// The three change groups Skaut reviews. A path may appear in more than one.
 pub const Group = enum {
     /// `HEAD` to index.
     staged,

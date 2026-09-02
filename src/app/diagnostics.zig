@@ -1,6 +1,6 @@
 //! Bounded, redacting diagnostic history.
 //!
-//! fiew records why capabilities degraded without leaking protected content.
+//! Skaut records why capabilities degraded without leaking protected content.
 //! Protected detail (source bytes, review-note bodies, environment values, and
 //! protocol payloads) is redacted by default; verbatim inclusion is opt-in for
 //! explicitly enabled local logging.

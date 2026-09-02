@@ -184,7 +184,7 @@ pub const definitions = [_]Definition{
     .{ .id = .leader_menu, .stable_id = "leader-menu", .title = "Open leader menu", .binding = "Space" },
     .{ .id = .help, .stable_id = "help", .title = "Show key help", .binding = "Space ?" },
     .{ .id = .command_prompt, .stable_id = "command-prompt", .title = "Search named commands", .binding = ":" },
-    .{ .id = .quit, .stable_id = "quit", .title = "Quit fiew", .binding = "Space q / :quit" },
+    .{ .id = .quit, .stable_id = "quit", .title = "Quit Skaut", .binding = "Space q / :quit" },
     .{ .id = .cancel, .stable_id = "cancel", .title = "Cancel", .binding = "Esc" },
     .{ .id = .close_transient, .stable_id = "close-transient", .title = "Close transient view", .binding = "q" },
     .{ .id = .note_save, .stable_id = "note-save", .title = "Save note", .binding = "Ctrl-Enter", .disabled_reason = "note composer is not open" },

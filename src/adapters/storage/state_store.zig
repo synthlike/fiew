@@ -1,6 +1,6 @@
-//! The single serialized adapter for fiew-owned persistent state.
+//! The single serialized adapter for Skaut-owned persistent state.
 //!
-//! Every persistent write in fiew passes through one `StateStore` instance so
+//! Every persistent write in Skaut passes through one `StateStore` instance so
 //! that global and per-repository JSON records share one atomic, recoverable
 //! discipline:
 //!
@@ -11,7 +11,7 @@
 //! * bounded, redacted diagnostics for every degraded outcome.
 //!
 //! The store never writes inside a repository or Git metadata; it operates only
-//! on a fiew-owned base directory supplied by the composition root.
+//! on a Skaut-owned base directory supplied by the composition root.
 
 const std = @import("std");
 const diagnostics = @import("../../app/diagnostics.zig");
@@ -115,7 +115,7 @@ pub const StateStore = struct {
     owns_dir: bool,
     mutex: std.Io.Mutex = .init,
 
-    /// Wrap an already-opened, fiew-owned base directory. The store does not
+    /// Wrap an already-opened, Skaut-owned base directory. The store does not
     /// close a borrowed directory.
     pub fn init(
         allocator: std.mem.Allocator,
@@ -132,7 +132,7 @@ pub const StateStore = struct {
         };
     }
 
-    /// Create and open a fiew-owned base directory tree, taking ownership so
+    /// Create and open a Skaut-owned base directory tree, taking ownership so
     /// `deinit` closes it.
     pub fn openPath(
         allocator: std.mem.Allocator,
@@ -343,13 +343,13 @@ pub fn globalStateDirectoryPath(
     return switch (os_tag) {
         .macos => if (home) |value|
             if (value.len != 0 and std.fs.path.isAbsolute(value))
-                try std.fs.path.join(allocator, &.{ value, "Library", "Application Support", "fiew" })
+                try std.fs.path.join(allocator, &.{ value, "Library", "Application Support", "skaut" })
             else
                 null
         else
             null,
         .linux => if (xdg_state_home) |value|
-            if (value.len != 0 and std.fs.path.isAbsolute(value)) try std.fs.path.join(allocator, &.{ value, "fiew" }) else linuxHomePath(allocator, home)
+            if (value.len != 0 and std.fs.path.isAbsolute(value)) try std.fs.path.join(allocator, &.{ value, "skaut" }) else linuxHomePath(allocator, home)
         else
             linuxHomePath(allocator, home),
         else => null,
@@ -359,7 +359,7 @@ pub fn globalStateDirectoryPath(
 fn linuxHomePath(allocator: std.mem.Allocator, home: ?[]const u8) !?[]u8 {
     const value = home orelse return null;
     if (value.len == 0 or !std.fs.path.isAbsolute(value)) return null;
-    return try std.fs.path.join(allocator, &.{ value, ".local", "state", "fiew" });
+    return try std.fs.path.join(allocator, &.{ value, ".local", "state", "skaut" });
 }
 
 pub fn dataDirectoryPath(allocator: std.mem.Allocator, home: []const u8) ![]u8 {
@@ -373,7 +373,7 @@ const TestRecord = struct {
     count: u32,
 };
 
-const test_schema = "fiew.test.record";
+const test_schema = "skaut.test.record";
 const test_version: u32 = 1;
 
 fn testDescriptor() Descriptor {
@@ -478,7 +478,7 @@ test "unknown future schema is refused and never overwritten" {
     var store = openTempStore(&temporary, &log);
 
     const future_bytes =
-        \\{ "schema": "fiew.test.record", "version": 99, "data": { "label": "future", "count": 0 } }
+        \\{ "schema": "skaut.test.record", "version": 99, "data": { "label": "future", "count": 0 } }
     ;
     try temporary.dir.writeFile(std.testing.io, .{
         .sub_path = "example.json",
@@ -554,22 +554,22 @@ test "diagnostics record recovery without leaking record data" {
 test "platform global state paths follow macOS and Linux contracts" {
     const xdg = (try globalStateDirectoryPath(std.testing.allocator, .linux, "/home/dev", "/state")).?;
     defer std.testing.allocator.free(xdg);
-    try std.testing.expectEqualStrings("/state/fiew", xdg);
+    try std.testing.expectEqualStrings("/state/skaut", xdg);
 
     const fallback = (try globalStateDirectoryPath(std.testing.allocator, .linux, "/home/dev", "")).?;
     defer std.testing.allocator.free(fallback);
-    try std.testing.expectEqualStrings("/home/dev/.local/state/fiew", fallback);
+    try std.testing.expectEqualStrings("/home/dev/.local/state/skaut", fallback);
 
     try std.testing.expect((try globalStateDirectoryPath(std.testing.allocator, .linux, null, null)) == null);
     try std.testing.expect((try globalStateDirectoryPath(std.testing.allocator, .linux, "relative", null)) == null);
     try std.testing.expect((try globalStateDirectoryPath(std.testing.allocator, .macos, null, null)) == null);
 }
 
-test "data directory path stays under the fiew-owned application support tree" {
+test "data directory path stays under the Skaut-owned application support tree" {
     const path = try dataDirectoryPath(std.testing.allocator, "/Users/dev");
     defer std.testing.allocator.free(path);
     try std.testing.expectEqualStrings(
-        "/Users/dev/Library/Application Support/fiew",
+        "/Users/dev/Library/Application Support/skaut",
         path,
     );
 }

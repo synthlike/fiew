@@ -1,4 +1,4 @@
-//! fiew-owned syntax types. These are the only shapes the application and view
+//! Skaut-owned syntax types. These are the only shapes the application and view
 //! layers see; no Tree-sitter C types cross this boundary.
 
 const std = @import("std");
@@ -67,7 +67,7 @@ pub const OutlineNode = struct {
 };
 
 /// A flat, pre-order list of named nodes. Structural navigation is pure over
-/// this fiew-owned projection so no Tree-sitter type reaches the reducer.
+/// this Skaut-owned projection so no Tree-sitter type reaches the reducer.
 pub const Outline = struct {
     allocator: std.mem.Allocator,
     nodes: []const OutlineNode,
@@ -123,7 +123,7 @@ pub const Outline = struct {
     }
 };
 
-/// Immutable, fiew-owned analysis of one document snapshot. Produced entirely by
+/// Immutable, Skaut-owned analysis of one document snapshot. Produced entirely by
 /// a parse job and read (never recomputed) during rendering.
 pub const ParseData = struct {
     allocator: std.mem.Allocator,

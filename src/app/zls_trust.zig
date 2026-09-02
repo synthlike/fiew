@@ -4,7 +4,7 @@ const std = @import("std");
 const state_store = @import("../adapters/storage/state_store.zig");
 const repository_identity = @import("../model/repository_identity.zig");
 
-pub const schema = "fiew.global/v1";
+pub const schema = "skaut.global/v1";
 pub const version: u32 = 1;
 
 pub const Stored = struct {

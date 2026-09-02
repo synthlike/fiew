@@ -1,5 +1,5 @@
 //! Repository discovery for the read-only Git review workflow. Classifies the
-//! directory fiew was opened in as a usable work tree (standard or linked
+//! directory Skaut was opened in as a usable work tree (standard or linked
 //! worktree, possibly unborn), a non-Git directory, or an unsupported bare
 //! repository — all through non-mutating `git rev-parse` calls.
 
@@ -45,7 +45,7 @@ pub const Discovery = union(enum) {
     bare_unsupported,
 };
 
-/// Classify `dir` (the directory fiew is browsing).
+/// Classify `dir` (the directory Skaut is browsing).
 pub fn discover(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -475,7 +475,7 @@ test "discover classifies a fresh work tree as ready and unborn" {
     defer tmp.cleanup();
 
     // `git init` makes the temp directory its own (innermost) repository, so
-    // discovery reports it even though the temp dir is nested under fiew's repo.
+    // discovery reports it even though the temp dir is nested under Skaut's repo.
     try runGit(tmp.dir, &.{ "init", "--quiet" });
     var discovery = try discover(std.testing.allocator, std.testing.io, tmp.dir);
     switch (discovery) {

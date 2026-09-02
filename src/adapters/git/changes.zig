@@ -1,4 +1,4 @@
-//! Parse `git diff --raw -z` and `--numstat -z` output into fiew-owned changes.
+//! Parse `git diff --raw -z` and `--numstat -z` output into Skaut-owned changes.
 //! Kept free of any git invocation so it is exhaustively fixture-tested.
 
 const std = @import("std");

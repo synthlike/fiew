@@ -1,5 +1,5 @@
 //! Direct Tree-sitter adapter for Zig. Owns every C lifetime (parser, tree,
-//! queries, cursors) and returns only fiew-owned syntax values. Parsing is
+//! queries, cursors) and returns only Skaut-owned syntax values. Parsing is
 //! cancellable and never runs during cell rendering; callers invoke it from
 //! parse jobs and read the resulting immutable snapshot while drawing.
 
@@ -33,7 +33,7 @@ pub const CancelContext = struct {
     }
 };
 
-/// fiew-owned highlight query. Predicate-free by design: the C query API does
+/// Skaut-owned highlight query. Predicate-free by design: the C query API does
 /// not evaluate the grammar's `#lua-match?` predicates, so naming-convention
 /// captures are omitted in favor of node-type and token captures that are
 /// correct by construction. Every token below is drawn from the grammar's own
@@ -213,7 +213,7 @@ pub const Engine = struct {
         return ranges.toOwnedSlice(allocator);
     }
 
-    /// Produce the complete fiew-owned analysis of a parsed document: highlight
+    /// Produce the complete Skaut-owned analysis of a parsed document: highlight
     /// spans over the whole document, fold ranges, and the structural outline.
     /// Highlighting the full (<= 2 MiB) document trivially covers any viewport.
     pub fn analyze(

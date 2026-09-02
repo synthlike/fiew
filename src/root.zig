@@ -1,4 +1,4 @@
-//! Fiew-owned application types and behavior.
+//! Skaut-owned application types and behavior.
 
 const std = @import("std");
 

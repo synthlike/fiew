@@ -153,7 +153,7 @@ test "repository-local bookmark state recovers backup and refuses future schema"
         else => return error.TestUnexpectedResult,
     }
 
-    const future = "{\"schema\":\"fiew.bookmark/v2\",\"data\":{}}";
+    const future = "{\"schema\":\"skaut.bookmark/v2\",\"data\":{}}";
     try dir.writeFile(testing.io, .{ .sub_path = filename, .data = future });
     try testing.expectError(error.FutureSchema, save(testing.allocator, testing.io, tmp.dir, .{}));
     const after = try dir.readFileAlloc(testing.io, filename, testing.allocator, .unlimited);

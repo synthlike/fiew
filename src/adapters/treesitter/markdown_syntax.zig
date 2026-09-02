@@ -1,6 +1,6 @@
 //! Direct Tree-sitter adapter for Markdown block and inline structure. The
 //! adapter owns all C values and flattens both parse trees, plus one level of
-//! explicitly labelled Zig fence injection, into fiew-owned syntax data.
+//! explicitly labelled Zig fence injection, into Skaut-owned syntax data.
 
 const std = @import("std");
 const ts = @import("c.zig");

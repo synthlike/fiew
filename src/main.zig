@@ -1,5 +1,5 @@
 const std = @import("std");
-const fiew = @import("fiew");
+const skaut = @import("skaut");
 const terminal = @import("adapters/terminal/vaxis_terminal.zig");
 
 pub fn main(init: std.process.Init) !void {
@@ -42,7 +42,7 @@ fn run(init: std.process.Init) !u8 {
         try writeStdout(init.io, reviewHelp);
         return 0;
     }
-    const command = try fiew.review_cli.parse(args.items[1..]);
+    const command = try skaut.review_cli.parse(args.items[1..]);
     return runReview(init, command);
 }
 
@@ -51,17 +51,17 @@ fn isHelp(arg: []const u8) bool {
 }
 
 const generalHelp =
-    \\Usage: fiew [<repository-or-file>]
-    \\       fiew review <command> [options]
-    \\       fiew version | --version
-    \\       fiew help | -h | --help
+    \\Usage: skaut [<repository-or-file>]
+    \\       skaut review <command> [options]
+    \\       skaut version | --version
+    \\       skaut help | -h | --help
     \\Open a read-first Git review workspace, optionally focused on a file.
     \\Use Space r d for Review Diff and Space r t for Review Threads.
-    \\Run 'fiew review help' for the non-interactive review interface.
+    \\Run 'skaut review help' for the non-interactive review interface.
 ;
 
 const reviewHelp =
-    \\Usage: fiew review <command> [options]
+    \\Usage: skaut review <command> [options]
     \\Commands:
     \\  start [--name <slug>] [--repo <path>]
     \\  open [<review-id>] [--repo <path>]
@@ -71,7 +71,7 @@ const reviewHelp =
     \\delete threads. 'show' and 'reply' use the current review by default.
 ;
 
-fn runReview(init: std.process.Init, command: fiew.review_cli.Command) !u8 {
+fn runReview(init: std.process.Init, command: skaut.review_cli.Command) !u8 {
     switch (command) {
         .start => |options| {
             var repository = try openRepository(init, options.repo);
@@ -80,7 +80,7 @@ fn runReview(init: std.process.Init, command: fiew.review_cli.Command) !u8 {
             const seconds: u64 = @intCast(@divFloor(now, std.time.ns_per_s));
             const sha = try headSha(init.gpa, init.io, repository.root_dir);
             defer init.gpa.free(sha);
-            var created = try fiew.review_cli.create(
+            var created = try skaut.review_cli.create(
                 init.gpa,
                 init.io,
                 repository.root_dir,
@@ -94,7 +94,7 @@ fn runReview(init: std.process.Init, command: fiew.review_cli.Command) !u8 {
                 .root_path = repository.root_path,
                 .review_filename = created.filename,
             };
-            return fiew.review_cli.afterInteractive(
+            return skaut.review_cli.afterInteractive(
                 &handoff,
                 created.id,
                 StartHandoff.interactive,
@@ -104,13 +104,13 @@ fn runReview(init: std.process.Init, command: fiew.review_cli.Command) !u8 {
         .open => |options| {
             var repository = try openRepository(init, options.repo);
             defer repository.deinit();
-            const id = try fiew.review_cli.resolveId(init.gpa, init.io, repository.root_dir, options.id);
+            const id = try skaut.review_cli.resolveId(init.gpa, init.io, repository.root_dir, options.id);
             defer init.gpa.free(id);
-            const filename = try fiew.review_cli.filenameForId(init.gpa, id);
+            const filename = try skaut.review_cli.filenameForId(init.gpa, id);
             defer init.gpa.free(filename);
-            var checked = try fiew.review_store.loadOne(init.gpa, init.io, repository.root_dir, filename);
+            var checked = try skaut.review_store.loadOne(init.gpa, init.io, repository.root_dir, filename);
             checked.deinit();
-            if (options.id != null) try fiew.review_cli.makeCurrent(init.gpa, init.io, repository.root_dir, id);
+            if (options.id != null) try skaut.review_cli.makeCurrent(init.gpa, init.io, repository.root_dir, id);
             return terminal.run(init, .{
                 .root_path = repository.root_path,
                 .review_filename = filename,
@@ -119,30 +119,30 @@ fn runReview(init: std.process.Init, command: fiew.review_cli.Command) !u8 {
         .show => |options| {
             var repository = try openRepository(init, options.repo);
             defer repository.deinit();
-            const id = try fiew.review_cli.resolveId(init.gpa, init.io, repository.root_dir, options.id);
+            const id = try skaut.review_cli.resolveId(init.gpa, init.io, repository.root_dir, options.id);
             defer init.gpa.free(id);
-            var loaded = try fiew.review_cli.load(init.gpa, init.io, repository.root_dir, id);
+            var loaded = try skaut.review_cli.load(init.gpa, init.io, repository.root_dir, id);
             defer loaded.deinit();
-            const output = try fiew.review_cli.render(init.gpa, id, loaded.entries[0].review, options.format);
+            const output = try skaut.review_cli.render(init.gpa, id, loaded.entries[0].review, options.format);
             defer init.gpa.free(output);
             try writeStdout(init.io, output);
             if (options.format == .markdown and (output.len == 0 or output[output.len - 1] != '\n'))
                 try writeStdout(init.io, "\n");
-            return if (fiew.review_cli.approved(loaded.entries[0].review)) 0 else 1;
+            return if (skaut.review_cli.approved(loaded.entries[0].review)) 0 else 1;
         },
         .reply => |options| {
             const body = try std.Io.Dir.cwd().readFileAlloc(
                 init.io,
                 options.body_file,
                 init.gpa,
-                .limited64(fiew.review_store.max_review_bytes),
+                .limited64(skaut.review_store.max_review_bytes),
             );
             defer init.gpa.free(body);
             var repository = try openRepository(init, options.repo);
             defer repository.deinit();
-            const id = try fiew.review_cli.resolveId(init.gpa, init.io, repository.root_dir, options.id);
+            const id = try skaut.review_cli.resolveId(init.gpa, init.io, repository.root_dir, options.id);
             defer init.gpa.free(id);
-            try fiew.review_cli.appendAgentReply(
+            try skaut.review_cli.appendAgentReply(
                 init.gpa,
                 init.io,
                 repository.root_dir,
@@ -150,9 +150,9 @@ fn runReview(init: std.process.Init, command: fiew.review_cli.Command) !u8 {
                 options.thread_id,
                 body,
             );
-            var loaded = try fiew.review_cli.load(init.gpa, init.io, repository.root_dir, id);
+            var loaded = try skaut.review_cli.load(init.gpa, init.io, repository.root_dir, id);
             defer loaded.deinit();
-            return if (fiew.review_cli.approved(loaded.entries[0].review)) 0 else 1;
+            return if (skaut.review_cli.approved(loaded.entries[0].review)) 0 else 1;
         },
     }
 }
@@ -176,12 +176,12 @@ const StartHandoff = struct {
     }
 };
 
-fn openRepository(init: std.process.Init, requested_path: []const u8) !fiew.filesystem.Repository {
+fn openRepository(init: std.process.Init, requested_path: []const u8) !skaut.filesystem.Repository {
     var requested = try std.Io.Dir.cwd().openDir(init.io, requested_path, .{});
     defer requested.close(init.io);
     var canonical: ?[]u8 = null;
     defer if (canonical) |path| init.gpa.free(path);
-    switch (fiew.git.discover(init.gpa, init.io, requested) catch .not_a_repository) {
+    switch (skaut.git.discover(init.gpa, init.io, requested) catch .not_a_repository) {
         .ready => |context| {
             var owned = context;
             defer owned.deinit();
@@ -189,11 +189,11 @@ fn openRepository(init: std.process.Init, requested_path: []const u8) !fiew.file
         },
         else => {},
     }
-    return fiew.filesystem.Repository.open(init.gpa, init.io, canonical orelse requested_path);
+    return skaut.filesystem.Repository.open(init.gpa, init.io, canonical orelse requested_path);
 }
 
 fn headSha(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir) ![]u8 {
-    var result = fiew.git_command.run(allocator, io, dir, &.{ "rev-parse", "HEAD" }) catch
+    var result = skaut.git_command.run(allocator, io, dir, &.{ "rev-parse", "HEAD" }) catch
         return allocator.dupe(u8, "");
     defer result.deinit();
     if (!result.succeeded()) return allocator.dupe(u8, "");
@@ -203,7 +203,7 @@ fn headSha(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir) ![]u8 {
 fn writeVersion(io: std.Io) !void {
     var buffer: [4096]u8 = undefined;
     var writer = std.Io.File.stdout().writer(io, &buffer);
-    try fiew.version.write(&writer.interface);
+    try skaut.version.write(&writer.interface);
     try writer.interface.flush();
 }
 
@@ -217,7 +217,7 @@ fn writeStdout(io: std.Io, bytes: []const u8) !void {
 fn writeError(io: std.Io, err: anyerror) void {
     var buffer: [512]u8 = undefined;
     var writer = std.Io.File.stderr().writer(io, &buffer);
-    writer.interface.print("fiew: {s}\n", .{@errorName(err)}) catch return;
+    writer.interface.print("skaut: {s}\n", .{@errorName(err)}) catch return;
     writer.interface.flush() catch {};
 }
 

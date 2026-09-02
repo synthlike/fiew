@@ -1,4 +1,4 @@
-/// Fiew-owned boundary for Unicode grapheme segmentation and terminal-cell width.
+/// Skaut-owned boundary for Unicode grapheme segmentation and terminal-cell width.
 pub const Segmenter = struct {
     context: ?*const anyopaque = null,
     next_fn: *const fn (?*const anyopaque, []const u8, usize) usize,

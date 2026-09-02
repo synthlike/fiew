@@ -191,7 +191,7 @@ pub const Notes = struct {
         review.freeThread(self.allocator, removed_thread);
         file.dirty = true;
         // An empty review is still a durable named review. Deleting its final
-        // thread must not delete the review identity used by `fiew review`.
+        // thread must not delete the review identity used by `skaut review`.
         if (self.selected >= self.total() and self.selected > 0) self.selected = self.total() -| 1;
         self.ensureVisible(20);
     }

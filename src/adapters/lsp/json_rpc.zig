@@ -76,7 +76,7 @@ pub fn serverRequest(parsed: std.json.Value) ?ServerRequest {
 pub const Refusal = enum { apply_edit, method_not_found };
 
 /// Every server request capable of mutation or command execution is refused.
-/// Unknown requests are also rejected because fiew advertises no such feature.
+/// Unknown requests are also rejected because Skaut advertises no such feature.
 pub fn refusalFor(method: []const u8) Refusal {
     return if (std.mem.eql(u8, method, "workspace/applyEdit")) .apply_edit else .method_not_found;
 }
@@ -86,12 +86,12 @@ pub fn refusalBody(allocator: std.mem.Allocator, request: ServerRequest) ![]u8 {
         .apply_edit => std.json.Stringify.valueAlloc(allocator, .{
             .jsonrpc = "2.0",
             .id = request.id,
-            .result = .{ .applied = false, .failureReason = "fiew is read-only" },
+            .result = .{ .applied = false, .failureReason = "Skaut is read-only" },
         }, .{}),
         .method_not_found => std.json.Stringify.valueAlloc(allocator, .{
             .jsonrpc = "2.0",
             .id = request.id,
-            .@"error" = .{ .code = -32601, .message = "method not supported by read-only fiew client" },
+            .@"error" = .{ .code = -32601, .message = "method not supported by read-only Skaut client" },
         }, .{}),
     };
 }

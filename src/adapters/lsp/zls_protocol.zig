@@ -96,7 +96,7 @@ pub fn initializeBody(allocator: std.mem.Allocator, id: i64, root_uri: []const u
         .method = "initialize",
         .params = .{
             .processId = @as(?i64, null),
-            .clientInfo = .{ .name = "fiew" },
+            .clientInfo = .{ .name = "skaut" },
             .rootUri = root_uri,
             .workspaceFolders = &.{.{ .uri = root_uri, .name = "repository" }},
             .capabilities = .{
@@ -168,7 +168,7 @@ pub fn referencesBody(
         .params = .{
             .textDocument = .{ .uri = uri },
             .position = position,
-            // The declaration is not synthesized by fiew. It appears only if
+            // The declaration is not synthesized by Skaut. It appears only if
             // ZLS includes it in this requested result set.
             .context = .{ .includeDeclaration = true },
         },

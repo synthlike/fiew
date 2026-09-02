@@ -232,7 +232,7 @@ test "malformed and future standalone Trails do not hide valid artifacts or insp
     var dir = try tmp.dir.openDir(testing.io, directory_name, .{});
     defer dir.close(testing.io);
     try dir.writeFile(testing.io, .{ .sub_path = "11111111111111111111111111111111.json", .data = "broken" });
-    try dir.writeFile(testing.io, .{ .sub_path = "22222222222222222222222222222222.json", .data = "{\"schema\":\"fiew.trail/v2\",\"data\":{}}" });
+    try dir.writeFile(testing.io, .{ .sub_path = "22222222222222222222222222222222.json", .data = "{\"schema\":\"skaut.trail/v2\",\"data\":{}}" });
     try tmp.dir.createDirPath(testing.io, ".reviews");
     try tmp.dir.writeFile(testing.io, .{ .sub_path = ".reviews/review.json.trails", .data = "legacy development companion" });
     var loaded = try loadAll(testing.allocator, testing.io, tmp.dir);

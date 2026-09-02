@@ -10,7 +10,7 @@ pub const tree_sitter_markdown_revision = "a0a00f817d02412bd92c54d316f164d827b57
 
 pub fn write(writer: *std.Io.Writer) !void {
     try writer.print(
-        \\fiew {s}
+        \\skaut {s}
         \\zig {s}
         \\libvaxis {s}
         \\tree-sitter {s} ({s})

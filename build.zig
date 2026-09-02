@@ -4,7 +4,7 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const fiew = b.addModule("fiew", .{
+    const skaut = b.addModule("skaut", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
@@ -26,10 +26,10 @@ pub fn build(b: *std.Build) void {
     const build_options = b.addOptions();
     build_options.addOption(bool, "git_integration", git_integration);
     build_options.addOption(bool, "performance", performance);
-    fiew.addOptions("build_options", build_options);
+    skaut.addOptions("build_options", build_options);
 
     // Tree-sitter core (v0.26.13), Zig, and Markdown grammars (ABI 15) are vendored at
-    // pinned revisions under vendor/ and statically compiled into the fiew
+    // pinned revisions under vendor/ and statically compiled into the skaut
     // module. They are reached only through the direct C adapter in
     // src/adapters/treesitter. See each vendor/*/REVISION for the exact commit.
     const c_flags = &[_][]const u8{
@@ -38,25 +38,25 @@ pub fn build(b: *std.Build) void {
         "-D_POSIX_C_SOURCE=200809L",
         "-D_DEFAULT_SOURCE",
     };
-    fiew.addCSourceFile(.{ .file = b.path("vendor/tree-sitter/lib/src/lib.c"), .flags = c_flags });
-    fiew.addIncludePath(b.path("vendor/tree-sitter/lib/include"));
-    fiew.addIncludePath(b.path("vendor/tree-sitter/lib/src"));
-    fiew.addCSourceFile(.{
+    skaut.addCSourceFile(.{ .file = b.path("vendor/tree-sitter/lib/src/lib.c"), .flags = c_flags });
+    skaut.addIncludePath(b.path("vendor/tree-sitter/lib/include"));
+    skaut.addIncludePath(b.path("vendor/tree-sitter/lib/src"));
+    skaut.addCSourceFile(.{
         .file = b.path("vendor/tree-sitter-zig/src/parser.c"),
         .flags = c_flags,
     });
-    fiew.addIncludePath(b.path("vendor/tree-sitter-zig/src"));
+    skaut.addIncludePath(b.path("vendor/tree-sitter-zig/src"));
     for (&[_][]const u8{
         "vendor/tree-sitter-markdown/block/parser.c",
         "vendor/tree-sitter-markdown/block/scanner.c",
         "vendor/tree-sitter-markdown/inline/parser.c",
         "vendor/tree-sitter-markdown/inline/scanner.c",
-    }) |source| fiew.addCSourceFile(.{ .file = b.path(source), .flags = c_flags });
-    fiew.addIncludePath(b.path("vendor/tree-sitter-markdown/block"));
-    fiew.addIncludePath(b.path("vendor/tree-sitter-markdown/inline"));
+    }) |source| skaut.addCSourceFile(.{ .file = b.path(source), .flags = c_flags });
+    skaut.addIncludePath(b.path("vendor/tree-sitter-markdown/block"));
+    skaut.addIncludePath(b.path("vendor/tree-sitter-markdown/inline"));
     // The grammar's fold query lives outside src/, so expose it as a named
     // import the adapter can @embedFile.
-    fiew.addAnonymousImport("zig_fold_query", .{
+    skaut.addAnonymousImport("zig_fold_query", .{
         .root_source_file = b.path("vendor/tree-sitter-zig/queries/folds.scm"),
     });
 
@@ -70,13 +70,13 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "fiew", .module = fiew },
+            .{ .name = "skaut", .module = skaut },
             .{ .name = "vaxis", .module = vaxis_dependency.module("vaxis") },
         },
     });
 
     const executable = b.addExecutable(.{
-        .name = "fiew",
+        .name = "skaut",
         .root_module = executable_module,
     });
     b.installArtifact(executable);
@@ -85,10 +85,10 @@ pub fn build(b: *std.Build) void {
     run_command.step.dependOn(b.getInstallStep());
     if (b.args) |arguments| run_command.addArgs(arguments);
 
-    const run_step = b.step("run", "Run fiew");
+    const run_step = b.step("run", "Run Skaut");
     run_step.dependOn(&run_command.step);
 
-    const core_tests = b.addTest(.{ .root_module = fiew });
+    const core_tests = b.addTest(.{ .root_module = skaut });
     const run_core_tests = b.addRunArtifact(core_tests);
 
     const executable_tests = b.addTest(.{ .root_module = executable_module });
@@ -100,8 +100,8 @@ pub fn build(b: *std.Build) void {
 
     // Emit, but do not run, target test binaries. This supports cross-building
     // on macOS and executing the exact binaries in a native Linux environment.
-    const install_core_tests = b.addInstallArtifact(core_tests, .{ .dest_sub_path = "fiew-core-tests" });
-    const install_executable_tests = b.addInstallArtifact(executable_tests, .{ .dest_sub_path = "fiew-executable-tests" });
+    const install_core_tests = b.addInstallArtifact(core_tests, .{ .dest_sub_path = "skaut-core-tests" });
+    const install_executable_tests = b.addInstallArtifact(executable_tests, .{ .dest_sub_path = "skaut-executable-tests" });
     const test_binaries_step = b.step("test-binaries", "Install target test binaries without running them");
     test_binaries_step.dependOn(&install_core_tests.step);
     test_binaries_step.dependOn(&install_executable_tests.step);

@@ -3,7 +3,7 @@
 const std = @import("std");
 const anchor = @import("anchor.zig");
 
-pub const schema = "fiew.trail/v1";
+pub const schema = "skaut.trail/v1";
 pub const max_title_bytes: usize = 80;
 pub const max_note_bytes: usize = 4096;
 pub const id_bytes: usize = 32;
@@ -74,7 +74,7 @@ pub fn parse(allocator: std.mem.Allocator, bytes: []const u8) ParseError!Parsed 
     const probe = std.json.parseFromSlice(Probe, allocator, bytes, .{ .ignore_unknown_fields = true }) catch return error.MalformedTrail;
     defer probe.deinit();
     if (!std.mem.eql(u8, probe.value.schema, schema)) {
-        if (std.mem.startsWith(u8, probe.value.schema, "fiew.trail/v")) return error.FutureSchema;
+        if (std.mem.startsWith(u8, probe.value.schema, "skaut.trail/v")) return error.FutureSchema;
         return error.InvalidSchema;
     }
     const parsed = std.json.parseFromSlice(Envelope, allocator, bytes, .{ .allocate = .alloc_always }) catch return error.MalformedTrail;
@@ -105,5 +105,5 @@ test "standalone Trail envelope preserves identity, ownership, and ordered point
     try std.testing.expectEqualStrings(item.id, parsed.value().id);
     try std.testing.expectEqualStrings("review.json", parsed.value().owner.review);
     try std.testing.expectEqualStrings("b.zig", parsed.value().points[1].path);
-    try std.testing.expectError(error.FutureSchema, parse(std.testing.allocator, "{\"schema\":\"fiew.trail/v2\",\"data\":{}}"));
+    try std.testing.expectError(error.FutureSchema, parse(std.testing.allocator, "{\"schema\":\"skaut.trail/v2\",\"data\":{}}"));
 }

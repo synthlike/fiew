@@ -1,5 +1,5 @@
 //! Durable repository-local review storage. Primary and backup files are
-//! validated private `fiew.review/v1` JSON; writes use atomic replacement.
+//! validated private `skaut.review/v1` JSON; writes use atomic replacement.
 
 const std = @import("std");
 const review = @import("../../model/review.zig");
@@ -324,7 +324,7 @@ test "loadOne ignores unrelated review files" {
     defer dir.close(testing.io);
     try dir.writeFile(testing.io, .{
         .sub_path = "unrelated.json",
-        .data = "{\"schema\":\"fiew.review/v2\",\"data\":{}}",
+        .data = "{\"schema\":\"skaut.review/v2\",\"data\":{}}",
     });
     var loaded = try loadOne(testing.allocator, testing.io, tmp.dir, "wanted.json");
     defer loaded.deinit();
@@ -380,7 +380,7 @@ test "legacy Markdown reviews are rejected" {
     defer tmp.cleanup();
     var dir = try tmp.dir.createDirPathOpen(testing.io, directory_name, .{});
     defer dir.close(testing.io);
-    try dir.writeFile(testing.io, .{ .sub_path = "legacy.md", .data = "---\nschema: fiew.review/v1\n---\n" });
+    try dir.writeFile(testing.io, .{ .sub_path = "legacy.md", .data = "---\nschema: skaut.review/v1\n---\n" });
     try testing.expectError(error.UnsupportedLegacyReview, loadAll(testing.allocator, testing.io, tmp.dir));
     try testing.expectError(error.UnsupportedLegacyReview, loadOne(testing.allocator, testing.io, tmp.dir, "legacy.json"));
 }
@@ -390,7 +390,7 @@ test "future schema is refused and not overwritten" {
     defer tmp.cleanup();
     var dir = try tmp.dir.createDirPathOpen(testing.io, directory_name, .{});
     defer dir.close(testing.io);
-    const future = "{\"schema\":\"fiew.review/v2\",\"data\":{}}";
+    const future = "{\"schema\":\"skaut.review/v2\",\"data\":{}}";
     try dir.writeFile(testing.io, .{ .sub_path = "review.json", .data = future });
     try testing.expectError(error.FutureSchema, loadAll(testing.allocator, testing.io, tmp.dir));
     try testing.expectError(error.FutureSchema, loadOne(testing.allocator, testing.io, tmp.dir, "review.json"));

@@ -1,5 +1,5 @@
 //! The single C boundary for Tree-sitter. Everything above this file speaks in
-//! fiew-owned types; only the adapter in this directory touches these symbols.
+//! Skaut-owned types; only the adapter in this directory touches these symbols.
 
 pub const c = @cImport({
     @cInclude("tree_sitter/api.h");

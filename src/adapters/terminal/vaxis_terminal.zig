@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const vaxis = @import("vaxis");
-const fiew = @import("fiew");
+const skaut = @import("skaut");
 const ShutdownSignals = @import("shutdown_signals.zig").ShutdownSignals;
 
 const Event = union(enum) {
@@ -11,13 +11,13 @@ const Event = union(enum) {
     tick,
     /// A completed parse job, delivered from the worker thread. The main thread
     /// owns and frees the boxed completion.
-    parse_done: *fiew.parse_job.Completion,
-    git_done: *fiew.git_job.Completion,
+    parse_done: *skaut.parse_job.Completion,
+    git_done: *skaut.git_job.Completion,
     definition_done: *DefinitionCompletion,
     shutdown: u8,
 };
 
-const Completion = fiew.parse_job.Completion;
+const Completion = skaut.parse_job.Completion;
 const ParseFuture = std.Io.Future(void);
 const GitFuture = std.Io.Future(void);
 const ZlsFuture = std.Io.Future(void);
@@ -29,7 +29,7 @@ const DefinitionFailure = enum {
     unavailable,
     malformed,
 
-    fn message(self: DefinitionFailure, operation: fiew.lsp.Operation) []const u8 {
+    fn message(self: DefinitionFailure, operation: skaut.lsp.Operation) []const u8 {
         return switch (self) {
             .not_installed => "ZLS not installed",
             .incompatible => "ZLS incompatible",
@@ -46,11 +46,11 @@ const DefinitionFailure = enum {
 const DefinitionCompletion = struct {
     generation: u64,
     document_generation: u64,
-    selection: fiew.document.ByteRange,
-    operation: fiew.lsp.Operation,
+    selection: skaut.document.ByteRange,
+    operation: skaut.lsp.Operation,
     result: union(enum) {
-        success: fiew.zls_process.DefinitionResponse,
-        hover_success: ?fiew.hover.Content,
+        success: skaut.zls_process.DefinitionResponse,
+        hover_success: ?skaut.hover.Content,
         failure: DefinitionFailure,
     },
 
@@ -67,16 +67,16 @@ const DefinitionCompletion = struct {
 const ZlsState = struct {
     io: std.Io,
     allocator: std.mem.Allocator,
-    status: std.atomic.Value(fiew.lsp.Status) = .init(.untrusted),
+    status: std.atomic.Value(skaut.lsp.Status) = .init(.untrusted),
     future: ?ZlsFuture = null,
     root_uri: ?[]u8 = null,
     document_uri: ?[]u8 = null,
     document_text: ?[]u8 = null,
     document_generation: ?u64 = null,
     starting_ticks: u8 = 0,
-    last_published: fiew.lsp.Status,
+    last_published: skaut.lsp.Status,
 
-    fn init(io: std.Io, allocator: std.mem.Allocator, initial: fiew.lsp.Status) ZlsState {
+    fn init(io: std.Io, allocator: std.mem.Allocator, initial: skaut.lsp.Status) ZlsState {
         return .{ .io = io, .allocator = allocator, .status = .init(initial), .last_published = initial };
     }
 
@@ -85,9 +85,9 @@ const ZlsState = struct {
         self.* = undefined;
     }
 
-    fn start(self: *ZlsState, repository: fiew.filesystem.Repository, canonical_path: []const u8, app: *const fiew.app.App) void {
+    fn start(self: *ZlsState, repository: skaut.filesystem.Repository, canonical_path: []const u8, app: *const skaut.app.App) void {
         self.stop(.stopped);
-        self.root_uri = fiew.zls_process.fileUri(self.allocator, canonical_path) catch {
+        self.root_uri = skaut.zls_process.fileUri(self.allocator, canonical_path) catch {
             self.status.store(.crashed, .release);
             return;
         };
@@ -100,7 +100,7 @@ const ZlsState = struct {
                     std.fs.path.join(self.allocator, &.{ canonical_path, snapshot.path }) catch null;
                 if (absolute) |path| {
                     defer self.allocator.free(path);
-                    self.document_uri = fiew.zls_process.fileUri(self.allocator, path) catch null;
+                    self.document_uri = skaut.zls_process.fileUri(self.allocator, path) catch null;
                 }
                 self.document_text = self.allocator.dupe(u8, snapshot.bytes) catch null;
                 document_version = snapshot.generation;
@@ -109,7 +109,7 @@ const ZlsState = struct {
         }
         self.starting_ticks = 0;
         self.status.store(.starting, .release);
-        self.future = self.io.concurrent(fiew.zls_process.serve, .{
+        self.future = self.io.concurrent(skaut.zls_process.serve, .{
             self.allocator,    repository.io,    repository.root_dir, self.root_uri.?,
             self.document_uri, document_version, self.document_text,  &self.status,
         }) catch {
@@ -125,7 +125,7 @@ const ZlsState = struct {
         };
     }
 
-    fn stop(self: *ZlsState, target: fiew.lsp.Status) void {
+    fn stop(self: *ZlsState, target: skaut.lsp.Status) void {
         if (self.future) |*future| _ = future.cancel(self.io);
         self.future = null;
         if (self.root_uri) |uri| self.allocator.free(uri);
@@ -139,7 +139,7 @@ const ZlsState = struct {
         self.status.store(target, .release);
     }
 
-    fn syncDocument(self: *ZlsState, repository: fiew.filesystem.Repository, canonical_path: []const u8, app: *const fiew.app.App) void {
+    fn syncDocument(self: *ZlsState, repository: skaut.filesystem.Repository, canonical_path: []const u8, app: *const skaut.app.App) void {
         if (self.status.load(.acquire) != .ready) return;
         const active_generation: ?u64 = if (app.activeDocument()) |snapshot|
             if (snapshot.encoding == .utf8 and std.mem.endsWith(u8, snapshot.path, ".zig")) snapshot.generation else null
@@ -152,7 +152,7 @@ const ZlsState = struct {
         self.start(repository, canonical_path, app);
     }
 
-    fn publish(self: *ZlsState, app: *fiew.app.App) void {
+    fn publish(self: *ZlsState, app: *skaut.app.App) void {
         const current = self.status.load(.acquire);
         if (current == .starting) {
             self.starting_ticks +|= 1;
@@ -170,7 +170,7 @@ const ZlsState = struct {
         app.zls_status = current;
         if (current != self.last_published) {
             self.last_published = current;
-            app.feedback = fiew.lsp.statusText(current);
+            app.feedback = skaut.lsp.statusText(current);
         }
     }
 };
@@ -181,10 +181,10 @@ const DefinitionRequestData = struct {
     document_uri: []u8,
     text: []u8,
     document_generation: u64,
-    selection: fiew.document.ByteRange,
-    utf8_position: fiew.lsp.Position,
-    utf16_position: fiew.lsp.Position,
-    operation: fiew.lsp.Operation,
+    selection: skaut.document.ByteRange,
+    utf8_position: skaut.lsp.Position,
+    utf16_position: skaut.lsp.Position,
+    operation: skaut.lsp.Operation,
 
     fn deinit(self: *DefinitionRequestData) void {
         self.allocator.free(self.root_uri);
@@ -215,9 +215,9 @@ const DefinitionState = struct {
 
     fn submit(
         self: *DefinitionState,
-        repository: fiew.filesystem.Repository,
+        repository: skaut.filesystem.Repository,
         canonical_path: []const u8,
-        app: *fiew.app.App,
+        app: *skaut.app.App,
         generation: u64,
     ) void {
         self.cancel();
@@ -226,11 +226,11 @@ const DefinitionState = struct {
             return;
         };
         const selection = app.activeView().?.selection();
-        const utf8_position = fiew.lsp.positionAt(snapshot.*, selection.start, .utf8) catch {
+        const utf8_position = skaut.lsp.positionAt(snapshot.*, selection.start, .utf8) catch {
             app.failDefinition(generation, semanticPositionFailure(app.semantic_operation, "UTF-8"));
             return;
         };
-        const utf16_position = fiew.lsp.positionAt(snapshot.*, selection.start, .utf16) catch {
+        const utf16_position = skaut.lsp.positionAt(snapshot.*, selection.start, .utf16) catch {
             app.failDefinition(generation, semanticPositionFailure(app.semantic_operation, "UTF-16"));
             return;
         };
@@ -245,11 +245,11 @@ const DefinitionState = struct {
                 return;
             };
         defer self.allocator.free(absolute);
-        const root_uri = fiew.zls_process.fileUri(self.allocator, canonical_path) catch {
+        const root_uri = skaut.zls_process.fileUri(self.allocator, canonical_path) catch {
             app.failDefinition(generation, "ZLS unavailable");
             return;
         };
-        const document_uri = fiew.zls_process.fileUri(self.allocator, absolute) catch {
+        const document_uri = skaut.zls_process.fileUri(self.allocator, absolute) catch {
             self.allocator.free(root_uri);
             app.failDefinition(generation, "ZLS unavailable");
             return;
@@ -296,7 +296,7 @@ const DefinitionState = struct {
         self.running_generation = null;
     }
 
-    fn sync(self: *DefinitionState, app: *fiew.app.App) void {
+    fn sync(self: *DefinitionState, app: *skaut.app.App) void {
         const request = self.request orelse return;
         const active = app.activeView() orelse {
             const generation = app.definition_generation;
@@ -320,7 +320,7 @@ const DefinitionState = struct {
         }
     }
 
-    fn onTick(self: *DefinitionState, app: *fiew.app.App) void {
+    fn onTick(self: *DefinitionState, app: *skaut.app.App) void {
         if (self.future == null) return;
         const elapsed = std.Io.Timestamp.now(self.io, .real).nanoseconds - self.started_nanoseconds;
         if (elapsed >= std.time.ns_per_ms * 100 and app.definition_pending and !self.pending_shown) {
@@ -366,7 +366,7 @@ fn definitionWorker(
     request: DefinitionRequestData,
 ) void {
     const result = switch (request.operation) {
-        .definition => fiew.zls_process.requestDefinition(
+        .definition => skaut.zls_process.requestDefinition(
             allocator,
             io,
             repository_dir,
@@ -377,7 +377,7 @@ fn definitionWorker(
             request.utf8_position,
             request.utf16_position,
         ),
-        .references => fiew.zls_process.requestReferences(
+        .references => skaut.zls_process.requestReferences(
             allocator,
             io,
             repository_dir,
@@ -388,7 +388,7 @@ fn definitionWorker(
             request.utf8_position,
             request.utf16_position,
         ),
-        .hover => fiew.zls_process.requestHover(
+        .hover => skaut.zls_process.requestHover(
             allocator,
             io,
             repository_dir,
@@ -442,9 +442,9 @@ fn buildHoverContent(
     allocator: std.mem.Allocator,
     wire_text: ?[]const u8,
     document_generation: u64,
-) !?fiew.hover.Content {
+) !?skaut.hover.Content {
     const text = wire_text orelse return null;
-    var content = try fiew.hover.Content.init(allocator, text, document_generation);
+    var content = try skaut.hover.Content.init(allocator, text, document_generation);
     errdefer content.deinit();
     if (content.text.len == 0) {
         content.deinit();
@@ -452,14 +452,14 @@ fn buildHoverContent(
     }
 
     // Hover parsing stays on the semantic worker. Rendering only reads the
-    // immutable fiew-owned spans, matching normal document highlighting.
-    var engine = fiew.markdown_syntax.Engine.init(allocator) catch return content;
+    // immutable Skaut-owned spans, matching normal document highlighting.
+    var engine = skaut.markdown_syntax.Engine.init(allocator) catch return content;
     defer engine.deinit();
     if (engine.analyze(allocator, content.text, null)) |data| content.setSyntax(data);
     return content;
 }
 
-fn semanticDiscardedDocument(operation: fiew.lsp.Operation) []const u8 {
+fn semanticDiscardedDocument(operation: skaut.lsp.Operation) []const u8 {
     return switch (operation) {
         .definition => "definition discarded because the document changed",
         .references => "references discarded because the document changed",
@@ -467,7 +467,7 @@ fn semanticDiscardedDocument(operation: fiew.lsp.Operation) []const u8 {
     };
 }
 
-fn semanticDiscardedSelection(operation: fiew.lsp.Operation) []const u8 {
+fn semanticDiscardedSelection(operation: skaut.lsp.Operation) []const u8 {
     return switch (operation) {
         .definition => "definition discarded because the selection changed",
         .references => "references discarded because the selection changed",
@@ -475,7 +475,7 @@ fn semanticDiscardedSelection(operation: fiew.lsp.Operation) []const u8 {
     };
 }
 
-fn semanticPositionFailure(operation: fiew.lsp.Operation, encoding: []const u8) []const u8 {
+fn semanticPositionFailure(operation: skaut.lsp.Operation, encoding: []const u8) []const u8 {
     if (std.mem.eql(u8, encoding, "UTF-8")) return switch (operation) {
         .definition => "definition requires a valid UTF-8 position",
         .references => "references require a valid UTF-8 position",
@@ -519,7 +519,7 @@ const GitLoadState = struct {
         self.* = undefined;
     }
 
-    fn submit(self: *GitLoadState, repository: fiew.filesystem.Repository, generation: u64) void {
+    fn submit(self: *GitLoadState, repository: skaut.filesystem.Repository, generation: u64) void {
         if (self.future != null) {
             self.queued_generation = generation;
             return;
@@ -535,9 +535,9 @@ const GitLoadState = struct {
 
     fn onCompletion(
         self: *GitLoadState,
-        app: *fiew.app.App,
-        repository: fiew.filesystem.Repository,
-        box: *fiew.git_job.Completion,
+        app: *skaut.app.App,
+        repository: skaut.filesystem.Repository,
+        box: *skaut.git_job.Completion,
     ) void {
         if (self.running_generation == box.generation) {
             if (self.future) |*future| _ = future.await(self.io);
@@ -547,8 +547,8 @@ const GitLoadState = struct {
 
         if (box.generation == app.git_generation) switch (box.result) {
             .success => {
-                if (fiew.git_job.accept(box, app.git_generation)) |snapshot| {
-                    const review = fiew.git_review.Review.init(self.allocator, snapshot.changeset) catch |err| {
+                if (skaut.git_job.accept(box, app.git_generation)) |snapshot| {
+                    const review = skaut.git_review.Review.init(self.allocator, snapshot.changeset) catch |err| {
                         var owned = snapshot.changeset;
                         owned.deinit();
                         app.failGitRefresh(box.generation, @errorName(err));
@@ -587,11 +587,11 @@ fn gitWorker(
     root_dir: std.Io.Dir,
     generation: u64,
 ) void {
-    const result: fiew.git_job.Result = if (fiew.git.loadSnapshot(allocator, io, root_dir)) |snapshot|
+    const result: skaut.git_job.Result = if (skaut.git.loadSnapshot(allocator, io, root_dir)) |snapshot|
         .{ .success = snapshot }
     else |err|
-        .{ .failure = fiew.git_job.failureFromError(err) };
-    const box = allocator.create(fiew.git_job.Completion) catch {
+        .{ .failure = skaut.git_job.failureFromError(err) };
+    const box = allocator.create(skaut.git_job.Completion) catch {
         var owned = result;
         owned.deinit();
         return;
@@ -604,8 +604,8 @@ fn gitWorker(
 }
 
 const ParseEngine = union(enum) {
-    zig: *fiew.zig_syntax.Engine,
-    markdown: *fiew.markdown_syntax.Engine,
+    zig: *skaut.zig_syntax.Engine,
+    markdown: *skaut.markdown_syntax.Engine,
 };
 
 /// Drives off-render-loop Zig and Markdown parsing for the active document: one
@@ -615,9 +615,9 @@ const ParseState = struct {
     io: std.Io,
     allocator: std.mem.Allocator,
     loop: *vaxis.Loop(Event),
-    zig_engine: ?fiew.zig_syntax.Engine,
-    markdown_engine: ?fiew.markdown_syntax.Engine,
-    coordinator: fiew.parse_job.Coordinator = .{},
+    zig_engine: ?skaut.zig_syntax.Engine,
+    markdown_engine: ?skaut.markdown_syntax.Engine,
+    coordinator: skaut.parse_job.Coordinator = .{},
     cancel: std.atomic.Value(bool) = .init(false),
     future: ?ParseFuture = null,
     source: ?[]u8 = null,
@@ -626,8 +626,8 @@ const ParseState = struct {
     elapsed_ticks: u8 = 0,
 
     fn init(io: std.Io, allocator: std.mem.Allocator, loop: *vaxis.Loop(Event)) ParseState {
-        const zig_engine: ?fiew.zig_syntax.Engine = fiew.zig_syntax.Engine.init(allocator) catch null;
-        const markdown_engine: ?fiew.markdown_syntax.Engine = fiew.markdown_syntax.Engine.init(allocator) catch null;
+        const zig_engine: ?skaut.zig_syntax.Engine = skaut.zig_syntax.Engine.init(allocator) catch null;
+        const markdown_engine: ?skaut.markdown_syntax.Engine = skaut.markdown_syntax.Engine.init(allocator) catch null;
         return .{
             .io = io,
             .allocator = allocator,
@@ -644,9 +644,9 @@ const ParseState = struct {
         self.* = undefined;
     }
 
-    fn engineFor(self: *ParseState, snapshot: *const fiew.document.Snapshot) ?ParseEngine {
+    fn engineFor(self: *ParseState, snapshot: *const skaut.document.Snapshot) ?ParseEngine {
         if (snapshot.encoding != .utf8 or snapshot.bytes.len == 0 or
-            snapshot.bytes.len > fiew.zig_syntax.max_parse_bytes) return null;
+            snapshot.bytes.len > skaut.zig_syntax.max_parse_bytes) return null;
         if (std.mem.endsWith(u8, snapshot.path, ".zig"))
             return if (self.zig_engine) |*engine| .{ .zig = engine } else null;
         if (std.mem.endsWith(u8, snapshot.path, ".md") or
@@ -657,7 +657,7 @@ const ParseState = struct {
 
     /// Request analysis for the active document if it is an unparsed,
     /// supported snapshot we are not already working on.
-    fn drive(self: *ParseState, app: *const fiew.app.App) void {
+    fn drive(self: *ParseState, app: *const skaut.app.App) void {
         const view = app.activeView() orelse return;
         if (view.syntax != null) return;
         const snapshot = &view.snapshot;
@@ -667,7 +667,7 @@ const ParseState = struct {
         self.submit(snapshot, engine);
     }
 
-    fn submit(self: *ParseState, snapshot: *const fiew.document.Snapshot, engine: ParseEngine) void {
+    fn submit(self: *ParseState, snapshot: *const skaut.document.Snapshot, engine: ParseEngine) void {
         self.cancelInFlight();
         const copy = self.allocator.dupe(u8, snapshot.bytes) catch return;
         self.cancel.store(false, .release);
@@ -700,7 +700,7 @@ const ParseState = struct {
         self.parsing_generation = null;
     }
 
-    fn onCompletion(self: *ParseState, app: *fiew.app.App, box: *Completion) void {
+    fn onCompletion(self: *ParseState, app: *skaut.app.App, box: *Completion) void {
         if (self.parsing_generation == box.generation) {
             if (self.future) |*future| {
                 _ = future.await(self.io);
@@ -739,11 +739,11 @@ fn parseWorker(
     cancel: *std.atomic.Value(bool),
 ) void {
     _ = io;
-    var context: fiew.zig_syntax.CancelContext = .{ .flag = cancel };
-    const request: fiew.parse_job.Request = .{ .generation = generation, .source = source };
+    var context: skaut.zig_syntax.CancelContext = .{ .flag = cancel };
+    const request: skaut.parse_job.Request = .{ .generation = generation, .source = source };
     const completion = switch (engine) {
-        .zig => |value| fiew.parse_job.run(value, allocator, request, &context),
-        .markdown => |value| fiew.parse_job.runMarkdown(value, allocator, request, &context),
+        .zig => |value| skaut.parse_job.run(value, allocator, request, &context),
+        .markdown => |value| skaut.parse_job.runMarkdown(value, allocator, request, &context),
     };
     const box = allocator.create(Completion) catch {
         var owned = completion;
@@ -794,7 +794,7 @@ fn requestedTarget(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !
 fn repositoryPathForFile(
     allocator: std.mem.Allocator,
     io: std.Io,
-    repository: fiew.filesystem.Repository,
+    repository: skaut.filesystem.Repository,
     requested_file: []const u8,
 ) ![]u8 {
     var root_buffer: [std.fs.max_path_bytes]u8 = undefined;
@@ -831,7 +831,7 @@ pub fn run(init: std.process.Init, options: Options) !u8 {
     var canonical_root: ?[]u8 = null;
     defer if (canonical_root) |path| allocator.free(path);
     var git_ready = false;
-    switch (fiew.git.discover(allocator, init.io, requested_dir) catch .not_a_repository) {
+    switch (skaut.git.discover(allocator, init.io, requested_dir) catch .not_a_repository) {
         .ready => |context| {
             var owned = context;
             defer owned.deinit();
@@ -841,28 +841,28 @@ pub fn run(init: std.process.Init, options: Options) !u8 {
         else => {},
     }
 
-    var repository = try fiew.filesystem.Repository.open(allocator, init.io, canonical_root orelse root_path);
+    var repository = try skaut.filesystem.Repository.open(allocator, init.io, canonical_root orelse root_path);
     defer repository.deinit();
     const initial_path: ?[]u8 = if (requested_target.file) |file|
         try repositoryPathForFile(allocator, init.io, repository, file)
     else
         null;
     defer if (initial_path) |path| allocator.free(path);
-    var app = try fiew.app.App.init(allocator, &repository.tree);
+    var app = try skaut.app.App.init(allocator, &repository.tree);
     defer app.deinit();
     app.git_enabled = git_ready;
     app.git_status = if (git_ready) .idle else .disabled;
 
-    var global_diagnostics: fiew.diagnostics.Diagnostics = .init;
-    const global_path = try fiew.state_store.globalStateDirectoryPath(
+    var global_diagnostics: skaut.diagnostics.Diagnostics = .init;
+    const global_path = try skaut.state_store.globalStateDirectoryPath(
         allocator,
         builtin.os.tag,
         init.environ_map.get("HOME"),
         init.environ_map.get("XDG_STATE_HOME"),
     );
     defer if (global_path) |path| allocator.free(path);
-    var global_store: ?fiew.state_store.StateStore = if (global_path) |path|
-        fiew.state_store.StateStore.openPath(allocator, init.io, path, &global_diagnostics) catch null
+    var global_store: ?skaut.state_store.StateStore = if (global_path) |path|
+        skaut.state_store.StateStore.openPath(allocator, init.io, path, &global_diagnostics) catch null
     else
         null;
     defer if (global_store) |*store| store.deinit();
@@ -871,12 +871,12 @@ pub fn run(init: std.process.Init, options: Options) !u8 {
 
     var canonical_root_buffer: [std.fs.max_path_bytes]u8 = undefined;
     const canonical_root_length = try repository.root_dir.realPath(init.io, &canonical_root_buffer);
-    var repository_identity = try fiew.repository_identity.RepositoryIdentity.fromCanonicalPath(
+    var repository_identity = try skaut.repository_identity.RepositoryIdentity.fromCanonicalPath(
         allocator,
         canonical_root_buffer[0..canonical_root_length],
     );
     defer repository_identity.deinit();
-    var zls_trust = try fiew.zls_trust.Trust.load(
+    var zls_trust = try skaut.zls_trust.Trust.load(
         allocator,
         if (global_store) |*store| store else null,
     );
@@ -886,7 +886,7 @@ pub fn run(init: std.process.Init, options: Options) !u8 {
     app.zls_status = if (app.zls_trusted) .stopped else .untrusted;
 
     const quote_time = std.Io.Timestamp.now(init.io, .real).nanoseconds;
-    app.welcome_quote = fiew.welcome.selectSeed(quote_time);
+    app.welcome_quote = skaut.welcome.selectSeed(quote_time);
 
     bookmark_setup: {
         var canonical_buffer: [std.fs.max_path_bytes]u8 = undefined;
@@ -894,14 +894,14 @@ pub fn run(init: std.process.Init, options: Options) !u8 {
             app.feedback = "bookmark repository path unavailable";
             break :bookmark_setup;
         };
-        var result = fiew.bookmark_store.load(allocator, init.io, repository.root_dir) catch {
+        var result = skaut.bookmark_store.load(allocator, init.io, repository.root_dir) catch {
             app.feedback = "bookmark storage unreadable";
             break :bookmark_setup;
         };
         switch (result) {
             .loaded => |*loaded| {
                 defer loaded.deinit();
-                app.bookmarks = fiew.bookmarks.Bookmarks.fromStored(
+                app.bookmarks = skaut.bookmarks.Bookmarks.fromStored(
                     allocator,
                     canonical_buffer[0..canonical_length],
                     loaded.value().*,
@@ -910,7 +910,7 @@ pub fn run(init: std.process.Init, options: Options) !u8 {
                     break :bookmark_setup;
                 };
             },
-            .absent => app.bookmarks = fiew.bookmarks.Bookmarks.init(
+            .absent => app.bookmarks = skaut.bookmarks.Bookmarks.init(
                 allocator,
                 canonical_buffer[0..canonical_length],
             ) catch {
@@ -932,45 +932,45 @@ pub fn run(init: std.process.Init, options: Options) !u8 {
     // A named review loads exactly that file. Ordinary browsing loads only the
     // explicit current review, never inferring or mutating historical sessions.
     {
-        var loaded: fiew.review_store.Loaded = if (review_name) |name|
-            try fiew.review_store.loadOne(allocator, init.io, repository.root_dir, name)
+        var loaded: skaut.review_store.Loaded = if (review_name) |name|
+            try skaut.review_store.loadOne(allocator, init.io, repository.root_dir, name)
         else current: {
-            const id = fiew.review_store.currentId(allocator, init.io, repository.root_dir) catch |err| {
+            const id = skaut.review_store.currentId(allocator, init.io, repository.root_dir) catch |err| {
                 if (err != error.CurrentReviewMissing) app.feedback = @errorName(err);
                 break :current .{ .allocator = allocator, .entries = &.{} };
             };
             defer allocator.free(id);
-            const filename = try fiew.review_cli.filenameForId(allocator, id);
+            const filename = try skaut.review_cli.filenameForId(allocator, id);
             defer allocator.free(filename);
-            break :current fiew.review_store.loadOne(allocator, init.io, repository.root_dir, filename) catch |err| {
+            break :current skaut.review_store.loadOne(allocator, init.io, repository.root_dir, filename) catch |err| {
                 app.feedback = @errorName(err);
                 break :current .{ .allocator = allocator, .entries = &.{} };
             };
         };
         defer loaded.deinit();
         app.notes = if (review_name != null)
-            try fiew.notes.Notes.fromLoaded(allocator, loaded)
+            try skaut.notes.Notes.fromLoaded(allocator, loaded)
         else
-            fiew.notes.Notes.fromLoaded(allocator, loaded) catch null;
+            skaut.notes.Notes.fromLoaded(allocator, loaded) catch null;
     }
     if (review_name) |name| {
         if (app.notes) |*state_notes| state_notes.useSession(name);
     }
     trail_setup: {
         const active_review = if (app.notes) |state_notes| state_notes.sessionFilename() orelse break :trail_setup else break :trail_setup;
-        var loaded = fiew.trail_store.loadAll(allocator, init.io, repository.root_dir) catch {
+        var loaded = skaut.trail_store.loadAll(allocator, init.io, repository.root_dir) catch {
             app.feedback = "trail storage unreadable";
             break :trail_setup;
         };
         defer loaded.deinit();
-        const stored = try allocator.alloc(fiew.trail.Trail, loaded.entries.len);
+        const stored = try allocator.alloc(skaut.trail.Trail, loaded.entries.len);
         defer allocator.free(stored);
         var recovered = false;
         for (loaded.entries, 0..) |entry, index| {
             stored[index] = entry.parsed.value().*;
             recovered = recovered or entry.recovered;
         }
-        app.trails = fiew.trails.Trails.fromStored(allocator, init.io, active_review, stored) catch {
+        app.trails = skaut.trails.Trails.fromStored(allocator, init.io, active_review, stored) catch {
             app.feedback = "trail storage unavailable";
             break :trail_setup;
         };
@@ -980,10 +980,10 @@ pub fn run(init: std.process.Init, options: Options) !u8 {
             app.feedback = "one or more Trail artifacts recovered from backup";
         app.trails_available = true;
     }
-    var command_session = fiew.commands.Session.init(allocator);
+    var command_session = skaut.commands.Session.init(allocator);
     defer command_session.deinit();
 
-    const segmenter: fiew.text_segmentation.Segmenter = .{
+    const segmenter: skaut.text_segmentation.Segmenter = .{
         .next_fn = nextGrapheme,
         .width_fn = graphemeWidth,
     };
@@ -1105,12 +1105,12 @@ pub fn run(init: std.process.Init, options: Options) !u8 {
             },
             .winsize => |winsize| {
                 try vx.resize(allocator, tty.writer(), winsize);
-                const dimensions = fiew.workspace.layout(winsize.cols, winsize.rows, app.sidebar_visible);
+                const dimensions = skaut.workspace.layout(winsize.cols, winsize.rows, app.sidebar_visible);
                 const viewport_height = dimensions.content_height -| 2;
                 app.browser.ensureVisible(viewport_height);
-                command_session.finder.ensureVisible(fiew.workspace.finderResultRows(dimensions.content_height));
+                command_session.finder.ensureVisible(skaut.workspace.finderResultRows(dimensions.content_height));
                 if (app.definition_results) |*results|
-                    results.ensureVisible(fiew.workspace.finderResultRows(dimensions.content_height));
+                    results.ensureVisible(skaut.workspace.finderResultRows(dimensions.content_height));
                 app.ensureCurrentDocumentVisible(viewport_height, dimensions.main_width -| 6);
             },
             .tick => {
@@ -1142,7 +1142,7 @@ pub fn run(init: std.process.Init, options: Options) !u8 {
                 }
                 switch (box.result) {
                     .failure => |failure| {
-                        const status: fiew.lsp.Status = switch (failure) {
+                        const status: skaut.lsp.Status = switch (failure) {
                             .not_installed => .not_installed,
                             .incompatible => .incompatible,
                             .unavailable => .crashed,
@@ -1251,18 +1251,18 @@ fn timerRun(
     }
 }
 
-fn commandDimensions(window: vaxis.Window, app: *const fiew.app.App) fiew.commands.Dimensions {
-    const dimensions = fiew.workspace.layout(window.width, window.height, app.sidebar_visible);
+fn commandDimensions(window: vaxis.Window, app: *const skaut.app.App) skaut.commands.Dimensions {
+    const dimensions = skaut.workspace.layout(window.width, window.height, app.sidebar_visible);
     return .{
         .sidebar_rows = dimensions.content_height -| 2,
         .document_rows = dimensions.content_height -| 2,
         .document_columns = dimensions.main_width -| 6,
-        .finder_rows = fiew.workspace.finderResultRows(dimensions.content_height),
+        .finder_rows = skaut.workspace.finderResultRows(dimensions.content_height),
     };
 }
 
-fn translateKey(key: vaxis.Key) fiew.commands.Key {
-    const code: fiew.commands.Code = switch (key.codepoint) {
+fn translateKey(key: vaxis.Key) skaut.commands.Key {
+    const code: skaut.commands.Code = switch (key.codepoint) {
         vaxis.Key.escape => .escape,
         vaxis.Key.enter => .enter,
         vaxis.Key.tab => .tab,
@@ -1308,20 +1308,20 @@ fn producedCharacter(key: vaxis.Key) u21 {
 
 fn validateDefinitionTargets(
     allocator: std.mem.Allocator,
-    repository: fiew.filesystem.Repository,
+    repository: skaut.filesystem.Repository,
     canonical_root: []const u8,
-    segmenter: fiew.text_segmentation.Segmenter,
+    segmenter: skaut.text_segmentation.Segmenter,
     snapshot_generation: *u64,
-    response: *const fiew.zls_process.SemanticResponse,
-    operation: fiew.lsp.Operation,
-) !fiew.definitions.Results {
-    var targets: std.ArrayList(fiew.definitions.Target) = .empty;
+    response: *const skaut.zls_process.SemanticResponse,
+    operation: skaut.lsp.Operation,
+) !skaut.definitions.Results {
+    var targets: std.ArrayList(skaut.definitions.Target) = .empty;
     errdefer {
         for (targets.items) |*target| target.deinit(allocator);
         targets.deinit(allocator);
     }
     for (response.locations) |location| {
-        const decoded = fiew.zls_process.pathFromFileUri(allocator, location.uri) catch continue;
+        const decoded = skaut.zls_process.pathFromFileUri(allocator, location.uri) catch continue;
         defer allocator.free(decoded);
         const canonical_z = std.Io.Dir.realPathFileAbsoluteAlloc(repository.io, decoded, allocator) catch continue;
         defer allocator.free(canonical_z);
@@ -1344,8 +1344,8 @@ fn validateDefinitionTargets(
         else
             repository.loadExternalDocument(canonical, snapshot_generation.*, segmenter) catch continue;
         defer snapshot.deinit();
-        const source_start = fiew.lsp.byteOffsetAt(snapshot, location.start, response.encoding) catch continue;
-        const source_end = fiew.lsp.byteOffsetAt(snapshot, location.end, response.encoding) catch continue;
+        const source_start = skaut.lsp.byteOffsetAt(snapshot, location.start, response.encoding) catch continue;
+        const source_end = skaut.lsp.byteOffsetAt(snapshot, location.end, response.encoding) catch continue;
         if (source_end < source_start) continue;
         if (operation == .definition) {
             var duplicate = false;
@@ -1385,12 +1385,12 @@ fn validateDefinitionTargets(
 
 fn finalizeSemanticTargets(
     allocator: std.mem.Allocator,
-    targets: *std.ArrayList(fiew.definitions.Target),
-    operation: fiew.lsp.Operation,
-) !fiew.definitions.Results {
+    targets: *std.ArrayList(skaut.definitions.Target),
+    operation: skaut.lsp.Operation,
+) !skaut.definitions.Results {
     if (operation == .references) {
-        std.mem.sort(fiew.definitions.Target, targets.items, {}, struct {
-            fn lessThan(_: void, left: fiew.definitions.Target, right: fiew.definitions.Target) bool {
+        std.mem.sort(skaut.definitions.Target, targets.items, {}, struct {
+            fn lessThan(_: void, left: skaut.definitions.Target, right: skaut.definitions.Target) bool {
                 const path_order = std.mem.order(u8, left.path, right.path);
                 if (path_order != .eq) return path_order == .lt;
                 if (left.source_start != right.source_start) return left.source_start < right.source_start;
@@ -1420,15 +1420,15 @@ fn finalizeSemanticTargets(
         for (targets.items[max_reference_results..]) |*target| target.deinit(allocator);
         targets.shrinkRetainingCapacity(max_reference_results);
     }
-    return fiew.definitions.Results.initTruncated(allocator, try targets.toOwnedSlice(allocator), truncated);
+    return skaut.definitions.Results.initTruncated(allocator, try targets.toOwnedSlice(allocator), truncated);
 }
 
 fn openDefinitionTarget(
-    app: *fiew.app.App,
-    repository: fiew.filesystem.Repository,
-    segmenter: fiew.text_segmentation.Segmenter,
+    app: *skaut.app.App,
+    repository: skaut.filesystem.Repository,
+    segmenter: skaut.text_segmentation.Segmenter,
     snapshot_generation: *u64,
-    target: fiew.definitions.Target,
+    target: skaut.definitions.Target,
     pin: bool,
 ) !void {
     snapshot_generation.* +%= 1;
@@ -1446,17 +1446,17 @@ fn openDefinitionTarget(
 }
 
 fn applyEffect(
-    session: *fiew.commands.Session,
-    app: *fiew.app.App,
-    repository: fiew.filesystem.Repository,
-    segmenter: fiew.text_segmentation.Segmenter,
+    session: *skaut.commands.Session,
+    app: *skaut.app.App,
+    repository: skaut.filesystem.Repository,
+    segmenter: skaut.text_segmentation.Segmenter,
     generation: *u64,
-    dimensions: fiew.commands.Dimensions,
-    effect: fiew.commands.Effect,
+    dimensions: skaut.commands.Dimensions,
+    effect: skaut.commands.Effect,
     review_name: ?[]const u8,
     git_state: *GitLoadState,
-    global_store: ?*fiew.state_store.StateStore,
-    zls_trust: *fiew.zls_trust.Trust,
+    global_store: ?*skaut.state_store.StateStore,
+    zls_trust: *skaut.zls_trust.Trust,
     repository_slug: []const u8,
     canonical_path: []const u8,
     zls_state: *ZlsState,
@@ -1480,7 +1480,7 @@ fn applyEffect(
                 _ = try app.pinPreview();
         },
         .load_git_finder => {
-            var paths = fiew.git_files.load(repository.allocator, repository.io, repository.root_dir) catch |err| {
+            var paths = skaut.git_files.load(repository.allocator, repository.io, repository.root_dir) catch |err| {
                 app.feedback = @errorName(err);
                 return false;
             };
@@ -1581,9 +1581,9 @@ fn applyEffect(
                     if (grapheme.visual_column >= composer.target.column) break;
                 }
             }
-            const target_start = fiew.anchor.lineStart(snapshot.bytes, source_offset);
-            const target_end = fiew.anchor.lineEnd(snapshot.bytes, source_offset);
-            const context = try fiew.anchor.capture(repository.allocator, snapshot.bytes, target_start, target_end);
+            const target_start = skaut.anchor.lineStart(snapshot.bytes, source_offset);
+            const target_end = skaut.anchor.lineEnd(snapshot.bytes, source_offset);
+            const context = try skaut.anchor.capture(repository.allocator, snapshot.bytes, target_start, target_end);
             defer repository.allocator.free(context.bytes);
             try state_bookmarks.add(
                 composer.target.path,
@@ -1603,7 +1603,7 @@ fn applyEffect(
                     app.feedback = "bookmark persistence failed; changes remain dirty";
             }
         },
-        .zls_status => app.feedback = fiew.lsp.statusText(app.zls_status),
+        .zls_status => app.feedback = skaut.lsp.statusText(app.zls_status),
         .zls_trust => {
             const store = global_store orelse {
                 app.feedback = "global state unavailable; ZLS trust cannot be persisted";
@@ -1681,12 +1681,12 @@ fn applyEffect(
                         &created_buffer,
                         &sha_buffer,
                     );
-                    var created_review: ?fiew.review_cli.Created = null;
+                    var created_review: ?skaut.review_cli.Created = null;
                     defer if (created_review) |*created| created.deinit();
                     if (review_name == null and state_notes.session == null) {
                         const now = std.Io.Timestamp.now(repository.io, .real).nanoseconds;
                         const seconds: u64 = @intCast(@divFloor(now, std.time.ns_per_s));
-                        created_review = try fiew.review_cli.create(
+                        created_review = try skaut.review_cli.create(
                             repository.allocator,
                             repository.io,
                             repository.root_dir,
@@ -1696,13 +1696,13 @@ fn applyEffect(
                         );
                         note_session.filename = created_review.?.filename;
                     }
-                    const comments = try repository.allocator.alloc(fiew.review.Comment, 1);
+                    const comments = try repository.allocator.alloc(skaut.review.Comment, 1);
                     comments[0] = .{
                         .author = .reviewer,
                         .body = try repository.allocator.dupe(u8, composer.buffer.items),
                     };
                     const anchor_context = anchor.context orelse return error.MissingAnchorContext;
-                    const thread: fiew.review.Thread = .{
+                    const thread: skaut.review.Thread = .{
                         .id = try state_notes.nextId(repository.allocator),
                         .path = try repository.allocator.dupe(u8, anchor.path),
                         .group = anchor.group,
@@ -1757,19 +1757,19 @@ fn applyEffect(
 
 /// Metadata for the session's review file, generated once per note batch.
 fn buildNoteSession(
-    repository: fiew.filesystem.Repository,
+    repository: skaut.filesystem.Repository,
     override_name: ?[]const u8,
     name_buffer: []u8,
     created_buffer: []u8,
     sha_buffer: []u8,
-) fiew.notes.SessionInit {
+) skaut.notes.SessionInit {
     const nanoseconds = std.Io.Timestamp.now(repository.io, .real).nanoseconds;
     const seconds: u64 = @intCast(@divFloor(nanoseconds, std.time.ns_per_s));
     const created = formatTimestamp(created_buffer, seconds);
     const filename = override_name orelse (std.fmt.bufPrint(name_buffer, "review-{d}.json", .{seconds}) catch "review.json");
 
     var sha: []const u8 = "";
-    var output = fiew.git_command.run(repository.allocator, repository.io, repository.root_dir, &.{ "rev-parse", "HEAD" }) catch null;
+    var output = skaut.git_command.run(repository.allocator, repository.io, repository.root_dir, &.{ "rev-parse", "HEAD" }) catch null;
     if (output) |*result| {
         defer result.deinit();
         if (result.succeeded()) {
@@ -1799,12 +1799,12 @@ fn formatTimestamp(buffer: []u8, unix_seconds: u64) []const u8 {
 }
 
 /// Persist dirty review files and delete emptied ones.
-fn flushNotes(repository: fiew.filesystem.Repository, state_notes: *fiew.notes.Notes) bool {
+fn flushNotes(repository: skaut.filesystem.Repository, state_notes: *skaut.notes.Notes) bool {
     var success = true;
-    var buffer: [64]fiew.notes.Notes.DirtyFile = undefined;
+    var buffer: [64]skaut.notes.Notes.DirtyFile = undefined;
     const dirty = state_notes.dirtyFiles(&buffer);
     for (dirty) |file| {
-        fiew.review_store.save(repository.allocator, repository.io, repository.root_dir, file.filename, file.review) catch {
+        skaut.review_store.save(repository.allocator, repository.io, repository.root_dir, file.filename, file.review) catch {
             success = false;
             continue;
         };
@@ -1813,7 +1813,7 @@ fn flushNotes(repository: fiew.filesystem.Repository, state_notes: *fiew.notes.N
     var index: usize = 0;
     while (index < state_notes.removedFiles().len) {
         const name = state_notes.removedFiles()[index];
-        fiew.review_store.remove(repository.io, repository.root_dir, name) catch {
+        skaut.review_store.remove(repository.io, repository.root_dir, name) catch {
             success = false;
             index += 1;
             continue;
@@ -1823,7 +1823,7 @@ fn flushNotes(repository: fiew.filesystem.Repository, state_notes: *fiew.notes.N
     return success and !state_notes.hasDirty();
 }
 
-fn reanchorBookmarks(repository: fiew.filesystem.Repository, app: *fiew.app.App, changeset: fiew.git_model.ChangeSet) void {
+fn reanchorBookmarks(repository: skaut.filesystem.Repository, app: *skaut.app.App, changeset: skaut.git_model.ChangeSet) void {
     const state_bookmarks = if (app.bookmarks) |*value| value else return;
     var index: usize = 0;
     while (index < state_bookmarks.items.items.len) : (index += 1) {
@@ -1859,33 +1859,33 @@ fn reanchorBookmarks(repository: fiew.filesystem.Repository, app: *fiew.app.App,
         app.feedback = "bookmark re-anchor persistence failed; changes remain dirty";
 }
 
-fn persistBookmarks(repository: fiew.filesystem.Repository, state_bookmarks: *fiew.bookmarks.Bookmarks) bool {
+fn persistBookmarks(repository: skaut.filesystem.Repository, state_bookmarks: *skaut.bookmarks.Bookmarks) bool {
     if (!state_bookmarks.dirty) return true;
-    fiew.bookmark_store.save(repository.allocator, repository.io, repository.root_dir, state_bookmarks.stored()) catch return false;
+    skaut.bookmark_store.save(repository.allocator, repository.io, repository.root_dir, state_bookmarks.stored()) catch return false;
     state_bookmarks.markClean();
     return true;
 }
 
-fn persistTrails(repository: fiew.filesystem.Repository, state_trails: *fiew.trails.Trails) bool {
+fn persistTrails(repository: skaut.filesystem.Repository, state_trails: *skaut.trails.Trails) bool {
     if (!state_trails.dirty) return true;
     while (state_trails.nextDirty()) |item| {
         const id = item.id;
-        fiew.trail_store.save(repository.allocator, repository.io, repository.root_dir, item.*) catch return false;
+        skaut.trail_store.save(repository.allocator, repository.io, repository.root_dir, item.*) catch return false;
         state_trails.markTrailClean(id);
     }
     while (state_trails.nextDeleted()) |id| {
-        fiew.trail_store.delete(repository.allocator, repository.io, repository.root_dir, id, state_trails.review) catch return false;
+        skaut.trail_store.delete(repository.allocator, repository.io, repository.root_dir, id, state_trails.review) catch return false;
         state_trails.markDeleted(id);
     }
     return true;
 }
 
 fn openTrailPoint(
-    app: *fiew.app.App,
-    repository: fiew.filesystem.Repository,
-    segmenter: fiew.text_segmentation.Segmenter,
+    app: *skaut.app.App,
+    repository: skaut.filesystem.Repository,
+    segmenter: skaut.text_segmentation.Segmenter,
     generation: *u64,
-    source: fiew.commands.SourceLocation,
+    source: skaut.commands.SourceLocation,
     activate: bool,
     document_rows: usize,
 ) !void {
@@ -1918,11 +1918,11 @@ fn openTrailPoint(
 }
 
 fn openBookmark(
-    app: *fiew.app.App,
-    repository: fiew.filesystem.Repository,
-    segmenter: fiew.text_segmentation.Segmenter,
+    app: *skaut.app.App,
+    repository: skaut.filesystem.Repository,
+    segmenter: skaut.text_segmentation.Segmenter,
     generation: *u64,
-    source: fiew.commands.SourceLocation,
+    source: skaut.commands.SourceLocation,
     activate: bool,
     document_rows: usize,
 ) !void {
@@ -1954,16 +1954,16 @@ fn openBookmark(
 }
 
 fn handleMouse(
-    app: *fiew.app.App,
-    repository: fiew.filesystem.Repository,
-    segmenter: fiew.text_segmentation.Segmenter,
+    app: *skaut.app.App,
+    repository: skaut.filesystem.Repository,
+    segmenter: skaut.text_segmentation.Segmenter,
     generation: *u64,
     mouse: vaxis.Mouse,
     window: vaxis.Window,
 ) !void {
     if ((mouse.type != .press and mouse.type != .drag) or
         mouse.button != .left or mouse.col < 0 or mouse.row < 0) return;
-    const dimensions = fiew.workspace.layout(window.width, window.height, app.sidebar_visible);
+    const dimensions = skaut.workspace.layout(window.width, window.height, app.sidebar_visible);
     if (!dimensions.supported or @as(u16, @intCast(mouse.row)) >= dimensions.content_height) return;
     const column: u16 = @intCast(mouse.col);
     const row: u16 = @intCast(mouse.row);
@@ -2017,10 +2017,10 @@ fn handleMouse(
 }
 
 fn previewFinder(
-    session: *const fiew.commands.Session,
-    app: *fiew.app.App,
-    repository: fiew.filesystem.Repository,
-    segmenter: fiew.text_segmentation.Segmenter,
+    session: *const skaut.commands.Session,
+    app: *skaut.app.App,
+    repository: skaut.filesystem.Repository,
+    segmenter: skaut.text_segmentation.Segmenter,
     generation: *u64,
 ) !bool {
     const node = session.selectedFinderNode(app) orelse {
@@ -2037,9 +2037,9 @@ fn previewFinder(
 }
 
 fn previewSelection(
-    app: *fiew.app.App,
-    repository: fiew.filesystem.Repository,
-    segmenter: fiew.text_segmentation.Segmenter,
+    app: *skaut.app.App,
+    repository: skaut.filesystem.Repository,
+    segmenter: skaut.text_segmentation.Segmenter,
     generation: *u64,
 ) !void {
     const node = app.browser.selectedNode() orelse {
@@ -2062,16 +2062,16 @@ fn previewSelection(
 fn draw(
     allocator: std.mem.Allocator,
     window: vaxis.Window,
-    app: *const fiew.app.App,
-    command_session: *const fiew.commands.Session,
+    app: *const skaut.app.App,
+    command_session: *const skaut.commands.Session,
     root_path: []const u8,
 ) !void {
     window.clear();
     window.hideCursor();
-    const plan = fiew.render_plan.build(window.width, window.height, app, command_session);
+    const plan = skaut.render_plan.build(window.width, window.height, app, command_session);
     if (plan.kind == .unsupported) {
         _ = window.printSegment(.{
-            .text = "Terminal too small; fiew requires at least 60x20",
+            .text = "Terminal too small; Skaut requires at least 60x20",
             .style = .{ .bold = true },
         }, .{ .row_offset = window.height / 2, .wrap = .none });
         return;
@@ -2103,7 +2103,7 @@ fn draw(
 fn drawSidebar(
     allocator: std.mem.Allocator,
     window: vaxis.Window,
-    app: *const fiew.app.App,
+    app: *const skaut.app.App,
     root_path: []const u8,
 ) !void {
     if (app.sidebar_context == .git) return drawGitSidebar(allocator, window, app);
@@ -2151,7 +2151,7 @@ fn drawSidebar(
     }
 }
 
-fn changeMarker(change: fiew.git_model.Change) []const u8 {
+fn changeMarker(change: skaut.git_model.Change) []const u8 {
     return switch (change.content) {
         .submodule => "S",
         .binary => "B",
@@ -2168,7 +2168,7 @@ fn changeMarker(change: fiew.git_model.Change) []const u8 {
     };
 }
 
-fn changeColor(change: fiew.git_model.Change) vaxis.Cell.Color {
+fn changeColor(change: skaut.git_model.Change) vaxis.Cell.Color {
     if (change.content != .text) return .default;
     return switch (change.kind) {
         .added => .{ .index = 2 }, // green
@@ -2179,7 +2179,7 @@ fn changeColor(change: fiew.git_model.Change) vaxis.Cell.Color {
     };
 }
 
-fn metadataLine(allocator: std.mem.Allocator, change: fiew.git_model.Change) ![]u8 {
+fn metadataLine(allocator: std.mem.Allocator, change: skaut.git_model.Change) ![]u8 {
     if (change.kind == .mode_changed) {
         return std.fmt.allocPrint(allocator, "Mode changed: {o} → {o}", .{ change.old_mode, change.new_mode });
     }
@@ -2190,7 +2190,7 @@ fn metadataLine(allocator: std.mem.Allocator, change: fiew.git_model.Change) ![]
     };
 }
 
-fn drawGitSidebar(allocator: std.mem.Allocator, window: vaxis.Window, app: *const fiew.app.App) !void {
+fn drawGitSidebar(allocator: std.mem.Allocator, window: vaxis.Window, app: *const skaut.app.App) !void {
     const heading = switch (app.git_status) {
         .pending => " Review · Diff · Git · refreshing ",
         .stale => " Review · Diff · Git · stale ",
@@ -2247,7 +2247,7 @@ fn drawGitSidebar(allocator: std.mem.Allocator, window: vaxis.Window, app: *cons
     }
 }
 
-fn lineHasNote(app: *const fiew.app.App, change_notes: []fiew.notes.NoteRef, line: fiew.git_model.DiffLine) bool {
+fn lineHasNote(app: *const skaut.app.App, change_notes: []skaut.notes.NoteRef, line: skaut.git_model.DiffLine) bool {
     const state_notes = if (app.notes) |*value| value else return false;
     for (change_notes) |ref| {
         const note = state_notes.noteAt(ref);
@@ -2338,7 +2338,7 @@ fn wrappedReviewRows(allocator: std.mem.Allocator, text: []const u8, width: u16)
     return wrappedTextRows(allocator, text, width, "▏ ");
 }
 
-fn reviewCommentStyle(author: fiew.review.Author, resolved: bool, bold: bool) vaxis.Cell.Style {
+fn reviewCommentStyle(author: skaut.review.Author, resolved: bool, bold: bool) vaxis.Cell.Style {
     const color: vaxis.Cell.Color = switch (author) {
         .reviewer => .{ .index = 3 },
         .agent => .{ .index = 6 },
@@ -2346,7 +2346,7 @@ fn reviewCommentStyle(author: fiew.review.Author, resolved: bool, bold: bool) va
     return .{ .fg = color, .bold = bold, .dim = resolved };
 }
 
-fn noteEndsOnLine(note: *const fiew.review.Thread, line: fiew.git_model.DiffLine) bool {
+fn noteEndsOnLine(note: *const skaut.review.Thread, line: skaut.git_model.DiffLine) bool {
     const side = note.side orelse return false;
     const anchor_end = note.end_line orelse return false;
     const line_number = (if (side == .new) line.new_line else line.old_line) orelse return false;
@@ -2356,9 +2356,9 @@ fn noteEndsOnLine(note: *const fiew.review.Thread, line: fiew.git_model.DiffLine
 fn diffVisualRowCount(
     allocator: std.mem.Allocator,
     window_width: u16,
-    app: *const fiew.app.App,
-    change_notes: []const fiew.notes.NoteRef,
-    diff: *const fiew.git_model.FileDiff,
+    app: *const skaut.app.App,
+    change_notes: []const skaut.notes.NoteRef,
+    diff: *const skaut.git_model.FileDiff,
     first_line: usize,
 ) !usize {
     var count: usize = 0;
@@ -2399,7 +2399,7 @@ fn diffLineStyle(color: vaxis.Cell.Color, selected: bool, cursor: bool) vaxis.Ce
     };
 }
 
-fn drawDiff(allocator: std.mem.Allocator, window: vaxis.Window, app: *const fiew.app.App) !void {
+fn drawDiff(allocator: std.mem.Allocator, window: vaxis.Window, app: *const skaut.app.App) !void {
     const review = if (app.review) |*value| value else {
         _ = window.printSegment(.{ .text = " Diff", .style = .{ .bold = true } }, .{ .wrap = .none });
         return;
@@ -2429,8 +2429,8 @@ fn drawDiff(allocator: std.mem.Allocator, window: vaxis.Window, app: *const fiew
     }
 
     // Notes anchored to this change, for gutter markers.
-    var note_buffer: [64]fiew.notes.NoteRef = undefined;
-    const change_notes: []fiew.notes.NoteRef = if (app.notes) |*value|
+    var note_buffer: [64]skaut.notes.NoteRef = undefined;
+    const change_notes: []skaut.notes.NoteRef = if (app.notes) |*value|
         value.forFile(change.path, change.group, &note_buffer)
     else
         &.{};
@@ -2526,7 +2526,7 @@ fn drawDiff(allocator: std.mem.Allocator, window: vaxis.Window, app: *const fiew
     }
 }
 
-fn drawDocument(allocator: std.mem.Allocator, window: vaxis.Window, app: *const fiew.app.App) !void {
+fn drawDocument(allocator: std.mem.Allocator, window: vaxis.Window, app: *const skaut.app.App) !void {
     if (app.sidebar_context == .git and !app.viewing_source) return drawDiff(allocator, window, app);
     if (app.sidebar_context == .review) return drawNoteDetail(allocator, window, app);
     const view = app.activeView() orelse {
@@ -2538,14 +2538,14 @@ fn drawDocument(allocator: std.mem.Allocator, window: vaxis.Window, app: *const 
                 .wrap = .none,
             });
         } else {
-            const quote = if (app.welcome_quote.len == 0) fiew.welcome.select(0) else app.welcome_quote;
-            const positions = fiew.welcome.layout(window.width, window.height, quote);
+            const quote = if (app.welcome_quote.len == 0) skaut.welcome.select(0) else app.welcome_quote;
+            const positions = skaut.welcome.layout(window.width, window.height, quote);
             _ = window.printSegment(.{ .text = quote, .style = .{ .bold = true } }, .{
                 .row_offset = positions.quote.row,
                 .col_offset = positions.quote.column,
                 .wrap = .none,
             });
-            _ = window.printSegment(.{ .text = fiew.welcome.quit_hint, .style = .{ .dim = true } }, .{
+            _ = window.printSegment(.{ .text = skaut.welcome.quit_hint, .style = .{ .dim = true } }, .{
                 .row_offset = positions.quit_hint.row,
                 .col_offset = positions.quit_hint.column,
                 .wrap = .none,
@@ -2596,7 +2596,7 @@ fn drawDocument(allocator: std.mem.Allocator, window: vaxis.Window, app: *const 
 
     // Pre-filter highlight spans to the drawn source window. This only reads
     // precomputed spans produced by the parse job — no query runs here.
-    var window_spans: std.ArrayList(fiew.syntax.HighlightSpan) = .empty;
+    var window_spans: std.ArrayList(skaut.syntax.HighlightSpan) = .empty;
     defer window_spans.deinit(allocator);
     if (view.syntax) |data| if (visible_lines.items.len != 0) {
         const first_src = snapshot.line_starts[visible_lines.items[0]];
@@ -2713,11 +2713,11 @@ fn drawDocument(allocator: std.mem.Allocator, window: vaxis.Window, app: *const 
     }
 }
 
-fn bookmarkStatusMarker(status: fiew.bookmark.Status) []const u8 {
+fn bookmarkStatusMarker(status: skaut.bookmark.Status) []const u8 {
     return if (status == .outdated) "! " else "• ";
 }
 
-fn drawBookmarksSidebar(allocator: std.mem.Allocator, window: vaxis.Window, app: *const fiew.app.App) !void {
+fn drawBookmarksSidebar(allocator: std.mem.Allocator, window: vaxis.Window, app: *const skaut.app.App) !void {
     _ = window.printSegment(.{
         .text = " Bookmarks ",
         .style = .{ .bold = true, .reverse = app.focus == .sidebar },
@@ -2746,7 +2746,7 @@ fn drawBookmarksSidebar(allocator: std.mem.Allocator, window: vaxis.Window, app:
     }
 }
 
-fn reviewStatusMarker(status: fiew.review.Status) []const u8 {
+fn reviewStatusMarker(status: skaut.review.Status) []const u8 {
     return switch (status) {
         .open => "• ",
         .resolved => "✓ ",
@@ -2754,14 +2754,14 @@ fn reviewStatusMarker(status: fiew.review.Status) []const u8 {
     };
 }
 
-fn reviewAuthorLabel(author: fiew.review.Author) []const u8 {
+fn reviewAuthorLabel(author: skaut.review.Author) []const u8 {
     return switch (author) {
         .reviewer => "reviewer:",
         .agent => "agent:",
     };
 }
 
-fn drawReviewSidebar(allocator: std.mem.Allocator, window: vaxis.Window, app: *const fiew.app.App) !void {
+fn drawReviewSidebar(allocator: std.mem.Allocator, window: vaxis.Window, app: *const skaut.app.App) !void {
     _ = window.printSegment(.{
         .text = " Review · Threads ",
         .style = .{ .bold = true, .reverse = app.focus == .sidebar },
@@ -2797,7 +2797,7 @@ fn drawReviewSidebar(allocator: std.mem.Allocator, window: vaxis.Window, app: *c
     }
 }
 
-fn drawNoteDetail(allocator: std.mem.Allocator, window: vaxis.Window, app: *const fiew.app.App) !void {
+fn drawNoteDetail(allocator: std.mem.Allocator, window: vaxis.Window, app: *const skaut.app.App) !void {
     const state_notes = if (app.notes) |*value| value else return;
     const ref = state_notes.selectedRef() orelse {
         _ = window.printSegment(.{ .text = " Thread", .style = .{ .bold = true, .reverse = app.focus == .main } }, .{ .wrap = .none });
@@ -2861,7 +2861,7 @@ fn drawNoteDetail(allocator: std.mem.Allocator, window: vaxis.Window, app: *cons
     }
 }
 
-fn drawComposer(allocator: std.mem.Allocator, window: vaxis.Window, app: *const fiew.app.App) !void {
+fn drawComposer(allocator: std.mem.Allocator, window: vaxis.Window, app: *const skaut.app.App) !void {
     const composer = if (app.composer) |*value| value else return;
     const height: u16 = @min(window.height, 12);
     const box = window.child(.{ .y_off = window.height - height, .height = height });
@@ -2894,7 +2894,7 @@ fn drawComposer(allocator: std.mem.Allocator, window: vaxis.Window, app: *const 
     }, .{ .row_offset = height -| 1, .col_offset = 1, .wrap = .none });
 }
 
-fn drawBookmarkComposer(allocator: std.mem.Allocator, window: vaxis.Window, app: *const fiew.app.App) !void {
+fn drawBookmarkComposer(allocator: std.mem.Allocator, window: vaxis.Window, app: *const skaut.app.App) !void {
     const composer = if (app.bookmark_composer) |*value| value else return;
     const height: u16 = @min(window.height, 4);
     const box = window.child(.{ .y_off = window.height - height, .height = height });
@@ -2905,7 +2905,7 @@ fn drawBookmarkComposer(allocator: std.mem.Allocator, window: vaxis.Window, app:
     _ = box.printSegment(.{ .text = "Optional label (48 bytes) · Enter save · Esc cancel", .style = .{ .dim = true } }, .{ .row_offset = height -| 1, .col_offset = 1, .wrap = .none });
 }
 
-fn drawTrailComposer(allocator: std.mem.Allocator, window: vaxis.Window, app: *const fiew.app.App) !void {
+fn drawTrailComposer(allocator: std.mem.Allocator, window: vaxis.Window, app: *const skaut.app.App) !void {
     const composer = if (app.trail_composer) |*value| value else return;
     const height: u16 = @min(window.height, 12);
     const box = window.child(.{ .y_off = window.height - height, .height = height });
@@ -2925,7 +2925,7 @@ fn drawTrailComposer(allocator: std.mem.Allocator, window: vaxis.Window, app: *c
     _ = box.printSegment(.{ .text = "Tab field · Enter note/newline · Ctrl-Enter save · Esc resume recording", .style = .{ .dim = true } }, .{ .row_offset = height -| 1, .col_offset = 1, .wrap = .none });
 }
 
-fn drawBookmarksPicker(allocator: std.mem.Allocator, window: vaxis.Window, app: *const fiew.app.App, session: *const fiew.commands.Session) !void {
+fn drawBookmarksPicker(allocator: std.mem.Allocator, window: vaxis.Window, app: *const skaut.app.App, session: *const skaut.commands.Session) !void {
     const state_bookmarks = if (app.bookmarks) |*value| value else return;
     const height: u16 = @min(window.height, 14);
     const box = window.child(.{ .y_off = window.height - height, .height = height });
@@ -2955,7 +2955,7 @@ fn drawBookmarksPicker(allocator: std.mem.Allocator, window: vaxis.Window, app: 
     _ = box.printSegment(.{ .text = hint, .style = .{ .dim = true } }, .{ .row_offset = height -| 1, .col_offset = 1, .wrap = .none });
 }
 
-fn drawTrails(allocator: std.mem.Allocator, window: vaxis.Window, app: *const fiew.app.App, session: *const fiew.commands.Session) !void {
+fn drawTrails(allocator: std.mem.Allocator, window: vaxis.Window, app: *const skaut.app.App, session: *const skaut.commands.Session) !void {
     const state_trails = if (app.trails) |*value| value else return;
     const height: u16 = @min(window.height, 14);
     const box = window.child(.{ .y_off = window.height - height, .height = height });
@@ -3007,8 +3007,8 @@ fn drawTrails(allocator: std.mem.Allocator, window: vaxis.Window, app: *const fi
 fn drawCommandSurface(
     allocator: std.mem.Allocator,
     window: vaxis.Window,
-    app: *const fiew.app.App,
-    session: *const fiew.commands.Session,
+    app: *const skaut.app.App,
+    session: *const skaut.commands.Session,
 ) !void {
     const pending_count = session.pendingCommandCount();
     if (pending_count != 0) {
@@ -3019,7 +3019,7 @@ fn drawCommandSurface(
         _ = menu.printSegment(.{ .text = title, .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
         for (0..height -| 1) |index| {
             const id = session.pendingCommand(index).?;
-            const reason = fiew.commands.unavailableReason(app, id);
+            const reason = skaut.commands.unavailableReason(app, id);
             _ = menu.printSegment(.{
                 .text = try continuationHintRow(allocator, app, session, id),
                 .style = .{ .dim = reason != null },
@@ -3052,7 +3052,7 @@ fn drawCommandSurface(
             const menu = window.child(.{ .y_off = window.height -| 2, .height = 2 });
             menu.clear();
             _ = menu.printSegment(.{ .text = " Review ", .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
-            const actions = switch (fiew.commands.reviewMenuContext(app)) {
+            const actions = switch (skaut.commands.reviewMenuContext(app)) {
                 .destinations => "d Diff  t Threads",
                 .diff => "t Threads  n line  f file",
                 .threads => "d Diff  a append  r resolve/reopen  x delete",
@@ -3065,7 +3065,7 @@ fn drawCommandSurface(
             const menu = window.child(.{ .y_off = window.height -| 2, .height = 2 });
             menu.clear();
             _ = menu.printSegment(.{ .text = " Project ", .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
-            const git_reason = fiew.commands.unavailableReason(app, .file_find_git);
+            const git_reason = skaut.commands.unavailableReason(app, .file_find_git);
             _ = menu.printSegment(.{
                 .text = if (git_reason == null) "f all files  g git files  r reload" else "f all files  g git files (not a Git repository)  r reload",
             }, .{ .row_offset = 1, .col_offset = 1, .wrap = .none });
@@ -3074,7 +3074,7 @@ fn drawCommandSurface(
         .bookmark_composer => try drawBookmarkComposer(allocator, window, app),
         .trail_composer => try drawTrailComposer(allocator, window, app),
         .finder => {
-            const height: u16 = @min(window.height, fiew.workspace.finder_max_height);
+            const height: u16 = @min(window.height, skaut.workspace.finder_max_height);
             const box = window.child(.{ .y_off = window.height - height, .height = height });
             box.clear();
             const label = switch (session.finder.scope) {
@@ -3105,7 +3105,7 @@ fn drawCommandSurface(
             _ = box.printSegment(.{ .text = hint, .style = .{ .dim = true } }, .{ .row_offset = height -| 1, .col_offset = 1, .wrap = .none });
         },
         .definitions => {
-            const height: u16 = @min(window.height, fiew.workspace.finder_max_height);
+            const height: u16 = @min(window.height, skaut.workspace.finder_max_height);
             const box = window.child(.{ .y_off = window.height - height, .height = height });
             box.clear();
             _ = box.printSegment(.{ .text = if (app.semantic_operation == .references) " References " else " Definitions ", .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
@@ -3189,9 +3189,9 @@ fn drawCommandSurface(
             for (0..visible_count) |row| {
                 const index = start + row;
                 const id = session.filteredCommand(index) orelse break;
-                const command = fiew.commands.definition(id);
+                const command = skaut.commands.definition(id);
                 const selected = index == session.selected_command;
-                const reason = fiew.commands.unavailableReason(app, id) orelse "";
+                const reason = skaut.commands.unavailableReason(app, id) orelse "";
                 const line = try std.fmt.allocPrint(
                     allocator,
                     "{s:<24} {s:<18} {s}",
@@ -3205,11 +3205,11 @@ fn drawCommandSurface(
         },
         .help => {
             window.clear();
-            _ = window.printSegment(.{ .text = " fiew key help — generated from command registry ", .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
+            _ = window.printSegment(.{ .text = " Skaut key help — generated from command registry ", .style = .{ .bold = true, .reverse = true } }, .{ .wrap = .none });
             const available_rows: usize = window.height -| 2;
-            const end = @min(session.help_scroll + available_rows, fiew.commands.definitions.len);
-            for (fiew.commands.definitions[session.help_scroll..end], 0..) |command, index| {
-                const reason = fiew.commands.unavailableReason(app, command.id) orelse "";
+            const end = @min(session.help_scroll + available_rows, skaut.commands.definitions.len);
+            for (skaut.commands.definitions[session.help_scroll..end], 0..) |command, index| {
+                const reason = skaut.commands.unavailableReason(app, command.id) orelse "";
                 const line = try std.fmt.allocPrint(
                     allocator,
                     "{s:<14} {s:<26} {s}",
@@ -3229,7 +3229,7 @@ fn drawCommandSurface(
     }
 }
 
-fn definitionResultLabel(allocator: std.mem.Allocator, target: fiew.definitions.Target, grouped: bool) ![]u8 {
+fn definitionResultLabel(allocator: std.mem.Allocator, target: skaut.definitions.Target, grouped: bool) ![]u8 {
     if (grouped and !target.group_start) {
         return std.fmt.allocPrint(allocator, "  {d}  {s}{s}", .{
             target.line,
@@ -3247,13 +3247,13 @@ fn definitionResultLabel(allocator: std.mem.Allocator, target: fiew.definitions.
 
 fn continuationHintRow(
     allocator: std.mem.Allocator,
-    app: *const fiew.app.App,
-    session: *const fiew.commands.Session,
-    id: fiew.commands.Id,
+    app: *const skaut.app.App,
+    session: *const skaut.commands.Session,
+    id: skaut.commands.Id,
 ) ![]u8 {
-    const command = fiew.commands.definition(id);
+    const command = skaut.commands.definition(id);
     const label = command.hint orelse command.title;
-    if (fiew.commands.unavailableReason(app, id)) |reason|
+    if (skaut.commands.unavailableReason(app, id)) |reason|
         return std.fmt.allocPrint(allocator, "{s:<3} {s} — {s}", .{ session.continuationKey(id), label, reason });
     return std.fmt.allocPrint(allocator, "{s:<3} {s}", .{ session.continuationKey(id), label });
 }
@@ -3261,8 +3261,8 @@ fn continuationHintRow(
 fn drawStatus(
     allocator: std.mem.Allocator,
     window: vaxis.Window,
-    app: *const fiew.app.App,
-    session: *const fiew.commands.Session,
+    app: *const skaut.app.App,
+    session: *const skaut.commands.Session,
 ) !void {
     const location = if (app.activeView()) |view| location: {
         if (view.snapshot.graphemes.len == 0) break :location "";
@@ -3295,8 +3295,8 @@ fn drawStatus(
 fn drawHoverLine(
     allocator: std.mem.Allocator,
     window: vaxis.Window,
-    content: fiew.hover.Content,
-    line: fiew.hover.Content.Line,
+    content: skaut.hover.Content,
+    line: skaut.hover.Content.Line,
     row: u16,
 ) !void {
     const safe = try sanitizeLine(allocator, line.text, window.width -| 2);
@@ -3322,8 +3322,8 @@ fn drawHoverLine(
     }
 }
 
-fn highlightKindAt(spans: []const fiew.syntax.HighlightSpan, position: usize) ?fiew.syntax.HighlightKind {
-    var best: ?fiew.syntax.HighlightKind = null;
+fn highlightKindAt(spans: []const skaut.syntax.HighlightSpan, position: usize) ?skaut.syntax.HighlightKind {
+    var best: ?skaut.syntax.HighlightKind = null;
     var best_length: usize = std.math.maxInt(usize);
     for (spans) |span| {
         if (span.source.start <= position and span.source.end > position) {
@@ -3337,7 +3337,7 @@ fn highlightKindAt(spans: []const fiew.syntax.HighlightSpan, position: usize) ?f
     return best;
 }
 
-fn highlightColor(kind: fiew.syntax.HighlightKind) vaxis.Cell.Color {
+fn highlightColor(kind: skaut.syntax.HighlightKind) vaxis.Cell.Color {
     return switch (kind) {
         .keyword => .{ .index = 5 }, // magenta
         .type => .{ .index = 3 }, // yellow
@@ -3350,14 +3350,14 @@ fn highlightColor(kind: fiew.syntax.HighlightKind) vaxis.Cell.Color {
     };
 }
 
-fn isClosedFoldStart(view: *const fiew.app.View, line: usize) bool {
+fn isClosedFoldStart(view: *const skaut.app.View, line: usize) bool {
     for (view.closed_folds.items) |start| if (start == line) return true;
     return false;
 }
 
 const FoldGutter = enum { none, open, closed };
 
-fn foldGutter(view: *const fiew.app.View, line: usize) FoldGutter {
+fn foldGutter(view: *const skaut.app.View, line: usize) FoldGutter {
     const data = view.syntax orelse return .none;
     var foldable = false;
     for (data.folds) |fold| {
@@ -3371,8 +3371,8 @@ fn foldGutter(view: *const fiew.app.View, line: usize) FoldGutter {
 }
 
 fn selectedLineBreakVisible(
-    grapheme: fiew.document.Grapheme,
-    selection: fiew.document.ByteRange,
+    grapheme: skaut.document.Grapheme,
+    selection: skaut.document.ByteRange,
     scroll_column: u32,
     viewport_width: u16,
 ) bool {
@@ -3426,7 +3426,7 @@ test "Kitty and conventional VT keys translate to the same command input" {
         .mods = .{ .shift = true },
     });
     try std.testing.expectEqual(conventional, kitty);
-    try std.testing.expectEqual(fiew.commands.Code.character, kitty.code);
+    try std.testing.expectEqual(skaut.commands.Code.character, kitty.code);
     try std.testing.expectEqual(@as(u21, '?'), kitty.character);
 
     const conventional_ctrl_c = translateKey(.{ .codepoint = 'c', .mods = .{ .ctrl = true } });
@@ -3462,7 +3462,7 @@ test "file launch target resolves to its repository path" {
     try std.testing.expectEqualStrings(std.fs.path.dirname(file_path).?, requested.directory);
     try std.testing.expectEqualStrings(file_path, requested.file.?);
 
-    var repository = try fiew.filesystem.Repository.open(std.testing.allocator, std.testing.io, root_path);
+    var repository = try skaut.filesystem.Repository.open(std.testing.allocator, std.testing.io, root_path);
     defer repository.deinit();
     const relative = try repositoryPathForFile(std.testing.allocator, std.testing.io, repository, file_path);
     defer std.testing.allocator.free(relative);
@@ -3478,7 +3478,7 @@ test "definition target validation distinguishes repository and external files" 
     try external_tmp.dir.writeFile(std.testing.io, .{ .sub_path = "stdlib.zig", .data = "pub const value = 1;\n" });
     const repository_path = try std.fmt.allocPrint(std.testing.allocator, ".zig-cache/tmp/{s}", .{repository_tmp.sub_path});
     defer std.testing.allocator.free(repository_path);
-    var repository = try fiew.filesystem.Repository.open(std.testing.allocator, std.testing.io, repository_path);
+    var repository = try skaut.filesystem.Repository.open(std.testing.allocator, std.testing.io, repository_path);
     defer repository.deinit();
     var root_buffer: [std.fs.max_path_bytes]u8 = undefined;
     const root_len = try repository.root_dir.realPath(std.testing.io, &root_buffer);
@@ -3489,13 +3489,13 @@ test "definition target validation distinguishes repository and external files" 
     const external_len = try external_tmp.dir.realPath(std.testing.io, &external_buffer);
     const external_path = try std.fs.path.join(std.testing.allocator, &.{ external_buffer[0..external_len], "stdlib.zig" });
     defer std.testing.allocator.free(external_path);
-    const locations = try std.testing.allocator.alloc(fiew.zls_process.WireLocation, 3);
-    locations[0] = .{ .uri = try fiew.zls_process.fileUri(std.testing.allocator, internal_path), .start = .{ .line = 1, .character = 10 }, .end = .{ .line = 1, .character = 11 } };
-    locations[1] = .{ .uri = try fiew.zls_process.fileUri(std.testing.allocator, external_path), .start = .{ .line = 0, .character = 10 }, .end = .{ .line = 0, .character = 15 } };
-    locations[2] = .{ .uri = try fiew.zls_process.fileUri(std.testing.allocator, internal_path), .start = .{ .line = 99, .character = 0 }, .end = .{ .line = 99, .character = 1 } };
-    var response: fiew.zls_process.DefinitionResponse = .{ .allocator = std.testing.allocator, .encoding = .utf8, .locations = locations };
+    const locations = try std.testing.allocator.alloc(skaut.zls_process.WireLocation, 3);
+    locations[0] = .{ .uri = try skaut.zls_process.fileUri(std.testing.allocator, internal_path), .start = .{ .line = 1, .character = 10 }, .end = .{ .line = 1, .character = 11 } };
+    locations[1] = .{ .uri = try skaut.zls_process.fileUri(std.testing.allocator, external_path), .start = .{ .line = 0, .character = 10 }, .end = .{ .line = 0, .character = 15 } };
+    locations[2] = .{ .uri = try skaut.zls_process.fileUri(std.testing.allocator, internal_path), .start = .{ .line = 99, .character = 0 }, .end = .{ .line = 99, .character = 1 } };
+    var response: skaut.zls_process.DefinitionResponse = .{ .allocator = std.testing.allocator, .encoding = .utf8, .locations = locations };
     defer response.deinit();
-    const segmenter: fiew.text_segmentation.Segmenter = .{ .next_fn = nextGrapheme, .width_fn = graphemeWidth };
+    const segmenter: skaut.text_segmentation.Segmenter = .{ .next_fn = nextGrapheme, .width_fn = graphemeWidth };
     var generation: u64 = 0;
     var targets = try validateDefinitionTargets(std.testing.allocator, repository, canonical_root, segmenter, &generation, &response, .definition);
     defer targets.deinit();
@@ -3508,7 +3508,7 @@ test "definition target validation distinguishes repository and external files" 
 }
 
 test "reference targets are path-position ordered, visibly grouped, and capped" {
-    var items: std.ArrayList(fiew.definitions.Target) = .empty;
+    var items: std.ArrayList(skaut.definitions.Target) = .empty;
     errdefer {
         for (items.items) |*item| item.deinit(std.testing.allocator);
         items.deinit(std.testing.allocator);
@@ -3539,8 +3539,8 @@ test "reference targets are path-position ordered, visibly grouped, and capped" 
 }
 
 test "definition result render labels include line preview and External state" {
-    const internal: fiew.definitions.Target = .{ .path = @constCast("src/main.zig"), .line = 12, .column = 0, .source_start = 0, .preview = @constCast("pub fn main()"), .external = false };
-    const external: fiew.definitions.Target = .{ .path = @constCast("/zig/std/process.zig"), .line = 4, .column = 0, .source_start = 0, .preview = @constCast("pub const Init"), .external = true };
+    const internal: skaut.definitions.Target = .{ .path = @constCast("src/main.zig"), .line = 12, .column = 0, .source_start = 0, .preview = @constCast("pub fn main()"), .external = false };
+    const external: skaut.definitions.Target = .{ .path = @constCast("/zig/std/process.zig"), .line = 4, .column = 0, .source_start = 0, .preview = @constCast("pub const Init"), .external = true };
     const internal_label = try definitionResultLabel(std.testing.allocator, internal, false);
     defer std.testing.allocator.free(internal_label);
     const external_label = try definitionResultLabel(std.testing.allocator, external, false);
@@ -3550,14 +3550,14 @@ test "definition result render labels include line preview and External state" {
 }
 
 test "pending continuation rows render every prefix and disabled reason" {
-    var nodes: [0]fiew.project.Node = .{};
-    const tree: fiew.project.Tree = .{ .allocator = std.testing.allocator, .nodes = &nodes, .file_count = 0 };
-    var app = try fiew.app.App.init(std.testing.allocator, &tree);
+    var nodes: [0]skaut.project.Node = .{};
+    const tree: skaut.project.Tree = .{ .allocator = std.testing.allocator, .nodes = &nodes, .file_count = 0 };
+    var app = try skaut.app.App.init(std.testing.allocator, &tree);
     defer app.deinit();
     app.focus = .main;
-    var session = fiew.commands.Session.init(std.testing.allocator);
+    var session = skaut.commands.Session.init(std.testing.allocator);
     defer session.deinit();
-    const dimensions: fiew.commands.Dimensions = .{ .sidebar_rows = 20, .document_rows = 20, .document_columns = 80 };
+    const dimensions: skaut.commands.Dimensions = .{ .sidebar_rows = 20, .document_rows = 20, .document_columns = 80 };
     const cases = [_]struct { prefix: u21, rows: []const []const u8 }{
         .{ .prefix = 'g', .rows = &.{
             "g   start — no document is open",
@@ -3601,13 +3601,13 @@ test "pending continuation rows render every prefix and disabled reason" {
 }
 
 test "terminal presentation stays usable without optional capabilities" {
-    // Fiew emits palette indexes rather than requiring RGB, and every mouse
+    // Skaut emits palette indexes rather than requiring RGB, and every mouse
     // action is an enhancement over command-registry keyboard actions.
     try std.testing.expectEqual(vaxis.Cell.Color{ .index = 5 }, highlightColor(.keyword));
     try std.testing.expectEqual(vaxis.Cell.Color.default, highlightColor(.variable));
-    try std.testing.expect(fiew.commands.definition(.quit).binding.len != 0);
-    try std.testing.expect(fiew.commands.definition(.focus_next).binding.len != 0);
-    try std.testing.expect(fiew.commands.definition(.activate).binding.len != 0);
+    try std.testing.expect(skaut.commands.definition(.quit).binding.len != 0);
+    try std.testing.expect(skaut.commands.definition(.focus_next).binding.len != 0);
+    try std.testing.expect(skaut.commands.definition(.activate).binding.len != 0);
 }
 
 test "hover Markdown carries injected Zig highlights from the worker" {
@@ -3617,7 +3617,7 @@ test "hover Markdown carries injected Zig highlights from the worker" {
     defer content.deinit();
     const data = content.syntax_data orelse return error.ParseFailed;
     const number = std.mem.indexOf(u8, content.text, "42").?;
-    try std.testing.expectEqual(fiew.syntax.HighlightKind.number, highlightKindAt(data.highlights, number).?);
+    try std.testing.expectEqual(skaut.syntax.HighlightKind.number, highlightKindAt(data.highlights, number).?);
     const code_line = content.line(3).?;
     try std.testing.expectEqualStrings("const answer = 42;", code_line.text);
     try std.testing.expectEqual(std.mem.indexOf(u8, content.text, "const").?, code_line.source_start);
@@ -3625,15 +3625,15 @@ test "hover Markdown carries injected Zig highlights from the worker" {
 
 test "Markdown and injected Zig highlights reach the cell-style seam" {
     const source = "# Heading\n\n```zig\nconst answer = 42;\n```\n";
-    var engine = try fiew.markdown_syntax.Engine.init(std.testing.allocator);
+    var engine = try skaut.markdown_syntax.Engine.init(std.testing.allocator);
     defer engine.deinit();
     var data = engine.analyze(std.testing.allocator, source, null) orelse return error.ParseFailed;
     defer data.deinit();
 
     const heading = std.mem.indexOf(u8, source, "Heading").?;
-    try std.testing.expectEqual(fiew.syntax.HighlightKind.label, highlightKindAt(data.highlights, heading).?);
+    try std.testing.expectEqual(skaut.syntax.HighlightKind.label, highlightKindAt(data.highlights, heading).?);
     const number = std.mem.indexOf(u8, source, "42").?;
-    try std.testing.expectEqual(fiew.syntax.HighlightKind.number, highlightKindAt(data.highlights, number).?);
+    try std.testing.expectEqual(skaut.syntax.HighlightKind.number, highlightKindAt(data.highlights, number).?);
     try std.testing.expectEqual(vaxis.Cell.Color{ .index = 6 }, highlightColor(highlightKindAt(data.highlights, number).?));
 }
 
@@ -3666,14 +3666,14 @@ test "review render labels distinguish statuses and comment roles" {
 
 test "Review Threads renders long comment continuation rows" {
     const allocator = std.testing.allocator;
-    var nodes: [0]fiew.project.Node = .{};
-    const tree: fiew.project.Tree = .{ .allocator = allocator, .nodes = &nodes, .file_count = 0 };
-    var app = try fiew.app.App.init(allocator, &tree);
+    var nodes: [0]skaut.project.Node = .{};
+    const tree: skaut.project.Tree = .{ .allocator = allocator, .nodes = &nodes, .file_count = 0 };
+    var app = try skaut.app.App.init(allocator, &tree);
     defer app.deinit();
     app.sidebar_context = .review;
     app.notes = .{ .allocator = allocator };
 
-    const comments = try allocator.alloc(fiew.review.Comment, 1);
+    const comments = try allocator.alloc(skaut.review.Comment, 1);
     comments[0] = .{ .author = .reviewer, .body = try allocator.dupe(u8, "abcdefghijklmno") };
     try app.notes.?.addThread(.reviewer, .{
         .filename = "review.md",
@@ -3768,7 +3768,7 @@ test "bookmark render distinguishes current and Outdated state" {
 }
 
 test "selected end-of-document newline receives a visible marker" {
-    const newline: fiew.document.Grapheme = .{
+    const newline: skaut.document.Grapheme = .{
         .source = .{ .start = 5, .end = 6 },
         .display = .{ .start = 5, .end = 6 },
         .line = 0,
@@ -3797,7 +3797,7 @@ test "terminal text sanitization cannot emit control sequences" {
 }
 
 test "Unicode grapheme segmentation preserves source byte ranges" {
-    var snapshot = try fiew.document.Snapshot.init(
+    var snapshot = try skaut.document.Snapshot.init(
         std.testing.allocator,
         "unicode.txt",
         "a\u{301}👩‍💻x",
@@ -3809,11 +3809,11 @@ test "Unicode grapheme segmentation preserves source byte ranges" {
 
     try std.testing.expectEqual(@as(usize, 3), snapshot.graphemes.len);
     try std.testing.expectEqual(
-        fiew.document.ByteRange{ .start = 0, .end = 3 },
+        skaut.document.ByteRange{ .start = 0, .end = 3 },
         snapshot.graphemes[0].source,
     );
     try std.testing.expectEqual(
-        fiew.document.ByteRange{ .start = 3, .end = 14 },
+        skaut.document.ByteRange{ .start = 3, .end = 14 },
         snapshot.graphemes[1].source,
     );
     try std.testing.expectEqual(@as(u16, 2), snapshot.graphemes[1].width);

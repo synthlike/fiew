@@ -1,4 +1,4 @@
-//! Read-only git invocation. Every git call in fiew goes through `run`, which
+//! Read-only git invocation. Every git call in Skaut goes through `run`, which
 //! shells out to the installed `git` executable with a fixed safety preamble:
 //! no pager, no shell, no hooks, no external diff drivers, and no text
 //! converters. Only non-mutating subcommands are ever passed in.
