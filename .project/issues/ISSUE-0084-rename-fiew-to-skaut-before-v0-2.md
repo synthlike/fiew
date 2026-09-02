@@ -2,9 +2,9 @@
 id: ISSUE-0084
 title: "Rename fiew to Skaut before v0.2"
 kind: "implementation"
-status: open
+status: resolved
 created: 2026-09-01
-assignee: 
+assignee:
 parent: "ISSUE-0057-implement-fiew-v0-2.md"
 blocked_by:
 labels: []
@@ -36,6 +36,12 @@ None.
 Changing established domain vocabulary, migrating or deleting old state, republishing or relabeling fiew v0.1 artifacts as Skaut, publishing v0.2, and reserving an unscoped npm package.
 
 ## Comments
-
-
 ## Resolution
+
+**Outcome: Achieved.**
+
+The complete current product identity is Skaut. ISSUE-0085 renamed the executable, Zig package, runtime and UI labels, private schemas, global-state paths, fixtures, and installed test binaries while retaining generic repository-local artifact directories and adding no compatibility behavior. ISSUE-0086 renamed the current README, v0.2 specification, engineering guidance, Agent Skill, active plans, release metadata, and packaging. ARP-0015 records the clean-break identity, unchanged domain vocabulary, historical treatment, repository transition, and scoped-only future npm naming. ISSUE-0087 made `synthlike/skaut` canonical, updated the local remote, verified old URL redirects, and validated the complete identity from clean checkout through Skill installation and packaged execution.
+
+Every acceptance criterion was verified. Native tests and builds, baseline static x86_64 and ARM64 Linux cross-builds, formatting, package checksum and extraction, exact `skaut 0.2.0` output, current links, Agent Skill installation, and active-surface identity audits passed. The historical v0.1.0 tag, `fiew v0.1.0` release title, fiew-named assets, checksums, and binary remain unchanged and accurate.
+
+No unresolved rename work remains. Publishing Skaut v0.2 is intentionally deferred to the existing release workflow, and migration or compatibility behavior remains excluded by decision.

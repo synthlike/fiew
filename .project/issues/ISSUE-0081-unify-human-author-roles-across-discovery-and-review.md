@@ -5,7 +5,7 @@ kind: "clarification"
 status: open
 created: 2026-09-01
 assignee:
-parent:
+parent: "ISSUE-0074-plan-fiew-v0-3.md"
 blocked_by:
 labels: []
 ---
@@ -19,7 +19,7 @@ Should a future schema evolution replace the Review-specific `reviewer` author r
 
 Skaut v0.3 should use `human` for new Discovery projections while preserving `reviewer` in the established `skaut.review/v1` compatibility surface. Any unification must define schema compatibility and migration explicitly rather than silently changing public Review output.
 
-This follow-up has no assigned release and does not block the v0.3 Discovery behavior decision.
+This is part of Skaut v0.3 planning and does not block the established Discovery behavior decisions.
 
 ## Comments
 
