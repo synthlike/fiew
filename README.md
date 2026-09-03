@@ -229,11 +229,14 @@ zig build -Dtarget=x86_64-linux-musl -Dcpu=baseline
 zig build -Dtarget=aarch64-linux-musl -Dcpu=baseline
 ```
 
-`zig build test` is deterministic and does not need a network connection or an
-installed Git executable. Git integration tests are opt-in:
+`zig build test` is deterministic and does not need a network connection or
+installed Git or ZLS executables. Live external-tool integration tests are
+opt-in:
 
 ```sh
 zig build test -Dgit-integration
+zig build test -Dzls-integration
+zig build test -Dgit-integration -Dzls-integration
 ```
 
 Release maintainers can produce the deterministic v0.2 archive and checksum:

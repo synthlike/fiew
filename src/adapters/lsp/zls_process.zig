@@ -4,6 +4,7 @@ const std = @import("std");
 const lsp = @import("../../model/lsp.zig");
 const json_rpc = @import("json_rpc.zig");
 const zls_protocol = @import("zls_protocol.zig");
+const build_options = @import("build_options");
 
 pub const output_limit: u64 = 64 << 10;
 pub const version_timeout: std.Io.Clock.Duration = .{ .raw = .fromSeconds(2), .clock = .real };
@@ -587,6 +588,94 @@ fn parsePosition(value: std.json.Value) !lsp.Position {
     if (line < 0 or character < 0 or line > std.math.maxInt(u32) or character > std.math.maxInt(u32))
         return error.MalformedResponse;
     return .{ .line = @intCast(line), .character = @intCast(character) };
+}
+
+test "live ZLS serves definition references hover and cancels cleanly" {
+    if (!build_options.zls_integration) return error.SkipZigTest;
+
+    const source =
+        \\fn increment(value: usize) usize {
+        \\    return value + 1;
+        \\}
+        \\pub fn main() void {
+        \\    const result = increment(1);
+        \\    _ = result;
+        \\}
+    ;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "main.zig", .data = source });
+
+    var root_path_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const root_path_length = try tmp.parent_dir.realPathFile(std.testing.io, &tmp.sub_path, &root_path_buffer);
+    const root_path = root_path_buffer[0..root_path_length];
+    const document_path = try std.fs.path.join(std.testing.allocator, &.{ root_path, "main.zig" });
+    defer std.testing.allocator.free(document_path);
+    const root_uri = try fileUri(std.testing.allocator, root_path);
+    defer std.testing.allocator.free(root_uri);
+    const document_uri = try fileUri(std.testing.allocator, document_path);
+    defer std.testing.allocator.free(document_uri);
+
+    var definition = try requestDefinition(
+        std.testing.allocator,
+        std.testing.io,
+        tmp.dir,
+        root_uri,
+        document_uri,
+        1,
+        source,
+        .{ .line = 4, .character = 20 },
+        .{ .line = 4, .character = 20 },
+    );
+    defer definition.deinit();
+    try std.testing.expect(definition.locations.len >= 1);
+
+    var references = try requestReferences(
+        std.testing.allocator,
+        std.testing.io,
+        tmp.dir,
+        root_uri,
+        document_uri,
+        1,
+        source,
+        .{ .line = 0, .character = 4 },
+        .{ .line = 0, .character = 4 },
+    );
+    defer references.deinit();
+    try std.testing.expect(references.locations.len >= 1);
+
+    var hover = try requestHover(
+        std.testing.allocator,
+        std.testing.io,
+        tmp.dir,
+        root_uri,
+        document_uri,
+        1,
+        source,
+        .{ .line = 4, .character = 20 },
+        .{ .line = 4, .character = 20 },
+    );
+    defer hover.deinit();
+    try std.testing.expect(hover.hover_text != null);
+    try std.testing.expect(std.mem.indexOf(u8, hover.hover_text.?, "increment") != null);
+
+    var status: std.atomic.Value(lsp.Status) = .init(.starting);
+    var future = try std.testing.io.concurrent(serve, .{
+        std.testing.allocator,
+        std.testing.io,
+        tmp.dir,
+        root_uri,
+        document_uri,
+        @as(u64, 1),
+        source,
+        &status,
+    });
+    const deadline = std.Io.Timestamp.now(std.testing.io, .real).nanoseconds + 5 * std.time.ns_per_s;
+    while (status.load(.acquire) == .starting and std.Io.Timestamp.now(std.testing.io, .real).nanoseconds < deadline) {
+        try std.testing.io.sleep(.fromMilliseconds(10), .real);
+    }
+    try std.testing.expectEqual(lsp.Status.ready, status.load(.acquire));
+    future.cancel(std.testing.io);
 }
 
 test "definition responses accept Location and LocationLink variants" {

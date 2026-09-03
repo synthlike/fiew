@@ -23,9 +23,15 @@ pub fn build(b: *std.Build) void {
         "performance",
         "Run opt-in v0.1 scale profiling tests",
     ) orelse false;
+    const zls_integration = b.option(
+        bool,
+        "zls-integration",
+        "Run live ZLS integration tests (requires the zls executable)",
+    ) orelse false;
     const build_options = b.addOptions();
     build_options.addOption(bool, "git_integration", git_integration);
     build_options.addOption(bool, "performance", performance);
+    build_options.addOption(bool, "zls_integration", zls_integration);
     skaut.addOptions("build_options", build_options);
 
     // Tree-sitter core (v0.26.13), Zig, and Markdown grammars (ABI 15) are vendored at
