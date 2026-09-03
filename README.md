@@ -50,7 +50,51 @@ Skaut v0.2 is under development and will be the first release under the Skaut
 name. The published v0.1.0 release remains available as the historical fiew
 binary; its bytes and artifact names have not been relabeled.
 
-Git must be installed for Review Diff; non-Git directories remain browsable.
+The v0.2 release supports Apple Silicon macOS and baseline x86_64 Linux. Ubuntu
+22.04 with Linux 5.15 is the verified Linux floor. Ghostty, Kitty, and WezTerm
+are verified terminals. Other x86_64 distributions meeting that kernel floor
+and other xterm-compatible terminals are best-effort.
+ARM64 Linux remains source-build only, without a published archive or runtime
+support claim. Release executables are unsigned and unnotarized.
+
+Git is required only for Review Diff; non-Git directories remain browsable. ZLS
+0.16.x is optional and enables trusted Zig definitions, references, and hover.
+
+### Install a v0.2 release
+
+After v0.2 is published, download the archive for your platform from GitHub and
+install it without root access.
+
+Apple Silicon macOS:
+
+```sh
+version=0.2.0
+artifact="skaut-v${version}-darwin-arm64.tar.gz"
+curl -fLO "https://github.com/synthlike/skaut/releases/download/v${version}/${artifact}"
+curl -fLO "https://github.com/synthlike/skaut/releases/download/v${version}/${artifact}.sha256"
+shasum -a 256 -c "${artifact}.sha256"
+tar -xzf "$artifact"
+install -d "$HOME/.local/bin"
+install -m 755 skaut "$HOME/.local/bin/skaut"
+```
+
+Baseline x86_64 Linux:
+
+```sh
+version=0.2.0
+artifact="skaut-v${version}-linux-x86_64.tar.gz"
+curl -fLO "https://github.com/synthlike/skaut/releases/download/v${version}/${artifact}"
+curl -fLO "https://github.com/synthlike/skaut/releases/download/v${version}/${artifact}.sha256"
+sha256sum -c "${artifact}.sha256"
+tar -xzf "$artifact"
+install -d "$HOME/.local/bin"
+install -m 755 skaut "$HOME/.local/bin/skaut"
+```
+
+Ensure `$HOME/.local/bin` is on `PATH`, then run `skaut --version` before opening
+a repository. If macOS blocks the unsigned executable, verify its checksum
+before deciding whether to approve it in **System Settings · Privacy &
+Security**.
 
 ### Build from source
 
@@ -239,13 +283,17 @@ zig build test -Dzls-integration
 zig build test -Dgit-integration -Dzls-integration
 ```
 
-Release maintainers can produce the deterministic v0.2 archive and checksum:
+Release maintainers can produce both deterministic v0.2 archives and checksums,
+or select one with `--platform darwin-arm64` or `--platform linux-x86_64`:
 
 ```sh
 python3 tools/package-release.py --version 0.2.0
 ```
 
-The historical [v0.1 release checklist](docs/engineering/v0.1-release-checklist.md) remains unchanged. The v0.2 release gate is tracked separately.
+Follow the [Skaut v0.2 release checklist](docs/engineering/skaut-v0-2-release-checklist.md)
+before tagging or publishing. The historical
+[v0.1 release checklist](docs/engineering/v0.1-release-checklist.md) remains
+unchanged.
 
 ## Project documentation
 
