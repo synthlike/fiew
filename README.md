@@ -46,9 +46,9 @@ can inspect related source between review passes.
 
 ## Installation
 
-Skaut v0.2 is under development and will be the first release under the Skaut
-name. The published v0.1.0 release remains available as the historical fiew
-binary; its bytes and artifact names have not been relabeled.
+Skaut v0.2.0 is the current release and the first published under the Skaut
+name. The v0.1.0 release remains available as the historical fiew binary; its
+bytes and artifact names have not been relabeled.
 
 The v0.2 release supports Apple Silicon macOS and baseline x86_64 Linux. Ubuntu
 22.04 with Linux 5.15 is the verified Linux floor. Ghostty, Kitty, and WezTerm
@@ -62,8 +62,8 @@ Git is required only for Review Diff; non-Git directories remain browsable. ZLS
 
 ### Install a v0.2 release
 
-After v0.2 is published, download the archive for your platform from GitHub and
-install it without root access.
+Download the archive for your platform from GitHub and install it without root
+access.
 
 Apple Silicon macOS:
 
